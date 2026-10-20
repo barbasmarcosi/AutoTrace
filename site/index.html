@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#10232d" />
+  <meta name="description" content="AutoTrace: clientes, vehículos, historial de trabajos y finanzas simples de tu taller, incluso sin conexión." />
+  <meta name="color-scheme" content="light" />
+  <link rel="manifest" href="./manifest.webmanifest" />
+  <link rel="icon" type="image/svg+xml" href="./assets/icon.svg" />
+  <link rel="apple-touch-icon" href="./assets/apple-touch-icon.png" />
+  <link rel="stylesheet" href="./styles.css" />
+  <title>AutoTrace · Gestión de taller</title>
+</head>
+<body>
+  <div id="app" aria-live="off">
+    <div class="boot"><span class="boot-logo">AT</span><span>Cargando AutoTrace…</span></div>
+  </div>
+  <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
+  <dialog id="form-dialog" class="modal" aria-labelledby="modal-title">
+    <div id="modal-content"></div>
+  </dialog>
+  <dialog id="confirm-dialog" class="confirm-modal" aria-labelledby="confirm-title">
+    <form method="dialog" class="confirm-shell">
+      <div class="confirm-icon" aria-hidden="true">!</div>
+      <h2 id="confirm-title">¿Confirmás esta acción?</h2>
+      <p id="confirm-message"></p>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" value="cancel">Cancelar</button>
+        <button class="btn btn-danger" id="confirm-accept" value="accept">Confirmar</button>
+      </div>
+    </form>
+  </dialog>
+  <input id="import-file" type="file" accept="application/json,.json" hidden />
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

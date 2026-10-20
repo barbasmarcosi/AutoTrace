@@ -1,0 +1,421 @@
+import {validateData, csvCell, pendingAmount, margin} from "./model.mjs";
+/** AutoTrace v1 — sin backend, datos almacenados exclusivamente en este navegador. */
+const DB_NAME = 'autotrace-v1';
+const STORE = 'application';
+const KEY = 'records';
+const STATUSES = { received: 'Recibido', progress: 'En proceso', waiting: 'Esperando repuesto', done: 'Finalizado', delivered: 'Entregado' };
+const STATUS_STYLE = { received: 'received', progress: 'progress', waiting: 'waiting', done: 'done', delivered: 'delivered' };
+const CATEGORIES = ['Diagnóstico', 'Mantenimiento', 'Mecánica', 'Electricidad', 'Electrónica', 'Neumáticos', 'Otro'];
+const NAV = [{id:'inicio',label:'Inicio',icon:'home'}, {id:'clientes',label:'Clientes',icon:'users'}, {id:'vehiculos',label:'Vehículos',icon:'car'}, {id:'trabajos',label:'Trabajos',icon:'clipboard'}, {id:'finanzas',label:'Finanzas',icon:'wallet'}, {id:'ajustes',label:'Ajustes',icon:'settings'}];
+const PATHS = {
+ home:'<path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1z"/>',
+ users:'<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/>',
+ car:'<path d="M5 17h14M5 17l-1 2v2m15-4 1 2v2M5 17H3v-5l3-7h12l3 7v5h-2M7 21h.01M17 21h.01M3 12h18M7.5 8.5h.01M16.5 8.5h.01"/>',
+ clipboard:'<rect x="5" y="4" width="14" height="18" rx="2"/><path d="M9 4.5h6V2H9zM9 10h6M9 14h6M9 18h4"/>',
+ wallet:'<rect x="2" y="5" width="20" height="16" rx="2"/><path d="M2 9h20M16 14h3"/>',
+ settings:'<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.8 1.8 0 0 0 .35 2l-2 2a1.8 1.8 0 0 0-2-.35 8 8 0 0 1-1.6.67 1.8 1.8 0 0 0-1.15 1.45h-2a1.8 1.8 0 0 0-1.15-1.45 8 8 0 0 1-1.6-.67 1.8 1.8 0 0 0-2 .35l-2-2a1.8 1.8 0 0 0 .35-2 8 8 0 0 1-.67-1.6A1.8 1.8 0 0 0 2.5 12v-1a1.8 1.8 0 0 0 1.45-1.15 8 8 0 0 1 .67-1.6 1.8 1.8 0 0 0-.35-2l2-2a1.8 1.8 0 0 0 2 .35 8 8 0 0 1 1.6-.67A1.8 1.8 0 0 0 11 2.5h2a1.8 1.8 0 0 0 1.15 1.45 8 8 0 0 1 1.6.67 1.8 1.8 0 0 0 2-.35l2 2a1.8 1.8 0 0 0-.35 2 8 8 0 0 1 .67 1.6A1.8 1.8 0 0 0 21.5 11v1a1.8 1.8 0 0 0-1.45 1.15 8 8 0 0 1-.65 1.85z"/>',
+ search:'<circle cx="11" cy="11" r="7"/><path d="m16 16 5 5"/>',
+ plus:'<path d="M12 5v14M5 12h14"/>',
+ arrow:'<path d="M5 12h14m-6-6 6 6-6 6"/>',
+ back:'<path d="M19 12H5m6 6-6-6 6-6"/>',
+ chevron:'<path d="m9 18 6-6-6-6"/>',
+ x:'<path d="M18 6 6 18M6 6l12 12"/>',
+ check:'<path d="m5 12 4 4L19 6"/>',
+ clock:'<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+ calendar:'<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M7 3v4M17 3v4M3 10h18"/>',
+ trending:'<path d="m3 17 6-6 4 4 8-8M16 7h5v5"/>',
+ activity:'<path d="M3 12h4l3-8 4 16 3-8h4"/>',
+ phone:'<path d="M22 16.92v3a2 2 0 0 1-2.18 2A19.8 19.8 0 0 1 3.09 5.18 2 2 0 0 1 5.08 3h3a2 2 0 0 1 2 1.72l.42 2.8a2 2 0 0 1-.57 1.76L8 11a16 16 0 0 0 5 5l1.72-1.93a2 2 0 0 1 1.76-.57l2.8.42a2 2 0 0 1 1.72 2z"/>',
+ mail:'<rect x="2" y="4" width="20" height="16" rx="2"/><path d="m2 6 10 7L22 6"/>',
+ gauge:'<path d="M4.8 17.5a9 9 0 1 1 14.4 0M12 13l4-4M9 20h6"/>',
+ download:'<path d="M12 3v12m-5-5 5 5 5-5M5 17v4h14v-4"/>',
+ upload:'<path d="M12 17V5m-5 5 5-5 5 5M5 17v4h14v-4"/>',
+ trash:'<path d="M3 6h18M8 6V4h8v2m3 0-1 15H6L5 6M10 10v7M14 10v7"/>',
+ pencil:'<path d="m15 5 4 4M4 20l4.5-1 11-11a2 2 0 0 0-4-4l-11 11L4 20z"/>',
+ alert:'<path d="m12 3 10 18H2L12 3zM12 10v4M12 17h.01"/>',
+ shield:'<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/>',
+ wrench:'<path d="M14.5 6.5a5 5 0 0 0-6 6L3 18l3 3 5.5-5.5a5 5 0 0 0 6-6L14 13l-3-3z"/>',
+ menu:'<path d="M4 7h16M4 12h16M4 17h16"/>',
+ database:'<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 4 18 4 18 0V5M3 12c0 4 18 4 18 0"/>',
+ sparkle:'<path d="m12 3 1.6 5.4L19 10l-5.4 1.6L12 17l-1.6-5.4L5 10l5.4-1.6zM19 17l1 2 2 1-2 1-1 2-1-2-2-1 2-1z"/>',
+ printer:'<path d="M6 9V3h12v6M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2M6 15h12v6H6z"/>',
+ info:'<circle cx="12" cy="12" r="10"/><path d="M12 11v6M12 7h.01"/>',
+ tag:'<path d="M20 13 13 20a2 2 0 0 1-3 0l-7-7V4h9l8 8a2 2 0 0 1 0 1z"/><circle cx="7.5" cy="8.5" r="1"/>',
+ chart:'<path d="M3 3v18h18M7 16v-4m5 4V7m5 9V4"/>'
+};
+const icon = (name, size=18) => `<svg aria-hidden="true" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round">${PATHS[name] || PATHS.info}</svg>`;
+const esc = (value) => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+const today = () => new Date().toLocaleDateString('en-CA'); // en-CA often YYYY-MM-DD, avoid UTC offset
+const isoDate = (d) => { const date = new Date(d); return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`; };
+const dateShift = (days) => { const d = new Date(); d.setHours(12,0,0,0); d.setDate(d.getDate()+days); return isoDate(d); };
+const formatDate = (input) => input && /^\d{4}-\d{2}-\d{2}$/.test(input) ? new Date(`${input}T12:00:00`).toLocaleDateString('es-AR',{day:'2-digit',month:'short',year:'numeric'}) : '—';
+const compactDate = (input) => input ? new Date(`${input}T12:00:00`).toLocaleDateString('es-AR',{day:'2-digit',month:'short'}) : '—';
+const money = value => new Intl.NumberFormat('es-AR',{style:'currency',currency:db.settings.currency,maximumFractionDigits:0}).format(Number(value)||0);
+const num = value => new Intl.NumberFormat('es-AR').format(Number(value)||0);
+const uid = () => globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
+const sum = (arr, fn) => arr.reduce((acc,v) => acc + Number(fn(v)||0),0);
+const amount = value => { const n = Number(value); return Number.isFinite(n) && n >= 0 ? Math.round(n*100)/100 : 0; };
+const normPlate = v => String(v||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+const initials = s => String(s||'').trim().split(/\s+/).slice(0,2).map(x=>x[0]).join('').toUpperCase();
+const daysUntil = str => Math.round((new Date(`${str}T12:00:00`)-new Date(`${isoDate(new Date())}T12:00:00`))/86400000);
+const canonical = () => ({clients:[],vehicles:[],orders:[],settings:{garageName:'Mi taller',currency:'ARS',demo:false}});
+function seedDemo(){
+  const data=canonical(); data.settings.demo=true;
+  const people=[['Lucía Fernández','223 551-7820','lucia@example.com'],['Martín López','223 618-0942','martin@example.com'],['Sofía Romero','223 599-4206',''],['Diego Martínez','223 426-1188',''],['Paula Gómez','223 681-2025','paula@example.com']];
+  data.clients=people.map((p,i)=>({id:`demo-c${i+1}`,name:p[0],phone:p[1],email:p[2],notes:'',createdAt:dateShift(-45+i*3)}));
+  const cars=[['demo-c1','AF 382 QL','Toyota','Corolla',2021,64500,22],['demo-c2','AB 925 TY','Volkswagen','Golf',2018,104200,65],['demo-c3','AE 148 NM','Ford','Ranger',2020,88200,9],['demo-c4','AC 687 JP','Chevrolet','Onix',2019,76850,-6],['demo-c5','AG 412 BK','Peugeot','208',2023,29100,90],['demo-c1','AD 592 MS','Honda','HR-V',2020,53100,18]];
+  data.vehicles=cars.map((v,i)=>({id:`demo-v${i+1}`,clientId:v[0],plate:normPlate(v[1]),make:v[2],model:v[3],year:v[4],mileage:v[5],vin:'',color:'',nextServiceDate:dateShift(v[6]),notes:'',createdAt:dateShift(-45)}));
+  const works=[['demo-v1','Service de 60.000 km','Mantenimiento','progress',-2,45000,30000,113000,40000],['demo-v2','Diagnóstico de inyección','Diagnóstico','waiting',-4,10000,35000,84000,0],['demo-v3','Revisión de frenos delanteros','Mecánica','received',0,35000,28000,97000,0],['demo-v4','Cambio de batería','Electricidad','done',-8,88000,15000,136000,136000],['demo-v5','Revisión electrónica preventiva','Electrónica','delivered',-12,0,42000,65000,65000],['demo-v6','Cambio de aceite y filtros','Mantenimiento','delivered',-20,51000,19000,104000,104000],['demo-v2','Distribución completa','Mecánica','delivered',-38,130000,75000,279000,279000],['demo-v1','Escaneo computarizado','Diagnóstico','delivered',-52,0,24000,38000,38000]];
+  data.orders=works.map((w,i)=>({id:`demo-o${i+1}`,vehicleId:w[0],title:w[1],category:w[2],status:w[3],openedAt:dateShift(w[4]),completedAt:['done','delivered'].includes(w[3])?dateShift(w[4]+1):'',mileage:data.vehicles.find(v=>v.id===w[0]).mileage,description:i===0?'Mantenimiento periódico, revisión general de fluidos y tren delantero.':i===1?'Verificar presión de combustible y revisar sensores.':'',partsCost:w[5],laborCost:w[6],charged:w[7],paid:w[8],notes:'',createdAt:dateShift(w[4])}));
+  return data;
+}
+let db = canonical();
+let activeQuery = '';
+let activeFilter = 'all';
+let dbConnection = null;
+let memoryOnly = false;
+let toastTimeout;
+const app = document.querySelector('#app');
+function openDatabase(){
+  return new Promise((resolve,reject)=>{
+    const req=indexedDB.open(DB_NAME,1);
+    req.onupgradeneeded=()=>{ if(!req.result.objectStoreNames.contains(STORE))req.result.createObjectStore(STORE); };
+    req.onsuccess=()=>resolve(req.result); req.onerror=()=>reject(req.error);
+  });
+}
+async function loadData(){
+  try {
+    dbConnection=await openDatabase();
+    const saved=await new Promise((resolve,reject)=>{const tx=dbConnection.transaction(STORE,'readonly');const req=tx.objectStore(STORE).get(KEY);req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error);});
+    db=saved?validateData(saved):seedDemo();
+    if(!saved)await saveData(db);
+  } catch(err){ console.error('AutoTrace storage unavailable:',err); memoryOnly=true;db=seedDemo(); }
+}
+async function saveData(next){
+  if(memoryOnly)throw Error('El almacenamiento local no está disponible. No se guardaron los cambios.');
+  await new Promise((resolve,reject)=>{
+    const tx=dbConnection.transaction(STORE,'readwrite');tx.objectStore(STORE).put(next,KEY);tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);tx.onabort=()=>reject(tx.error);
+  });
+  db=next;
+}
+async function updateData(mutator, message){
+  try {
+    const next=structuredClone(db); mutator(next); await saveData(next); render(); if(message)toast(message);
+    return true;
+  }catch(err){console.error(err);toast(err?.message||'No se pudieron guardar los cambios','error');return false;}
+}
+function toast(message,type='success'){
+  const region=document.querySelector('#toast-region');const el=document.createElement('div');el.className=`toast ${type==='error'?'error':''}`;el.textContent=message;region.appendChild(el);clearTimeout(toastTimeout);toastTimeout=setTimeout(()=>{el.remove();},4500);if(region.children.length>3)region.firstElementChild.remove();
+}
+const findClient=id=>db.clients.find(c=>c.id===id);
+const findVehicle=id=>db.vehicles.find(v=>v.id===id);
+const findOrder=id=>db.orders.find(o=>o.id===id);
+const fullVehicle=v=>v?`${v.make} ${v.model}`:'Vehículo eliminado';
+const vehicleClient=v=>v?findClient(v.clientId):null;
+const activeOrders=()=>db.orders.filter(o=>['received','progress','waiting'].includes(o.status));
+const route=()=>{const h=decodeURIComponent(location.hash.replace(/^#\/?/,''));const [page,id]=h.split('/');return {page:page||'inicio',id:id||''};};
+function navigate(page,id='') {activeFilter='all';activeQuery='';location.hash=`#${page}${id?`/${encodeURIComponent(id)}`:''}`;if(route().page===page)render();window.scrollTo({top:0,behavior:'instant'});}
+const navActive = page => ({cliente:'clientes',vehiculo:'vehiculos',trabajo:'trabajos',buscar:'inicio'}[page]||page);
+const button=(label,action,style='btn-secondary',attrs='')=>`<button type="button" class="btn ${style}" data-action="${action}" ${attrs}>${label}</button>`;
+const pill=status=>`<span class="pill pill-${STATUS_STYLE[status]||'received'}">${esc(STATUSES[status]||status)}</span>`;
+const sectionHead=(title,subtitle,actions='')=>`<div class="heading"><div><p class="eyebrow">AUTOTRACE / ${esc(title.toUpperCase())}</p><h1>${esc(title)}</h1><p>${esc(subtitle)}</p></div>${actions?`<div class="heading-actions">${actions}</div>`:''}</div>`;
+const empty=(title,description,action='',symbol='clipboard')=>`<div class="empty"><div class="empty-illustration">${icon(symbol,28)}</div><h3>${esc(title)}</h3><p>${esc(description)}</p>${action}</div>`;
+const descView=(label,value)=>`<div class="info-item"><small>${esc(label)}</small><strong>${value||'—'}</strong></div>`;
+function render(){
+  const current=route(); const currentNav=navActive(current.page);
+  app.innerHTML=`<div class="shell"><aside class="sidebar"><a class="brand" href="#inicio" aria-label="AutoTrace, ir al inicio"><span class="brand-logo">${icon('car',24)}</span><span><span class="brand-name">AutoTrace</span><span class="brand-sub">Gestión de taller</span></span></a><div class="sidebar-label">ESPACIO DE TRABAJO</div><nav aria-label="Navegación principal">${NAV.map(n=>`<button class="nav-item ${currentNav===n.id?'active':''}" data-nav="${n.id}">${icon(n.icon)}${n.label}${n.id==='trabajos'&&activeOrders().length?`<span class="count">${activeOrders().length}</span>`:''}</button>`).join('')}</nav><div class="sidebar-spacer"></div><div class="sidebar-footer"><div class="online"><span class="status-dot"></span>Guardado en este dispositivo</div><p>Funciona sin conexión. Hacé respaldos frecuentes: los datos no se sincronizan entre dispositivos.</p></div></aside><div class="main-column"><header class="topbar"><div class="topbar-title">Mi espacio <span class="slash">/</span> <span class="desktop-only">${esc(NAV.find(n=>n.id===currentNav)?.label||'Detalle')}</span></div><div class="topbar-right"><div class="search-wrap">${icon('search',17)}<input class="search" id="global-search" type="search" aria-label="Buscar en AutoTrace" placeholder="Buscar patente, cliente, trabajo…" value="${esc(activeQuery)}" autocomplete="off" />${activeQuery?`<button class="search-clear" data-action="clear-search" aria-label="Borrar búsqueda">${icon('x',16)}</button>`:''}</div>${button(`${icon('plus')} Nuevo trabajo`,'new-order','btn-primary')}${button(icon('settings'),'go-settings','btn-secondary icon-btn','aria-label="Ajustes"')}</div></header><main class="content" id="page-content">${renderPage()}</main></div></div><nav class="mobile-nav" aria-label="Navegación móvil">${NAV.filter(x=>x.id!=='ajustes').map(n=>`<button class="${currentNav===n.id?'active':''}" data-nav="${n.id}" aria-label="${n.label}">${icon(n.icon,21)}<span>${n.label}</span></button>`).join('')}</nav>`;
+}
+function renderPage(){
+  if(activeQuery.trim())return renderSearch();
+  const r=route();
+  switch(r.page){case 'inicio':return renderDashboard();case 'clientes':return renderClients();case 'vehiculos':return renderVehicles();case 'trabajos':return renderOrders();case 'finanzas':return renderFinance();case 'ajustes':return renderSettings();case 'cliente':return renderClientDetail(r.id);case 'vehiculo':return renderVehicleDetail(r.id);case 'trabajo':return renderOrderDetail(r.id);default:return empty('Página no encontrada','Elegí una sección para continuar.',button('Volver al inicio','go-home'));}
+}
+function refreshPage(){const target=document.querySelector('#page-content');if(target)target.innerHTML=renderPage();}
+function demoBanner(){return db.settings.demo?`<div class="demo-banner"><p><strong>Datos de demostración.</strong> Los nombres, vehículos e importes son ficticios. Podés explorar sin riesgo y luego comenzar con tus propios registros.</p>${button('Comenzar desde cero','reset-demo','btn-secondary btn-sm')}</div>`:'';}
+function renderDashboard(){
+  const recent=[...db.orders].sort((a,b)=>b.openedAt.localeCompare(a.openedAt)).slice(0,5);
+  const open=activeOrders();
+  const thisMonth=isoDate(new Date()).slice(0,7);
+  const monthly=db.orders.filter(x=>x.openedAt.startsWith(thisMonth));
+  const due=db.vehicles.filter(v=>v.nextServiceDate&&daysUntil(v.nextServiceDate)<=30).sort((a,b)=>a.nextServiceDate.localeCompare(b.nextServiceDate)).slice(0,5);
+  const pending=sum(db.orders,pendingAmount);
+  return `${demoBanner()}<div class="heading"><div><p class="eyebrow">PANEL DE CONTROL</p><h1>Buen día, ${esc(db.settings.garageName)}.</h1><p>Todo lo que necesitás saber de tu taller, en un solo lugar.</p></div><span class="badge-local">${icon('shield',15)} Privado y local</span></div>
+  <section class="hero"><div class="hero-content"><div class="hero-eyebrow">${icon('sparkle',16)} TU TALLER EN ORDEN</div><h2>Cada vehículo tiene una historia.</h2><p>Registrá intervenciones, seguí tus trabajos y mantené toda la información a mano.</p><div class="hero-actions">${button(`${icon('plus')} Registrar trabajo`,'new-order','btn-lime')}${button(`${icon('users')} Nuevo cliente`,'new-client','btn-secondary')}</div></div><div class="hero-watermark">${icon('car',210)}</div></section>
+  <div class="stats-grid">${stat('Clientes',db.clients.length,'Registrados en el taller','users')}${stat('Trabajos activos',open.length,'En recepción o proceso','wrench')}${stat('Facturado del mes',money(sum(monthly,o=>o.charged)),'Importes de trabajos iniciados','trending')}${stat('Pendiente de cobro',money(pending),'Saldo de todos los trabajos','wallet')}</div>
+  <div class="dashboard-grid"><div class="card"><div class="card-heading"><div><h3>Últimos trabajos</h3><p>Actividad reciente de tu taller</p></div><button class="link-btn" data-nav="trabajos">Ver todos ${icon('arrow',13)}</button></div>${recent.length?`<div class="table-scroll">${renderOrderTable(recent,true)}</div>`:empty('Todavía no hay trabajos','Registrá el primero para construir el historial de cada vehículo.',button('Nuevo trabajo','new-order','btn-primary'))}</div>
+  <div class="card"><div class="card-heading"><div><h3>Próximos servicios</h3><p>Vencidos o dentro de los próximos 30 días</p></div>${icon('calendar',19)}</div>${due.length?`<div class="detail-list">${due.map(v=>{const d=daysUntil(v.nextServiceDate);return `<button class="detail-row table-link" data-nav="vehiculo" data-id="${esc(v.id)}"><div class="detail-icon">${icon('car')}</div><div class="detail-content"><strong>${esc(fullVehicle(v))}</strong><small>${esc(v.plate)} · ${formatDate(v.nextServiceDate)}</small></div><span class="pill pill-${d<0?'overdue':d<=7?'soon':'normal'}">${d<0?'Vencido':d===0?'Hoy':`En ${d} días`}</span></button>`;}).join('')}</div>`:empty('Todo al día','No hay servicios programados para los próximos 30 días.','','calendar')}</div></div>
+  <div class="dashboard-grid" style="margin-top:21px"><div class="card card-pad"><div class="card-heading" style="padding:0 0 15px"><div><h3>Movimiento de los últimos 6 meses</h3><p>Importes cargados y costos estimados</p></div>${icon('chart',19)}</div>${renderChart()}</div><div class="card card-pad"><h3 style="font-size:15px;margin-bottom:15px">Accesos rápidos</h3><div style="display:grid;gap:10px">${button(`${icon('car')} Agregar vehículo`,'new-vehicle','btn-secondary')}${button(`${icon('users')} Agregar cliente`,'new-client','btn-secondary')}${button(`${icon('download')} Descargar respaldo`,'export-json','btn-secondary')}</div><p class="muted-sm" style="line-height:1.65;margin-top:17px;margin-bottom:0">Los datos viven solo en este navegador. Descargá un respaldo después de cargar trabajos importantes.</p></div></div>`;
+}
+function stat(label,value,foot,symbol){return `<article class="stat-card"><div class="stat-label">${esc(label)}<span class="stat-icon">${icon(symbol,17)}</span></div><div class="stat-value">${esc(value)}</div><div class="stat-foot">${esc(foot)}</div></article>`;}
+function renderChart(){
+  const months=Array.from({length:6},(_,i)=>{const d=new Date();d.setDate(1);d.setMonth(d.getMonth()-(5-i));const key=isoDate(d).slice(0,7);const orders=db.orders.filter(o=>o.openedAt.startsWith(key));return {label:d.toLocaleDateString('es-AR',{month:'short'}).replace('.',''),revenue:sum(orders,x=>x.charged),cost:sum(orders,x=>amount(x.partsCost)+amount(x.laborCost))};});
+  const max=Math.max(1,...months.flatMap(m=>[m.revenue,m.cost]));
+  return `<div class="bar-chart" role="img" aria-label="Gráfico comparativo de facturación y costos de los últimos seis meses">${months.map(m=>`<div class="bar-group"><div class="bar-wrap"><span class="bar" style="--h:${Math.max(2,m.revenue/max*100)}%" title="Facturado: ${esc(money(m.revenue))}"></span><span class="bar cost" style="--h:${Math.max(2,m.cost/max*100)}%" title="Costos: ${esc(money(m.cost))}"></span></div><label>${esc(m.label)}</label></div>`).join('')}</div><div class="chart-legend"><span><i class="legend-dot"></i> Facturado</span><span><i class="legend-dot dark"></i> Costos</span></div>`;
+}
+function renderOrderTable(orders,compact=false){return `<table class="data-table"><thead><tr><th>Trabajo / vehículo</th><th>Fecha</th><th>Estado</th>${compact?'':`<th>Cobrado</th><th>Pendiente</th>`}<th style="width:40px"></th></tr></thead><tbody>${orders.map(o=>{const v=findVehicle(o.vehicleId);return `<tr><td><button class="table-link" data-nav="trabajo" data-id="${esc(o.id)}"><span class="main-cell">${esc(o.title)}</span><span class="sub-cell">${esc(fullVehicle(v))} · ${esc(v?.plate||'')}</span></button></td><td>${formatDate(o.openedAt)}</td><td>${pill(o.status)}</td>${compact?'':`<td><strong>${money(o.paid)}</strong></td><td><span class="${pendingAmount(o)>0?'text-negative':''}">${money(pendingAmount(o))}</span></td>`}<td><button class="btn btn-ghost icon-btn" aria-label="Abrir trabajo" data-nav="trabajo" data-id="${esc(o.id)}">${icon('chevron')}</button></td></tr>`;}).join('')}</tbody></table>`;}
+function renderClients(){
+  const items=[...db.clients].sort((a,b)=>a.name.localeCompare(b.name,'es'));
+  return `${demoBanner()}${sectionHead('Clientes',`${db.clients.length} clientes registrados. Cada cliente puede tener varios vehículos.`,button(`${icon('plus')} Agregar cliente`,'new-client','btn-primary'))}
+  ${items.length?`<div class="list-grid">${items.map(c=>{const vehicles=db.vehicles.filter(v=>v.clientId===c.id);return `<article class="card person-card"><div class="card-top"><span class="avatar">${esc(initials(c.name))}</span><div class="person-info"><h3>${esc(c.name)}</h3><p>${esc(c.email||c.phone||'Sin datos de contacto')}</p></div><button class="btn btn-ghost icon-btn" data-nav="cliente" data-id="${esc(c.id)}" aria-label="Ver cliente">${icon('arrow',17)}</button></div><div class="card-meta"><span>${icon('phone')} ${esc(c.phone||'Sin teléfono')}</span><span>${icon('car')} ${vehicles.length} vehículo${vehicles.length===1?'':'s'}</span></div><div class="card-bottom"><small>Desde ${formatDate(c.createdAt)}</small>${button('Ver ficha','view-client','btn-secondary btn-sm',`data-id="${esc(c.id)}"`)}</div></article>`;}).join('')}</div>`:empty('Tu lista de clientes está vacía','Agregá un cliente y luego sus vehículos para empezar a registrar servicios.',button('Agregar cliente','new-client','btn-primary'),'users')}`;
+}
+function renderVehicles(){
+  const vehicles=[...db.vehicles].sort((a,b)=>fullVehicle(a).localeCompare(fullVehicle(b),'es'));
+  return `${demoBanner()}${sectionHead('Vehículos',`${db.vehicles.length} vehículos asociados a tus clientes.`,button(`${icon('plus')} Agregar vehículo`,'new-vehicle','btn-primary'))}
+  ${vehicles.length?`<div class="list-grid">${vehicles.map(v=>{const c=vehicleClient(v);const n=db.orders.filter(o=>o.vehicleId===v.id).length;const due=v.nextServiceDate?daysUntil(v.nextServiceDate):null;return `<article class="card vehicle-card"><div class="card-top"><span class="avatar blue">${icon('car',23)}</span><div class="person-info"><h3>${esc(fullVehicle(v))} <span class="muted">${esc(v.year||'')}</span></h3><p>${esc(c?.name||'Cliente no disponible')}</p></div><span class="plate">${esc(v.plate)}</span></div><div class="card-meta"><span>${icon('gauge')} ${num(v.mileage)} km</span><span>${icon('clipboard')} ${n} trabajo${n===1?'':'s'}</span></div><div class="card-bottom"><small>${due!==null?(due<0?'Servicio vencido':`Próx. servicio: ${formatDate(v.nextServiceDate)}`):'Sin servicio programado'}</small>${button('Ver historial','view-vehicle','btn-secondary btn-sm',`data-id="${esc(v.id)}"`)}</div></article>`;}).join('')}</div>`:empty('Sin vehículos todavía','Primero registrá un cliente y después vinculá su automóvil.',button('Agregar vehículo','new-vehicle','btn-primary'),'car')}`;
+}
+function renderOrders(){
+  let orders=[...db.orders].sort((a,b)=>b.openedAt.localeCompare(a.openedAt));
+  if(activeFilter!=='all')orders=orders.filter(o=>activeFilter==='active'?['received','progress','waiting'].includes(o.status):activeFilter==='closed'?['done','delivered'].includes(o.status):pendingAmount(o)>0);
+  return `${demoBanner()}${sectionHead('Trabajos y servicios',`${db.orders.length} registros en el historial. Registrá desde un diagnóstico hasta una reparación completa.`,button(`${icon('plus')} Nuevo trabajo`,'new-order','btn-primary'))}
+  <div class="filters">${[['all','Todos'],['active','Activos'],['closed','Terminados'],['unpaid','Con saldo']].map(([key,label])=>`<button class="filter-tab ${activeFilter===key?'active':''}" data-filter="${key}">${label}</button>`).join('')}</div><div class="card">${orders.length?`<div class="table-scroll">${renderOrderTable(orders)}</div>`:empty('No hay trabajos para mostrar',activeFilter==='all'?'Creá tu primer trabajo y vas a verlo acá.':'Probá con otro filtro.',activeFilter==='all'?button('Nuevo trabajo','new-order','btn-primary'):'','clipboard')}</div>`;
+}
+function renderFinance(){
+  const charged=sum(db.orders,o=>o.charged),paid=sum(db.orders,o=>o.paid),cost=sum(db.orders,o=>amount(o.partsCost)+amount(o.laborCost)),pending=sum(db.orders,pendingAmount);
+  return `${demoBanner()}${sectionHead('Resumen económico','Un panorama simple de ingresos, costos y saldos. No reemplaza un sistema contable.',button(`${icon('download')} Exportar CSV`,'export-csv','btn-secondary'))}
+  <div class="stats-grid">${stat('Total presupuestado / cobrado',money(charged),'Importes cargados en trabajos','wallet')}${stat('Pagos recibidos',money(paid),'Monto efectivamente abonado','trending')}${stat('Costos registrados',money(cost),'Repuestos y mano de obra','wrench')}${stat('Saldo pendiente',money(pending),'Pendiente de cobrar','clock')}</div>
+  <div class="dashboard-grid"><div class="card card-pad"><h3 style="font-size:15px">Evolución mensual</h3><p class="section-intro">Facturación indicada frente a costos registrados</p>${renderChart()}</div><div class="card card-pad"><h3 style="font-size:15px">Margen estimado</h3><div class="money-box highlight" style="margin:17px 0"><small>Importes cargados − costos</small><strong class="${charged-cost<0?'text-negative':'text-positive'}">${money(charged-cost)}</strong></div><p class="muted-sm" style="line-height:1.8">Es una aproximación, no una utilidad neta: no contempla alquiler, impuestos, herramientas, gastos generales ni el criterio de reconocimiento contable. La mano de obra aquí se considera un costo interno.</p></div></div>
+  <div class="card" style="margin-top:21px"><div class="card-heading"><div><h3>Detalle por trabajo</h3><p>Ordenado desde el más reciente</p></div></div><div class="table-scroll">${db.orders.length?`<table class="data-table"><thead><tr><th>Trabajo</th><th>Costo</th><th>Importe</th><th>Pagado</th><th>Saldo</th><th>Margen estimado</th></tr></thead><tbody>${[...db.orders].sort((a,b)=>b.openedAt.localeCompare(a.openedAt)).map(o=>`<tr><td><button class="table-link" data-nav="trabajo" data-id="${esc(o.id)}"><span class="main-cell">${esc(o.title)}</span><span class="sub-cell">${formatDate(o.openedAt)}</span></button></td><td>${money(amount(o.partsCost)+amount(o.laborCost))}</td><td>${money(o.charged)}</td><td>${money(o.paid)}</td><td>${money(pendingAmount(o))}</td><td class="${margin(o)<0?'text-negative':'text-positive'}">${money(margin(o))}</td></tr>`).join('')}</tbody></table>`:empty('Sin movimientos todavía','Los importes que cargues en tus trabajos aparecerán acá.')}</div></div>`;
+}
+function renderClientDetail(id){
+  const c=findClient(id); if(!c)return notFound('cliente','clientes');
+  const vehicles=db.vehicles.filter(v=>v.clientId===id);
+  const orders=db.orders.filter(o=>vehicles.some(v=>v.id===o.vehicleId)).sort((a,b)=>b.openedAt.localeCompare(a.openedAt));
+  return `${back('clientes','Clientes')}${sectionHead(c.name,`${vehicles.length} vehículo${vehicles.length===1?'':'s'} · ${orders.length} trabajo${orders.length===1?'':'s'}`,`${button(`${icon('pencil')} Editar`,'edit-client','btn-secondary',`data-id="${esc(id)}"`)} ${button(`${icon('plus')} Agregar vehículo`,'new-vehicle','btn-primary',`data-client="${esc(id)}"`)}`)}<div class="detail-layout"><div><div class="card card-pad detail-section"><h3>Información de contacto</h3><div class="info-grid">${descView('Teléfono',esc(c.phone||'—'))}${descView('Correo',c.email?`<a href="mailto:${encodeURIComponent(c.email)}">${esc(c.email)}</a>`:'—')}${descView('Registrado',formatDate(c.createdAt))}${descView('Vehículos',String(vehicles.length))}</div>${c.notes?`<div class="divider"></div><p class="section-intro">${esc(c.notes)}</p>`:''}</div><div class="card detail-section"><div class="card-heading"><h3>Vehículos asociados</h3></div>${vehicles.length?`<div class="detail-list">${vehicles.map(v=>`<button class="detail-row table-link" data-nav="vehiculo" data-id="${esc(v.id)}"><span class="detail-icon">${icon('car')}</span><div class="detail-content"><strong>${esc(fullVehicle(v))}</strong><small>${esc(v.plate)} · ${num(v.mileage)} km</small></div>${icon('chevron',17)}</button>`).join('')}</div>`:empty('Sin vehículos','Agregá el primer automóvil del cliente.')}</div></div><div><div class="card detail-section"><div class="card-heading"><h3>Últimos trabajos</h3></div>${orders.length?`<div class="detail-list">${orders.slice(0,8).map(o=>`<button class="detail-row table-link" data-nav="trabajo" data-id="${esc(o.id)}"><div class="detail-content"><strong>${esc(o.title)}</strong><small>${formatDate(o.openedAt)} · ${esc(findVehicle(o.vehicleId)?.plate||'')}</small></div>${icon('chevron',16)}</button>`).join('')}</div>`:empty('Sin trabajos','El historial aparecerá al cargar el primer servicio.')}</div><div class="card card-pad"><h3>Administración</h3><p class="muted-sm">Solo podés eliminar un cliente cuando no tenga vehículos asociados.</p>${button(`${icon('trash')} Eliminar cliente`,'delete-client','btn-danger-ghost btn-sm',`data-id="${esc(id)}"`)}</div></div></div>`;
+}
+function renderVehicleDetail(id){
+  const v=findVehicle(id);if(!v)return notFound('vehículo','vehiculos');const c=vehicleClient(v);
+  const works=db.orders.filter(o=>o.vehicleId===id).sort((a,b)=>b.openedAt.localeCompare(a.openedAt));
+  return `${back('vehiculos','Vehículos')}${sectionHead(fullVehicle(v),`${v.plate} · ${v.year||'Año sin especificar'}`,`${button(`${icon('pencil')} Editar vehículo`,'edit-vehicle','btn-secondary',`data-id="${esc(id)}"`)} ${button(`${icon('plus')} Nuevo trabajo`,'new-order','btn-primary',`data-vehicle="${esc(id)}"`)}`)}<div class="detail-layout"><div><div class="card card-pad detail-section"><h3>Ficha del vehículo</h3><div class="info-grid">${descView('Patente',`<span class="plate">${esc(v.plate)}</span>`)}${descView('Cliente',`<button class="table-link" data-nav="cliente" data-id="${esc(v.clientId)}"><span class="main-cell">${esc(c?.name||'—')}</span></button>`)}${descView('Año',esc(v.year||'—'))}${descView('Kilometraje',`${num(v.mileage)} km`)}${descView('Número de chasis (VIN)',esc(v.vin||'—'))}${descView('Color',esc(v.color||'—'))}${descView('Próximo servicio',formatDate(v.nextServiceDate))}${descView('Intervenciones',String(works.length))}</div>${v.notes?`<div class="divider"></div><p class="section-intro">${esc(v.notes)}</p>`:''}</div><div class="card card-pad detail-section"><div class="card-heading" style="padding:0 0 22px"><h3>Historial de servicios</h3><span class="tag">${works.length} registros</span></div>${works.length?`<div class="timeline">${works.map(o=>`<div class="timeline-item"><button class="table-link" data-nav="trabajo" data-id="${esc(o.id)}"><span class="timeline-title">${esc(o.title)}</span></button><div class="timeline-meta">${formatDate(o.openedAt)} · ${esc(o.category)} · ${num(o.mileage)} km</div>${pill(o.status)}${o.description?`<p class="timeline-body">${esc(o.description)}</p>`:''}</div>`).join('')}</div>`:empty('Sin historial','Agregá un trabajo para iniciar el registro de este vehículo.')}</div></div><div><div class="card card-pad detail-section"><h3>Propietario</h3><div class="card-top"><div class="avatar">${esc(initials(c?.name))}</div><div class="person-info"><h3>${esc(c?.name||'Sin propietario')}</h3><p>${esc(c?.phone||'Sin teléfono')}</p></div></div><div style="margin-top:20px">${button('Abrir ficha del cliente','view-client','btn-secondary',`data-id="${esc(c?.id||'')}"`)}</div></div><div class="card card-pad"><h3>Administración</h3><p class="muted-sm">Solo podés eliminar un vehículo sin trabajos asociados.</p>${button(`${icon('trash')} Eliminar vehículo`,'delete-vehicle','btn-danger-ghost btn-sm',`data-id="${esc(id)}"`)}</div></div></div>`;
+}
+function renderOrderDetail(id){
+  const o=findOrder(id);if(!o)return notFound('trabajo','trabajos');const v=findVehicle(o.vehicleId);const c=vehicleClient(v);
+  const cost=amount(o.partsCost)+amount(o.laborCost);
+  return `${back('trabajos','Trabajos')}${sectionHead(o.title,`${fullVehicle(v)} · ${v?.plate||''} · ${formatDate(o.openedAt)}`,`${button(`${icon('pencil')} Editar trabajo`,'edit-order','btn-secondary',`data-id="${esc(id)}"`)} ${button(`${icon('printer')} Imprimir`,'print-order','btn-secondary',`data-id="${esc(id)}"`)}`)}<div class="detail-layout"><div><div class="card card-pad detail-section"><div style="display:flex;align-items:center;justify-content:space-between;gap:10px"><h3 style="margin:0">Detalle de la intervención</h3>${pill(o.status)}</div><div class="divider"></div><div class="info-grid">${descView('Categoría',esc(o.category))}${descView('Fecha de ingreso',formatDate(o.openedAt))}${descView('Kilometraje registrado',`${num(o.mileage)} km`)}${descView('Fecha de cierre',formatDate(o.completedAt))}</div><div class="divider"></div><h3 style="font-size:13px">Diagnóstico / Descripción</h3><p class="section-intro" style="white-space:pre-wrap">${esc(o.description||'Sin descripción adicional.')}</p>${o.notes?`<h3 style="font-size:13px">Notas</h3><p class="section-intro" style="white-space:pre-wrap">${esc(o.notes)}</p>`:''}</div><div class="card card-pad detail-section"><h3>Seguimiento</h3><p class="section-intro">Actualizá el estado del trabajo sin tener que abrir el formulario completo.</p><div class="field"><label for="status-quick">Estado actual</label><select id="status-quick" data-status-order="${esc(id)}">${Object.entries(STATUSES).map(([k,label])=>`<option value="${k}" ${k===o.status?'selected':''}>${label}</option>`).join('')}</select></div></div></div><div><div class="card card-pad detail-section"><h3>Balance del trabajo</h3><div class="money-grid" style="margin-top:18px"><div class="money-box"><small>Costo de repuestos</small><strong>${money(o.partsCost)}</strong></div><div class="money-box"><small>Costo de mano de obra</small><strong>${money(o.laborCost)}</strong></div><div class="money-box"><small>Costo total</small><strong>${money(cost)}</strong></div><div class="money-box"><small>Importe acordado</small><strong>${money(o.charged)}</strong></div><div class="money-box highlight"><small>Pagado</small><strong>${money(o.paid)}</strong></div><div class="money-box ${pendingAmount(o)?'due':''}"><small>Saldo pendiente</small><strong>${money(pendingAmount(o))}</strong></div></div><div class="divider"></div><div class="info-item"><small>Margen bruto estimado</small><strong class="${margin(o)<0?'text-negative':'text-positive'}" style="font-size:22px">${money(margin(o))}</strong></div><div style="margin-top:20px">${button(`${icon('plus')} Registrar cobro`,'add-payment',pendingAmount(o)>0?'btn-primary':'btn-secondary',`data-id="${esc(id)}" ${pendingAmount(o)===0?'disabled':''}`)}</div></div><div class="card card-pad detail-section"><h3>Vehículo y cliente</h3><div class="info-grid">${descView('Vehículo',esc(fullVehicle(v)))}${descView('Patente',esc(v?.plate||''))}${descView('Cliente',esc(c?.name||''))}${descView('Contacto',esc(c?.phone||'—'))}</div><div style="margin-top:20px">${button('Ver vehículo','view-vehicle','btn-secondary btn-sm',`data-id="${esc(v?.id||'')}"`)}</div></div><div class="card card-pad">${button(`${icon('trash')} Eliminar trabajo`,'delete-order','btn-danger-ghost btn-sm',`data-id="${esc(id)}"`)}</div></div></div>`;
+}
+function notFound(item,to){return `${back(to,'Volver')}${empty('No encontramos este '+item,'Es posible que el registro se haya eliminado.')}`;}
+function back(to,label){return `<button class="back-btn" data-nav="${to}">${icon('back',15)} Volver a ${esc(label)}</button>`;}
+function renderSearch(){
+  const q=activeQuery.toLocaleLowerCase('es').trim();
+  const includes=text=>String(text||'').toLocaleLowerCase('es').includes(q);
+  const cs=db.clients.filter(c=>[c.name,c.phone,c.email].some(includes));
+  const vs=db.vehicles.filter(v=>[v.plate,v.make,v.model,v.year,v.vin,findClient(v.clientId)?.name].some(includes));
+  const os=db.orders.filter(o=>[o.title,o.category,o.description,findVehicle(o.vehicleId)?.plate,vehicleClient(findVehicle(o.vehicleId))?.name].some(includes));
+  return `${sectionHead('Resultados de búsqueda',`Buscando “${activeQuery}” en clientes, vehículos y trabajos.`)}<div class="card"><div class="card-heading"><h3>Clientes <span class="tag">${cs.length}</span></h3></div>${cs.length?`<div class="detail-list">${cs.map(c=>`<button class="detail-row table-link" data-nav="cliente" data-id="${esc(c.id)}"><div class="detail-icon">${icon('users')}</div><div class="detail-content"><strong>${esc(c.name)}</strong><small>${esc(c.phone||c.email||'Sin contacto')}</small></div>${icon('chevron')}</button>`).join('')}</div>`:empty('Ningún cliente coincide','Probá con otro término.','','users')}</div><div class="card" style="margin-top:18px"><div class="card-heading"><h3>Vehículos <span class="tag">${vs.length}</span></h3></div>${vs.length?`<div class="detail-list">${vs.map(v=>`<button class="detail-row table-link" data-nav="vehiculo" data-id="${esc(v.id)}"><div class="detail-icon">${icon('car')}</div><div class="detail-content"><strong>${esc(fullVehicle(v))}</strong><small>${esc(v.plate)} · ${esc(findClient(v.clientId)?.name||'')}</small></div>${icon('chevron')}</button>`).join('')}</div>`:empty('Ningún vehículo coincide','Buscá por patente, marca o modelo.','','car')}</div><div class="card" style="margin-top:18px"><div class="card-heading"><h3>Trabajos <span class="tag">${os.length}</span></h3></div>${os.length?`<div class="table-scroll">${renderOrderTable(os)}</div>`:empty('Ningún trabajo coincide','Buscá por nombre del trabajo, categoría o patente.')}</div>`;
+}
+function renderSettings(){
+  return `${sectionHead('Configuración y respaldos','Personalizá AutoTrace y administrá tu información.')}
+  ${memoryOnly?'<p class="notice warning">Este navegador no permite almacenar datos. No cargues información real en esta sesión.</p>':''}
+  <div class="settings-grid"><div><div class="card settings-block detail-section"><h3>Preferencias del taller</h3><p>Estos ajustes afectan la visualización, no modifican tus importes.</p><form id="settings-form" class="form-grid"><div class="field span-2"><label for="garageName">Nombre del taller</label><input id="garageName" name="garageName" maxlength="100" value="${esc(db.settings.garageName)}" required /></div><div class="field"><label for="currency">Moneda</label><select id="currency" name="currency">${['ARS','USD','EUR'].map(c=>`<option value="${c}" ${db.settings.currency===c?'selected':''}>${c}</option>`).join('')}</select></div><div class="field" style="justify-content:flex-end"> <button class="btn btn-primary" type="submit">Guardar preferencias</button></div></form></div><div class="card settings-block"><h3>Datos locales</h3><p>Descargá una copia completa de clientes, vehículos, trabajos y preferencias. Importar reemplaza todos los registros actuales.</p><div class="settings-actions">${button(`${icon('download')} Exportar JSON`,'export-json','btn-primary')}${button(`${icon('upload')} Importar JSON`,'import-json','btn-secondary')}${button(`${icon('download')} Exportar CSV`,'export-csv','btn-secondary')}</div><div class="notice" style="margin-top:23px">${icon('shield',17)} Los registros se guardan con IndexedDB en este navegador. No se envían a GitHub ni a servidores de AutoTrace. Si borrás datos del sitio o cambiás de dispositivo, necesitarás el respaldo.</div></div></div><div><div class="card settings-block detail-section"><h3>Estado de la instalación</h3><p>Esta versión es una PWA instalable y funciona sin conexión después de abrirla por primera vez.</p><div class="info-grid">${descView('Clientes',String(db.clients.length))}${descView('Vehículos',String(db.vehicles.length))}${descView('Trabajos',String(db.orders.length))}${descView('Almacenamiento',memoryOnly?'No disponible':'Local (IndexedDB)')}</div></div><div class="card settings-block"><h3>Zona de mantenimiento</h3><p>Las acciones siguientes eliminan datos. Antes de continuar, exportá un respaldo JSON.</p><div class="settings-actions">${db.settings.demo?button('Eliminar datos de muestra','reset-demo','btn-secondary'):''}${button(`${icon('trash')} Borrar todos los datos`,'clear-all','btn-danger-ghost')}</div></div><div class="notice warning" style="margin-top:19px">Esta versión está pensada para pruebas y uso individual. No incluye cuentas, cifrado, facturación fiscal, copias automáticas ni sincronización entre dispositivos.</div></div></div>`;
+}
+const input = (label,name,value='',opts={})=>`<div class="field ${opts.full?'span-2':''}"><label for="f-${name}">${esc(label)}${opts.required?' *':''}</label>${opts.textarea?`<textarea id="f-${name}" name="${name}" maxlength="${opts.maxlength||3000}" placeholder="${esc(opts.placeholder||'')}">${esc(value)}</textarea>`:opts.select?`<select id="f-${name}" name="${name}" ${opts.required?'required':''}>${opts.select.map(x=>`<option value="${esc(x.value)}" ${String(x.value)===String(value)?'selected':''}>${esc(x.label)}</option>`).join('')}</select>`:`<input id="f-${name}" type="${opts.type||'text'}" name="${name}" value="${esc(value)}" ${opts.required?'required':''} ${opts.min!==undefined?`min="${opts.min}"`:''} ${opts.max!==undefined?`max="${opts.max}"`:''} ${opts.step!==undefined?`step="${opts.step}"`:''} maxlength="${opts.maxlength||120}" placeholder="${esc(opts.placeholder||'')}" />`}${opts.hint?`<small>${esc(opts.hint)}</small>`:''}</div>`;
+function showModal(title,subtitle,kind,fields,id=''){
+  const dialog=document.querySelector('#form-dialog');
+  document.querySelector('#modal-content').innerHTML=`<form id="entity-form" data-kind="${kind}" data-id="${esc(id)}"><div class="modal-head"><div><h2 id="modal-title">${esc(title)}</h2><p>${esc(subtitle)}</p></div><button class="modal-close" type="button" data-action="close-modal" aria-label="Cerrar formulario">${icon('x')}</button></div><div class="modal-body"><div class="form-grid">${fields}</div></div><div class="modal-actions"><button type="button" class="btn btn-secondary" data-action="close-modal">Cancelar</button><button type="submit" class="btn btn-primary">${icon('check')} Guardar</button></div></form>`;
+  dialog.showModal();
+  setTimeout(()=>dialog.querySelector('input:not([type=hidden]), select')?.focus(),0);
+}
+function clientForm(id=''){
+  const c=id?findClient(id):null;
+  showModal(c?'Editar cliente':'Nuevo cliente','Guardá sus datos de contacto para futuras visitas.','client',[
+    input('Nombre y apellido *','name',c?.name,{required:true,full:true,maxlength:120,placeholder:'Ej. Juan Pérez'}),
+    input('Teléfono','phone',c?.phone,{type:'tel',placeholder:'Ej. 223 555 0123'}),
+    input('Correo electrónico','email',c?.email,{type:'email',placeholder:'nombre@correo.com'}),
+    input('Notas del cliente','notes',c?.notes,{textarea:true,full:true,placeholder:'Preferencias, observaciones…'})
+  ].join(''),id);
+}
+function vehicleForm(id='',presetClient=''){
+  const v=id?findVehicle(id):null;
+  if(!db.clients.length){toast('Primero agregá un cliente para asociar el vehículo.','error');navigate('clientes');return;}
+  const customerOptions=[{value:'',label:'Seleccionar un cliente…'},...db.clients.map(c=>({value:c.id,label:c.name}))];
+  showModal(v?'Editar vehículo':'Nuevo vehículo','Vinculá un automóvil con uno de tus clientes.','vehicle',[
+    input('Cliente','clientId',v?.clientId||presetClient,{required:true,select:customerOptions,full:true}),
+    input('Patente','plate',v?.plate,{required:true,placeholder:'Ej. AF 123 BC',maxlength:12}),
+    input('Marca','make',v?.make,{required:true,placeholder:'Ej. Volkswagen'}),
+    input('Modelo','model',v?.model,{required:true,placeholder:'Ej. Gol Trend'}),
+    input('Año','year',v?.year||'',{type:'number',min:1900,max:new Date().getFullYear()+2}),
+    input('Kilometraje actual','mileage',v?.mileage||0,{type:'number',min:0,step:1}),
+    input('VIN / chasis','vin',v?.vin,{placeholder:'Opcional',maxlength:40}),
+    input('Color','color',v?.color,{placeholder:'Opcional'}),
+    input('Próximo servicio (fecha)','nextServiceDate',v?.nextServiceDate,{type:'date',full:true}),
+    input('Observaciones','notes',v?.notes,{textarea:true,full:true,placeholder:'Datos útiles sobre el vehículo…'})
+  ].join(''),id);
+}
+function orderForm(id='',presetVehicle=''){
+  const o=id?findOrder(id):null;
+  if(!db.vehicles.length){toast('Primero agregá un vehículo para registrar un trabajo.','error');navigate('vehiculos');return;}
+  const vehicleOptions=[{value:'',label:'Seleccionar vehículo…'},...db.vehicles.map(v=>({value:v.id,label:`${v.plate} · ${fullVehicle(v)} — ${findClient(v.clientId)?.name||''}`}))];
+  const chosen=findVehicle(o?.vehicleId||presetVehicle);
+  showModal(o?'Editar trabajo':'Registrar trabajo','La ficha se incorpora al historial permanente del vehículo.','order',[
+    input('Vehículo','vehicleId',o?.vehicleId||presetVehicle,{select:vehicleOptions,required:true,full:true}),
+    input('Nombre del trabajo','title',o?.title,{required:true,full:true,placeholder:'Ej. Service de 80.000 km',maxlength:150}),
+    input('Tipo de servicio','category',o?.category||CATEGORIES[0],{select:CATEGORIES.map(c=>({value:c,label:c})),required:true}),
+    input('Estado','status',o?.status||'received',{select:Object.entries(STATUSES).map(([value,label])=>({value,label})),required:true}),
+    input('Fecha de ingreso','openedAt',o?.openedAt||isoDate(new Date()),{type:'date',required:true}),
+    input('Kilometraje','mileage',o?.mileage??chosen?.mileage??0,{type:'number',min:0,step:1}),
+    input('Diagnóstico y tareas realizadas','description',o?.description,{textarea:true,full:true,placeholder:'Síntomas, diagnóstico, trabajos, repuestos…'}),
+    `<div class="form-group-label span-2">Balance simple</div>`,
+    input('Costo de repuestos','partsCost',o?.partsCost??0,{type:'number',min:0,step:'.01'}),
+    input('Costo interno de mano de obra','laborCost',o?.laborCost??0,{type:'number',min:0,step:'.01'}),
+    input('Importe acordado con cliente','charged',o?.charged??0,{type:'number',min:0,step:'.01'}),
+    input('Total ya pagado','paid',o?.paid??0,{type:'number',min:0,step:'.01',hint:'Importe acumulado recibido hasta ahora.'}),
+    input('Notas adicionales','notes',o?.notes,{textarea:true,full:true,placeholder:'Pendientes, recomendaciones…'})
+  ].join(''),id);
+}
+function paymentForm(id){
+  const o=findOrder(id);if(!o)return;
+  const pending=pendingAmount(o);if(!pending){toast('Este trabajo no tiene saldo pendiente.');return;}
+  showModal('Registrar cobro',`Saldo pendiente: ${money(pending)} · ${o.title}`,'payment',[
+    input('Importe recibido','payment',pending,{required:true,type:'number',min:'.01',max:pending,step:'.01',full:true,hint:'Se sumará a los pagos anteriores del trabajo.'})
+  ].join(''),id);
+}
+async function saveForm(form){
+  if(!form.reportValidity())return;
+  const fd=new FormData(form);const get=k=>String(fd.get(k)||'').trim();
+  const kind=form.dataset.kind,id=form.dataset.id,existing=!!id;
+  const baseId=id||uid();
+  let next,routeTo,message;
+  if(kind==='client'){
+    next={id:baseId,name:get('name'),phone:get('phone'),email:get('email'),notes:get('notes'),createdAt:findClient(id)?.createdAt||isoDate(new Date())};
+    if(!next.name){toast('Ingresá el nombre del cliente.','error');return;}
+    routeTo=['cliente',baseId];message=existing?'Cliente actualizado.':'Cliente registrado.';
+  }else if(kind==='vehicle'){
+    const plate=normPlate(get('plate'));
+    if(!get('clientId')||!findClient(get('clientId'))){toast('Seleccioná un cliente.','error');return;}
+    if(plate.length<5){toast('Ingresá una patente válida (al menos 5 caracteres).','error');return;}
+    if(db.vehicles.some(v=>v.id!==id&&normPlate(v.plate)===plate)){toast('Ya existe un vehículo con esa patente.','error');return;}
+    next={id:baseId,clientId:get('clientId'),plate,make:get('make'),model:get('model'),year:get('year')?Number(get('year')):'',mileage:amount(get('mileage')),vin:get('vin'),color:get('color'),nextServiceDate:get('nextServiceDate'),notes:get('notes'),createdAt:findVehicle(id)?.createdAt||isoDate(new Date())};
+    routeTo=['vehiculo',baseId];message=existing?'Vehículo actualizado.':'Vehículo agregado.';
+  }else if(kind==='order'){
+    if(!get('vehicleId')||!findVehicle(get('vehicleId'))){toast('Seleccioná un vehículo.','error');return;}
+    const price=amount(get('charged')),paid=amount(get('paid'));
+    if(paid>price){toast('El total pagado no puede superar el importe acordado.','error');return;}
+    if(!get('openedAt')){toast('Ingresá la fecha del trabajo.','error');return;}
+    const previous=findOrder(id);
+    const status=get('status');
+    const wasClosed=previous&&['done','delivered'].includes(previous.status);
+    next={id:baseId,vehicleId:get('vehicleId'),title:get('title'),category:get('category'),status,openedAt:get('openedAt'),completedAt:['done','delivered'].includes(status)?(wasClosed?previous.completedAt||isoDate(new Date()):isoDate(new Date())):'',mileage:amount(get('mileage')),description:get('description'),partsCost:amount(get('partsCost')),laborCost:amount(get('laborCost')),charged:price,paid,notes:get('notes'),createdAt:previous?.createdAt||isoDate(new Date())};
+    routeTo=['trabajo',baseId];message=existing?'Trabajo actualizado.':'Trabajo registrado.';
+  }else if(kind==='payment'){
+    const o=findOrder(id);const payment=Number(get('payment'));
+    if(!o||!Number.isFinite(payment)||payment<=0||payment>pendingAmount(o)+.00001){toast('Ingresá un importe válido, que no supere el saldo.','error');return;}
+    next={...o,paid:amount(Number(o.paid)+payment)};routeTo=['trabajo',id];message='Cobro registrado.';
+  }else return;
+  const saved=await updateData(data=>{
+    const key=kind==='client'?'clients':kind==='vehicle'?'vehicles':'orders';
+    const index=data[key].findIndex(item=>item.id===baseId);
+    if(index>=0)data[key][index]=next;else data[key].push(next);
+    if(kind==='order'){
+      const vehicle=data.vehicles.find(v=>v.id===next.vehicleId);
+      if(vehicle&&next.mileage>vehicle.mileage)vehicle.mileage=next.mileage;
+    }
+  },message);
+  if(saved){document.querySelector('#form-dialog').close();navigate(...routeTo);}
+}
+function confirmAction(title,message,acceptText='Eliminar'){
+  return new Promise(resolve=>{
+    const dialog=document.querySelector('#confirm-dialog');
+    document.querySelector('#confirm-title').textContent=title;
+    document.querySelector('#confirm-message').textContent=message;
+    document.querySelector('#confirm-accept').textContent=acceptText;
+    const onClose=()=>resolve(dialog.returnValue==='accept');
+    dialog.addEventListener('close',onClose,{once:true});dialog.showModal();
+  });
+}
+async function deleteRecord(kind,id){
+  const key=kind==='client'?'clients':kind==='vehicle'?'vehicles':'orders';
+  const item=db[key].find(x=>x.id===id);if(!item)return;
+  if(kind==='client'&&db.vehicles.some(v=>v.clientId===id)){toast('No se puede eliminar un cliente que tenga vehículos.','error');return;}
+  if(kind==='vehicle'&&db.orders.some(o=>o.vehicleId===id)){toast('No se puede eliminar un vehículo con historial de trabajos.','error');return;}
+  if(!await confirmAction('Eliminar registro','Esta acción es irreversible si no tenés un respaldo.'))return;
+  const saved=await updateData(d=>{d[key]=d[key].filter(x=>x.id!==id);},'Registro eliminado.');
+  if(saved)navigate(kind==='client'?'clientes':kind==='vehicle'?'vehiculos':'trabajos');
+}
+function saveAsFile(content,filename,mime){
+  const blob=new Blob([content],{type:mime});const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');a.href=url;a.download=filename;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),5000);
+}
+function exportJSON(){const backup={format:'autotrace-backup',version:1,exportedAt:new Date().toISOString(),data:db};saveAsFile(JSON.stringify(backup,null,2),`autotrace-respaldo-${isoDate(new Date())}.json`,'application/json;charset=utf-8');toast('Respaldo JSON descargado.');}
+function exportCSV(){
+  const headers=['Fecha','Estado','Categoría','Trabajo','Cliente','Teléfono','Patente','Vehículo','Kilometraje','Costo repuestos','Costo mano de obra','Importe','Pagado','Pendiente','Margen'];
+  const rows=db.orders.map(o=>{const v=findVehicle(o.vehicleId),c=vehicleClient(v);return [o.openedAt,STATUSES[o.status],o.category,o.title,c?.name||'',c?.phone||'',v?.plate||'',fullVehicle(v),o.mileage,o.partsCost,o.laborCost,o.charged,o.paid,pendingAmount(o),margin(o)];});
+  saveAsFile('\ufeff'+[headers,...rows].map(r=>r.map(csvCell).join(';')).join('\r\n'),`autotrace-trabajos-${isoDate(new Date())}.csv`,'text/csv;charset=utf-8');toast('CSV de trabajos descargado.');
+}
+async function importJSON(file){
+  if(!file)return;
+  try{
+    if(file.size>5*1024*1024)throw Error('El archivo supera los 5 MB permitidos.');
+    const payload=JSON.parse(await file.text());
+    if(payload?.format && payload.format!=='autotrace-backup')throw Error('El respaldo no es de AutoTrace.');
+    if(payload?.version && payload.version!==1)throw Error('La versión del respaldo no está soportada.');
+    const next=validateData(payload?.data??payload);
+    if(!await confirmAction('Reemplazar los datos actuales',`Se importarán ${next.clients.length} clientes, ${next.vehicles.length} vehículos y ${next.orders.length} trabajos. Se perderán los registros actuales si no los respaldaste.`, 'Importar y reemplazar'))return;
+    await saveData(next);navigate('inicio');toast('Respaldo restaurado correctamente.');
+  }catch(e){console.error(e);toast(e?.message||'No se pudo importar el archivo.','error');}
+  finally{document.querySelector('#import-file').value='';}
+}
+function printOrder(id){
+  const o=findOrder(id);if(!o)return;const v=findVehicle(o.vehicleId),c=vehicleClient(v);
+  const windowRef=window.open('','_blank');if(!windowRef){toast('Permití las ventanas emergentes para imprimir.','error');return;}windowRef.opener=null;
+  windowRef.document.write(`<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Trabajo - ${esc(o.title)}</title><style>body{font-family:Arial,sans-serif;color:#263940;max-width:740px;margin:50px auto;line-height:1.6;font-size:13px;padding:0 24px}h1{font-size:26px}h2{font-size:16px;border-bottom:1px solid #ddd;padding-bottom:8px;margin-top:27px}.row{display:flex;justify-content:space-between;gap:15px}.row p{flex:1}small{color:#788c90}strong{display:block}.note{white-space:pre-wrap}.total{background:#f1f6f3;padding:14px}@media print{body{margin:15px auto}}</style></head><body><small>AUTOTRACE · ${esc(db.settings.garageName)}</small><h1>${esc(o.title)}</h1><div class="row"><p><small>Fecha</small><strong>${formatDate(o.openedAt)}</strong></p><p><small>Estado</small><strong>${esc(STATUSES[o.status])}</strong></p></div><h2>Vehículo y propietario</h2><div class="row"><p><small>Vehículo</small><strong>${esc(fullVehicle(v))} (${esc(v?.plate||'')})</strong></p><p><small>Cliente</small><strong>${esc(c?.name||'')}</strong></p></div><p>Contacto: ${esc(c?.phone||'—')} · Kilometraje: ${num(o.mileage)} km</p><h2>Trabajo realizado</h2><p class="note">${esc(o.description||'Sin descripción')}</p>${o.notes?`<h2>Observaciones</h2><p class="note">${esc(o.notes)}</p>`:''}<h2>Importes</h2><div class="row"><p>Repuestos: ${money(o.partsCost)}</p><p>Mano de obra: ${money(o.laborCost)}</p></div><div class="total"><div class="row"><p>Importe: <strong>${money(o.charged)}</strong></p><p>Pagado: <strong>${money(o.paid)}</strong></p><p>Saldo: <strong>${money(pendingAmount(o))}</strong></p></div></div><p><small>Resumen informativo. No constituye factura ni comprobante fiscal.</small></p><script>window.addEventListener('load',()=>{window.print()})<\/script></body></html>`);
+  windowRef.document.close();
+}
+document.addEventListener('click',async event=>{
+  const target=event.target.closest('[data-action],[data-nav],[data-filter]');if(!target)return;
+  if(target.dataset.nav){event.preventDefault();navigate(target.dataset.nav,target.dataset.id||'');return;}
+  if(target.dataset.filter){activeFilter=target.dataset.filter;refreshPage();return;}
+  const action=target.dataset.action,id=target.dataset.id||'';
+  switch(action){
+    case 'go-home':navigate('inicio');break;
+    case 'go-settings':navigate('ajustes');break;
+    case 'new-client':clientForm();break;
+    case 'edit-client':clientForm(id);break;
+    case 'view-client':navigate('cliente',id);break;
+    case 'new-vehicle':vehicleForm('',target.dataset.client||'');break;
+    case 'edit-vehicle':vehicleForm(id);break;
+    case 'view-vehicle':navigate('vehiculo',id);break;
+    case 'new-order':orderForm('',target.dataset.vehicle||'');break;
+    case 'edit-order':orderForm(id);break;
+    case 'add-payment':paymentForm(id);break;
+    case 'print-order':printOrder(id);break;
+    case 'delete-client':await deleteRecord('client',id);break;
+    case 'delete-vehicle':await deleteRecord('vehicle',id);break;
+    case 'delete-order':await deleteRecord('order',id);break;
+    case 'close-modal':document.querySelector('#form-dialog').close();break;
+    case 'clear-search':activeQuery='';render();break;
+    case 'export-json':exportJSON();break;
+    case 'export-csv':exportCSV();break;
+    case 'import-json':document.querySelector('#import-file').click();break;
+    case 'reset-demo':{
+      if(!await confirmAction('Comenzar sin datos de muestra','Esto eliminará TODOS los registros, incluidos los que hayas agregado durante la demostración. Exportá un respaldo primero si querés conservarlos.','Borrar y comenzar'))break;
+      const saved=await updateData(d=>{Object.assign(d,canonical());},'Ahora tenés un espacio vacío para tu taller.');if(saved)navigate('inicio');break;
+    }
+    case 'clear-all':{
+      if(!await confirmAction('Eliminar absolutamente todo','Se borrarán clientes, vehículos, servicios, importes y configuración de este navegador. No se puede deshacer sin un respaldo.','Borrar todos los datos'))break;
+      const saved=await updateData(d=>{Object.assign(d,canonical());},'Todos los datos fueron eliminados.');if(saved)navigate('inicio');break;
+    }
+  }
+});
+document.addEventListener('submit',async event=>{
+  if(event.target.id==='entity-form'){event.preventDefault();await saveForm(event.target);}
+  if(event.target.id==='settings-form'){
+    event.preventDefault();const fd=new FormData(event.target);const name=String(fd.get('garageName')||'').trim();const currency=String(fd.get('currency')||'');
+    if(!name||!['ARS','USD','EUR'].includes(currency)){toast('Verificá las preferencias.','error');return;}
+    await updateData(d=>{d.settings.garageName=name;d.settings.currency=currency;},'Preferencias guardadas.');
+  }
+});
+document.addEventListener('change',async event=>{
+  if(event.target.id==='import-file')await importJSON(event.target.files?.[0]);
+  if(event.target.dataset.statusOrder){
+    const id=event.target.dataset.statusOrder,status=event.target.value;
+    if(!STATUSES[status])return;
+    await updateData(d=>{const o=d.orders.find(x=>x.id===id);if(!o)return;const wasClosed=['done','delivered'].includes(o.status);o.status=status;o.completedAt=['done','delivered'].includes(status)?(wasClosed?o.completedAt||isoDate(new Date()):isoDate(new Date())):'';},'Estado actualizado.');
+  }
+});
+document.addEventListener('input',event=>{
+  if(event.target.id==='global-search'){activeQuery=event.target.value;refreshPage();}
+});
+window.addEventListener('hashchange',()=>{activeQuery='';activeFilter='all';render();});
+if('serviceWorker' in navigator&&(location.protocol==='https:'||location.hostname==='localhost')){
+  window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(err=>console.warn('PWA sin service worker:',err)));
+}
+await loadData();render();
