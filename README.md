@@ -12,7 +12,8 @@ Al publicarse por GitHub Pages: <https://barbasmarcosi.github.io/AutoTrace/>
 - Relaciones cliente → vehículos → historial de trabajos.
 - Estados: recibido, en proceso, esperando repuesto, finalizado y entregado.
 - Costos de repuestos y mano de obra, importe acordado, total pagado, saldo y margen estimado.
-- Registro de pagos parciales, impresión de ficha de trabajo, búsqueda global, filtros y avisos de próximos servicios por fecha.
+- Registro de pagos parciales, impresión de ficha de trabajo, búsqueda global y buscadores por sección (patente, cliente, teléfono, marca, servicio) tolerantes a tildes y separadores de patente.
+- Filtros específicos de clientes, vehículos y trabajos, con resultados paginados (12 fichas o 20 trabajos por página) y avisos de próximos servicios por fecha.
 - Panel de indicadores y finanzas, exportación CSV de trabajos, respaldo y restauración JSON.
 - PWA instalable y usable offline (después de primera carga), sin dependencias externas de ejecución.
 - Ejemplos ficticios iniciales, señalizados y eliminables desde la interfaz.

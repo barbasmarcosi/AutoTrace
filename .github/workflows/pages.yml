@@ -27,6 +27,7 @@ jobs:
         run: |
           node --check site/app.js
           node --check site/model.mjs
+          node --check site/search.mjs
           node --test tests/*.test.mjs
           test -f site/manifest.webmanifest
           python3 -m json.tool site/manifest.webmanifest >/dev/null

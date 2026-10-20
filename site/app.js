@@ -1,4 +1,5 @@
 import {validateData, csvCell, pendingAmount, margin} from "./model.mjs";
+import {matchesClient, matchesVehicle, matchesOrder, paginate} from "./search.mjs";
 /** AutoTrace v1 — sin backend, datos almacenados exclusivamente en este navegador. */
 const DB_NAME = 'autotrace-v1';
 const STORE = 'application';
@@ -72,6 +73,10 @@ function seedDemo(){
 let db = canonical();
 let activeQuery = '';
 let activeFilter = 'all';
+const listQueries = { clientes: '', vehiculos: '', trabajos: '' };
+const listPages = { clientes: 1, vehiculos: 1, trabajos: 1 };
+let clientFilter = 'all';
+let vehicleFilter = 'all';
 let dbConnection = null;
 let memoryOnly = false;
 let toastTimeout;
@@ -153,21 +158,57 @@ function renderChart(){
   return `<div class="bar-chart" role="img" aria-label="Gráfico comparativo de facturación y costos de los últimos seis meses">${months.map(m=>`<div class="bar-group"><div class="bar-wrap"><span class="bar" style="--h:${Math.max(2,m.revenue/max*100)}%" title="Facturado: ${esc(money(m.revenue))}"></span><span class="bar cost" style="--h:${Math.max(2,m.cost/max*100)}%" title="Costos: ${esc(money(m.cost))}"></span></div><label>${esc(m.label)}</label></div>`).join('')}</div><div class="chart-legend"><span><i class="legend-dot"></i> Facturado</span><span><i class="legend-dot dark"></i> Costos</span></div>`;
 }
 function renderOrderTable(orders,compact=false){return `<table class="data-table"><thead><tr><th>Trabajo / vehículo</th><th>Fecha</th><th>Estado</th>${compact?'':`<th>Cobrado</th><th>Pendiente</th>`}<th style="width:40px"></th></tr></thead><tbody>${orders.map(o=>{const v=findVehicle(o.vehicleId);return `<tr><td><button class="table-link" data-nav="trabajo" data-id="${esc(o.id)}"><span class="main-cell">${esc(o.title)}</span><span class="sub-cell">${esc(fullVehicle(v))} · ${esc(v?.plate||'')}</span></button></td><td>${formatDate(o.openedAt)}</td><td>${pill(o.status)}</td>${compact?'':`<td><strong>${money(o.paid)}</strong></td><td><span class="${pendingAmount(o)>0?'text-negative':''}">${money(pendingAmount(o))}</span></td>`}<td><button class="btn btn-ghost icon-btn" aria-label="Abrir trabajo" data-nav="trabajo" data-id="${esc(o.id)}">${icon('chevron')}</button></td></tr>`;}).join('')}</tbody></table>`;}
+// El buscador de cada listado permanece montado al actualizar resultados: no pierde foco ni cursor.
+function listToolbar(section, placeholder, filters = []) {
+  const value = listQueries[section];
+  const current = section === 'clientes' ? clientFilter : section === 'vehiculos' ? vehicleFilter : activeFilter;
+  return `<section class="list-tools" aria-label="Buscar y filtrar ${section}"><div class="list-tools-row"><div class="list-search-field">${icon('search',18)}<label class="sr-only" for="list-search">Buscar en ${section}</label><input id="list-search" data-list-search="${section}" type="search" placeholder="${esc(placeholder)}" value="${esc(value)}" autocomplete="off" enterkeyhint="search"/><button type="button" class="list-clear" data-action="clear-list-search" aria-label="Limpiar búsqueda" ${value?'':'hidden'}>${icon('x',17)}</button></div></div>${filters.length?`<div class="filters list-filters" role="group" aria-label="Filtrar ${section}">${filters.map(([key,label])=>`<button class="filter-tab ${current===key?'active':''}" type="button" data-list-filter="${key}" aria-pressed="${current===key}">${label}</button>`).join('')}</div>`:''}</section>`;
+}
+function listFooter(result,section){
+  const label = result.total === 1 ? 'resultado' : 'resultados';
+  return `<div class="list-count" role="status">${result.total ? `Mostrando ${result.first}–${result.last} de ${result.total} ${label}` : `0 ${label}`}</div>${result.pages>1?`<nav class="list-pagination" aria-label="Páginas de ${section}"><button class="btn btn-secondary btn-sm" type="button" data-list-page="${result.page-1}" ${result.page<=1?'disabled':''}>${icon('back',15)} Anterior</button><span>Página ${result.page} de ${result.pages}</span><button class="btn btn-secondary btn-sm" type="button" data-list-page="${result.page+1}" ${result.page>=result.pages?'disabled':''}>Siguiente ${icon('arrow',15)}</button></nav>`:''}`;
+}
+function listNoMatch(section){
+  return empty('No encontramos coincidencias', 'Probá con otra patente, nombre o palabra, o borrá los filtros.',button('Limpiar búsqueda y filtros','clear-list-filters','btn-secondary'),'search');
+}
+function renderListResults(section) {
+  if(section==='clientes'){
+    let items=[...db.clients].sort((a,b)=>a.name.localeCompare(b.name,'es'));
+    items=items.filter(c=>matchesClient(c,listQueries.clientes) && (clientFilter==='all'||(clientFilter==='with' ? db.vehicles.some(v=>v.clientId===c.id) : !db.vehicles.some(v=>v.clientId===c.id))));
+    const page=paginate(items,listPages.clientes,12);listPages.clientes=page.page;
+    return `${listFooter(page,section)}${page.total?`<div class="list-grid">${page.items.map(c=>{const vehicles=db.vehicles.filter(v=>v.clientId===c.id);return `<article class="card person-card"><div class="card-top"><span class="avatar">${esc(initials(c.name))}</span><div class="person-info"><h3>${esc(c.name)}</h3><p>${esc(c.email||c.phone||'Sin datos de contacto')}</p></div><button class="btn btn-ghost icon-btn" data-nav="cliente" data-id="${esc(c.id)}" aria-label="Ver cliente">${icon('arrow',17)}</button></div><div class="card-meta"><span>${icon('phone')} ${esc(c.phone||'Sin teléfono')}</span><span>${icon('car')} ${vehicles.length} vehículo${vehicles.length===1?'':'s'}</span></div><div class="card-bottom"><small>Desde ${formatDate(c.createdAt)}</small>${button('Ver ficha','view-client','btn-secondary btn-sm',`data-id="${esc(c.id)}"`)}</div></article>`;}).join('')}</div>`:db.clients.length?listNoMatch(section):empty('Tu lista de clientes está vacía','Agregá un cliente y luego sus vehículos para empezar a registrar servicios.',button('Agregar cliente','new-client','btn-primary'),'users')}`;
+  }
+  if(section==='vehiculos'){
+    let items=[...db.vehicles].sort((a,b)=>fullVehicle(a).localeCompare(fullVehicle(b),'es'));
+    items=items.filter(v=>matchesVehicle(v,vehicleClient(v),listQueries.vehiculos) && (vehicleFilter==='all'||(vehicleFilter==='overdue'&&v.nextServiceDate&&daysUntil(v.nextServiceDate)<0)||(vehicleFilter==='soon'&&v.nextServiceDate&&daysUntil(v.nextServiceDate)>=0&&daysUntil(v.nextServiceDate)<=30)||(vehicleFilter==='undated'&&!v.nextServiceDate)));
+    const page=paginate(items,listPages.vehiculos,12);listPages.vehiculos=page.page;
+    return `${listFooter(page,section)}${page.total?`<div class="list-grid">${page.items.map(v=>{const c=vehicleClient(v);const n=db.orders.filter(o=>o.vehicleId===v.id).length;const due=v.nextServiceDate?daysUntil(v.nextServiceDate):null;return `<article class="card vehicle-card"><div class="card-top"><span class="avatar blue">${icon('car',23)}</span><div class="person-info"><h3>${esc(fullVehicle(v))} <span class="muted">${esc(v.year||'')}</span></h3><p>${esc(c?.name||'Cliente no disponible')}</p></div><span class="plate">${esc(v.plate)}</span></div><div class="card-meta"><span>${icon('gauge')} ${num(v.mileage)} km</span><span>${icon('clipboard')} ${n} trabajo${n===1?'':'s'}</span></div><div class="card-bottom"><small>${due!==null?(due<0?'Servicio vencido':`Próx. servicio: ${formatDate(v.nextServiceDate)}`):'Sin servicio programado'}</small>${button('Ver historial','view-vehicle','btn-secondary btn-sm',`data-id="${esc(v.id)}"`)}</div></article>`;}).join('')}</div>`:db.vehicles.length?listNoMatch(section):empty('Sin vehículos todavía','Primero registrá un cliente y después vinculá su automóvil.',button('Agregar vehículo','new-vehicle','btn-primary'),'car')}`;
+  }
+  let orders=[...db.orders].sort((a,b)=>b.openedAt.localeCompare(a.openedAt));
+  orders=orders.filter(o=>{
+    const v=findVehicle(o.vehicleId);
+    return matchesOrder(o,v,vehicleClient(v),listQueries.trabajos) && (activeFilter==='all'||(activeFilter==='active'&&['received','progress','waiting'].includes(o.status))||(activeFilter==='closed'&&['done','delivered'].includes(o.status))||(activeFilter==='unpaid'&&pendingAmount(o)>0));
+  });
+  const page=paginate(orders,listPages.trabajos,20);listPages.trabajos=page.page;
+  return `${listFooter(page,section)}<div class="card">${page.total?`<div class="table-scroll">${renderOrderTable(page.items)}</div>`:db.orders.length?listNoMatch(section):empty('No hay trabajos para mostrar','Creá tu primer trabajo y vas a verlo acá.',button('Nuevo trabajo','new-order','btn-primary'),'clipboard')}</div>`;
+}
+function refreshListResults(){
+  const section=route().page;
+  if(!Object.hasOwn(listQueries,section))return;
+  const target=document.querySelector('#list-results');if(!target)return;
+  target.innerHTML=renderListResults(section);
+  const clear=document.querySelector('.list-clear');if(clear)clear.hidden=!listQueries[section];
+  const active=section==='clientes'?clientFilter:section==='vehiculos'?vehicleFilter:activeFilter;
+  document.querySelectorAll('[data-list-filter]').forEach(b=>{const selected=b.dataset.listFilter===active;b.classList.toggle('active',selected);b.setAttribute('aria-pressed',String(selected));});
+}
 function renderClients(){
-  const items=[...db.clients].sort((a,b)=>a.name.localeCompare(b.name,'es'));
-  return `${demoBanner()}${sectionHead('Clientes',`${db.clients.length} clientes registrados. Cada cliente puede tener varios vehículos.`,button(`${icon('plus')} Agregar cliente`,'new-client','btn-primary'))}
-  ${items.length?`<div class="list-grid">${items.map(c=>{const vehicles=db.vehicles.filter(v=>v.clientId===c.id);return `<article class="card person-card"><div class="card-top"><span class="avatar">${esc(initials(c.name))}</span><div class="person-info"><h3>${esc(c.name)}</h3><p>${esc(c.email||c.phone||'Sin datos de contacto')}</p></div><button class="btn btn-ghost icon-btn" data-nav="cliente" data-id="${esc(c.id)}" aria-label="Ver cliente">${icon('arrow',17)}</button></div><div class="card-meta"><span>${icon('phone')} ${esc(c.phone||'Sin teléfono')}</span><span>${icon('car')} ${vehicles.length} vehículo${vehicles.length===1?'':'s'}</span></div><div class="card-bottom"><small>Desde ${formatDate(c.createdAt)}</small>${button('Ver ficha','view-client','btn-secondary btn-sm',`data-id="${esc(c.id)}"`)}</div></article>`;}).join('')}</div>`:empty('Tu lista de clientes está vacía','Agregá un cliente y luego sus vehículos para empezar a registrar servicios.',button('Agregar cliente','new-client','btn-primary'),'users')}`;
+  return `${demoBanner()}${sectionHead('Clientes',`${db.clients.length} clientes registrados. Cada cliente puede tener varios vehículos.`,button(`${icon('plus')} Agregar cliente`,'new-client','btn-primary'))}${listToolbar('clientes','Nombre, teléfono o email…',[['all','Todos'],['with','Con vehículos'],['without','Sin vehículos']])}<div id="list-results">${renderListResults('clientes')}</div>`;
 }
 function renderVehicles(){
-  const vehicles=[...db.vehicles].sort((a,b)=>fullVehicle(a).localeCompare(fullVehicle(b),'es'));
-  return `${demoBanner()}${sectionHead('Vehículos',`${db.vehicles.length} vehículos asociados a tus clientes.`,button(`${icon('plus')} Agregar vehículo`,'new-vehicle','btn-primary'))}
-  ${vehicles.length?`<div class="list-grid">${vehicles.map(v=>{const c=vehicleClient(v);const n=db.orders.filter(o=>o.vehicleId===v.id).length;const due=v.nextServiceDate?daysUntil(v.nextServiceDate):null;return `<article class="card vehicle-card"><div class="card-top"><span class="avatar blue">${icon('car',23)}</span><div class="person-info"><h3>${esc(fullVehicle(v))} <span class="muted">${esc(v.year||'')}</span></h3><p>${esc(c?.name||'Cliente no disponible')}</p></div><span class="plate">${esc(v.plate)}</span></div><div class="card-meta"><span>${icon('gauge')} ${num(v.mileage)} km</span><span>${icon('clipboard')} ${n} trabajo${n===1?'':'s'}</span></div><div class="card-bottom"><small>${due!==null?(due<0?'Servicio vencido':`Próx. servicio: ${formatDate(v.nextServiceDate)}`):'Sin servicio programado'}</small>${button('Ver historial','view-vehicle','btn-secondary btn-sm',`data-id="${esc(v.id)}"`)}</div></article>`;}).join('')}</div>`:empty('Sin vehículos todavía','Primero registrá un cliente y después vinculá su automóvil.',button('Agregar vehículo','new-vehicle','btn-primary'),'car')}`;
+  return `${demoBanner()}${sectionHead('Vehículos',`${db.vehicles.length} vehículos asociados a tus clientes.`,button(`${icon('plus')} Agregar vehículo`,'new-vehicle','btn-primary'))}${listToolbar('vehiculos','Patente, marca, modelo o cliente…',[['all','Todos'],['overdue','Vencidos'],['soon','Próximos 30 días'],['undated','Sin fecha']])}<div id="list-results">${renderListResults('vehiculos')}</div>`;
 }
 function renderOrders(){
-  let orders=[...db.orders].sort((a,b)=>b.openedAt.localeCompare(a.openedAt));
-  if(activeFilter!=='all')orders=orders.filter(o=>activeFilter==='active'?['received','progress','waiting'].includes(o.status):activeFilter==='closed'?['done','delivered'].includes(o.status):pendingAmount(o)>0);
-  return `${demoBanner()}${sectionHead('Trabajos y servicios',`${db.orders.length} registros en el historial. Registrá desde un diagnóstico hasta una reparación completa.`,button(`${icon('plus')} Nuevo trabajo`,'new-order','btn-primary'))}
-  <div class="filters">${[['all','Todos'],['active','Activos'],['closed','Terminados'],['unpaid','Con saldo']].map(([key,label])=>`<button class="filter-tab ${activeFilter===key?'active':''}" data-filter="${key}">${label}</button>`).join('')}</div><div class="card">${orders.length?`<div class="table-scroll">${renderOrderTable(orders)}</div>`:empty('No hay trabajos para mostrar',activeFilter==='all'?'Creá tu primer trabajo y vas a verlo acá.':'Probá con otro filtro.',activeFilter==='all'?button('Nuevo trabajo','new-order','btn-primary'):'','clipboard')}</div>`;
+  return `${demoBanner()}${sectionHead('Trabajos y servicios',`${db.orders.length} registros en el historial. Registrá desde un diagnóstico hasta una reparación completa.`,button(`${icon('plus')} Nuevo trabajo`,'new-order','btn-primary'))}${listToolbar('trabajos','Trabajo, patente o cliente…',[['all','Todos'],['active','Activos'],['closed','Terminados'],['unpaid','Con saldo']])}<div id="list-results">${renderListResults('trabajos')}</div>`;
 }
 function renderFinance(){
   const charged=sum(db.orders,o=>o.charged),paid=sum(db.orders,o=>o.paid),cost=sum(db.orders,o=>amount(o.partsCost)+amount(o.laborCost)),pending=sum(db.orders,pendingAmount);
@@ -195,11 +236,9 @@ function renderOrderDetail(id){
 function notFound(item,to){return `${back(to,'Volver')}${empty('No encontramos este '+item,'Es posible que el registro se haya eliminado.')}`;}
 function back(to,label){return `<button class="back-btn" data-nav="${to}">${icon('back',15)} Volver a ${esc(label)}</button>`;}
 function renderSearch(){
-  const q=activeQuery.toLocaleLowerCase('es').trim();
-  const includes=text=>String(text||'').toLocaleLowerCase('es').includes(q);
-  const cs=db.clients.filter(c=>[c.name,c.phone,c.email].some(includes));
-  const vs=db.vehicles.filter(v=>[v.plate,v.make,v.model,v.year,v.vin,findClient(v.clientId)?.name].some(includes));
-  const os=db.orders.filter(o=>[o.title,o.category,o.description,findVehicle(o.vehicleId)?.plate,vehicleClient(findVehicle(o.vehicleId))?.name].some(includes));
+  const cs=db.clients.filter(c=>matchesClient(c,activeQuery));
+  const vs=db.vehicles.filter(v=>matchesVehicle(v,vehicleClient(v),activeQuery));
+  const os=db.orders.filter(o=>{const v=findVehicle(o.vehicleId);return matchesOrder(o,v,vehicleClient(v),activeQuery);});
   return `${sectionHead('Resultados de búsqueda',`Buscando “${activeQuery}” en clientes, vehículos y trabajos.`)}<div class="card"><div class="card-heading"><h3>Clientes <span class="tag">${cs.length}</span></h3></div>${cs.length?`<div class="detail-list">${cs.map(c=>`<button class="detail-row table-link" data-nav="cliente" data-id="${esc(c.id)}"><div class="detail-icon">${icon('users')}</div><div class="detail-content"><strong>${esc(c.name)}</strong><small>${esc(c.phone||c.email||'Sin contacto')}</small></div>${icon('chevron')}</button>`).join('')}</div>`:empty('Ningún cliente coincide','Probá con otro término.','','users')}</div><div class="card" style="margin-top:18px"><div class="card-heading"><h3>Vehículos <span class="tag">${vs.length}</span></h3></div>${vs.length?`<div class="detail-list">${vs.map(v=>`<button class="detail-row table-link" data-nav="vehiculo" data-id="${esc(v.id)}"><div class="detail-icon">${icon('car')}</div><div class="detail-content"><strong>${esc(fullVehicle(v))}</strong><small>${esc(v.plate)} · ${esc(findClient(v.clientId)?.name||'')}</small></div>${icon('chevron')}</button>`).join('')}</div>`:empty('Ningún vehículo coincide','Buscá por patente, marca o modelo.','','car')}</div><div class="card" style="margin-top:18px"><div class="card-heading"><h3>Trabajos <span class="tag">${os.length}</span></h3></div>${os.length?`<div class="table-scroll">${renderOrderTable(os)}</div>`:empty('Ningún trabajo coincide','Buscá por nombre del trabajo, categoría o patente.')}</div>`;
 }
 function renderSettings(){
@@ -360,8 +399,10 @@ function printOrder(id){
   windowRef.document.close();
 }
 document.addEventListener('click',async event=>{
-  const target=event.target.closest('[data-action],[data-nav],[data-filter]');if(!target)return;
+  const target=event.target.closest('[data-action],[data-nav],[data-filter],[data-list-filter],[data-list-page]');if(!target)return;
   if(target.dataset.nav){event.preventDefault();navigate(target.dataset.nav,target.dataset.id||'');return;}
+  if(target.dataset.listFilter){const section=route().page;const key=target.dataset.listFilter;if(section==='clientes'&&['all','with','without'].includes(key))clientFilter=key;else if(section==='vehiculos'&&['all','overdue','soon','undated'].includes(key))vehicleFilter=key;else if(section==='trabajos'&&['all','active','closed','unpaid'].includes(key))activeFilter=key;else return;listPages[section]=1;refreshListResults();return;}
+  if(target.dataset.listPage){const section=route().page;if(!Object.hasOwn(listPages,section))return;const requested=Number(target.dataset.listPage);if(!Number.isSafeInteger(requested)||requested<1)return;listPages[section]=requested;refreshListResults();document.querySelector('.list-tools')?.scrollIntoView({block:'start',behavior:'instant'});return;}
   if(target.dataset.filter){activeFilter=target.dataset.filter;refreshPage();return;}
   const action=target.dataset.action,id=target.dataset.id||'';
   switch(action){
@@ -382,6 +423,8 @@ document.addEventListener('click',async event=>{
     case 'delete-order':await deleteRecord('order',id);break;
     case 'close-modal':document.querySelector('#form-dialog').close();break;
     case 'clear-search':activeQuery='';render();break;
+    case 'clear-list-search':{const section=route().page;if(!Object.hasOwn(listQueries,section))break;listQueries[section]='';listPages[section]=1;const input=document.querySelector('#list-search');if(input){input.value='';input.focus();}refreshListResults();break;}
+    case 'clear-list-filters':{const section=route().page;if(!Object.hasOwn(listQueries,section))break;listQueries[section]='';listPages[section]=1;if(section==='clientes')clientFilter='all';if(section==='vehiculos')vehicleFilter='all';if(section==='trabajos')activeFilter='all';const input=document.querySelector('#list-search');if(input){input.value='';input.focus();}refreshListResults();break;}
     case 'export-json':exportJSON();break;
     case 'export-csv':exportCSV();break;
     case 'import-json':document.querySelector('#import-file').click();break;
@@ -413,6 +456,7 @@ document.addEventListener('change',async event=>{
 });
 document.addEventListener('input',event=>{
   if(event.target.id==='global-search'){activeQuery=event.target.value;refreshPage();}
+  if(event.target.dataset.listSearch){const section=event.target.dataset.listSearch;if(!Object.hasOwn(listQueries,section))return;listQueries[section]=event.target.value;listPages[section]=1;refreshListResults();}
 });
 window.addEventListener('hashchange',()=>{activeQuery='';activeFilter='all';render();});
 if('serviceWorker' in navigator&&(location.protocol==='https:'||location.hostname==='localhost')){
