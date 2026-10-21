@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {matchesFields,matchesClient,matchesVehicle,matchesOrder,paginate} from '../site/search.mjs';
+import {matchesFields,matchesClient,matchesVehicle,matchesOrder,paginate,filterVehicleHistory} from '../site/search.mjs';
 const c={name:'José Gómez',phone:'223 554-2014',email:'jose@ejemplo.com',notes:'Servicio habitual'};
 const v={plate:'AF123BC',make:'Volkswagen',model:'Gol Trend',year:2018,vin:'9BW1234',color:'Azul',notes:''};
 const o={title:'Cambio de aceite',category:'Mantenimiento',description:'Filtro de aire',notes:'',status:'progress'};
@@ -29,4 +29,24 @@ test('paginación controla límites y lista vacía',()=>{
  assert.deepEqual(paginate(arr,2,12).items,[13,14,15,16,17,18,19,20,21,22,23,24]);
  assert.equal(paginate(arr,999,12).page,3);
  assert.deepEqual(paginate([],1,12),{items:[],total:0,page:1,pages:1,first:0,last:0});
+});
+
+
+test('historial: filtra diagnósticos y categorías sin depender de tildes',()=>{
+ const orders=[{id:'a',title:'Diagnóstico eléctrico',category:'Electrónica',description:'Revisión de sensores',notes:'',openedAt:'2026-09-01',mileage:90500,status:'received'},
+ {id:'b',title:'Cambio de aceite',category:'Mantenimiento',description:'',notes:'',openedAt:'2026-10-10',mileage:93000,status:'delivered'},
+ {id:'c',title:'Reparación frenos',category:'Mecánica',description:'',notes:'',openedAt:'2026-10-20',mileage:93250,status:'progress'}];
+ assert.deepEqual(filterVehicleHistory(orders,'electricO').map(x=>x.id),['a']);
+ assert.deepEqual(filterVehicleHistory(orders,'aceite','closed').map(x=>x.id),['b']);
+ assert.deepEqual(filterVehicleHistory(orders,'', 'active').map(x=>x.id),['c','a']);
+ assert.deepEqual(filterVehicleHistory(orders,'', 'all').map(x=>x.id),['c','b','a']);
+ assert.deepEqual(filterVehicleHistory(orders,'2026-09').map(x=>x.id),['a']);
+ assert.deepEqual(orders.map(x=>x.id),['a','b','c'],'no muta orden original');
+});
+test('historial: soporta paginación estable con registros grandes',()=>{
+ const orders=Array.from({length:38},(_,i)=>({id:String(i),title:'Service',category:'Mantenimiento',openedAt:`2026-10-${String(i%28+1).padStart(2,'0')}`,status:i%2?'delivered':'progress'}));
+ const filtered=filterVehicleHistory(orders,'Service','closed');
+ assert.equal(filtered.length,19);
+ assert.equal(paginate(filtered,1,8).items.length,8);
+ assert.equal(paginate(filtered,3,8).items.length,3);
 });

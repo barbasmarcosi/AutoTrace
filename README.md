@@ -14,6 +14,8 @@ Al publicarse por GitHub Pages: <https://barbasmarcosi.github.io/AutoTrace/>
 - Costos de repuestos y mano de obra, importe acordado, total pagado, saldo y margen estimado.
 - Registro de pagos parciales, impresión de ficha de trabajo, búsqueda global y buscadores por sección (patente, cliente, teléfono, marca, servicio) tolerantes a tildes y separadores de patente.
 - Filtros específicos de clientes, vehículos y trabajos, con resultados paginados (12 fichas o 20 trabajos por página) y avisos de próximos servicios por fecha.
+- Alta ágil de trabajos con selector de vehículo buscable por patente, propietario, marca o modelo; la ficha precarga el kilometraje del vehículo, muestra los campos esenciales primero y permite desplegar costos y notas cuando hacen falta.
+- Historial por vehículo con resumen de visitas, búsqueda por diagnóstico/fecha/servicio, filtros por estado y paginación en conjuntos grandes.
 - Panel de trabajo orientado a pendientes (órdenes abiertas, cobros y servicios por vencer) y guía de inicio en tres pasos.
 - Fichas de trabajos y movimientos económicos adaptadas a celulares, sin desplazamiento lateral para leer los datos principales.
 - Finanzas con búsqueda, filtro de saldos y márgenes negativos, paginación y exportación CSV.
@@ -58,6 +60,7 @@ El manifest y las URLs de recursos son relativas al directorio del sitio, por lo
 
 - `site/index.html`: documento HTML y diálogos accesibles.
 - `site/app.js`: vistas, formularios, acciones, persistencia y validaciones.
+- `site/search.mjs`: búsqueda y filtrado de fichas e historial, reutilizado en pruebas.
 - `site/styles.css`: diseño adaptable a móvil y escritorio.
 - `site/sw.js`: caché offline de recursos estáticos, sin interceptación de datos.
 - `site/manifest.webmanifest`: instalación PWA.

@@ -27,3 +27,12 @@ export function paginate(items, requestedPage, pageSize = 12) {
   return {items: items.slice(start, start + pageSize), total, page, pages,
     first: total ? start + 1 : 0, last: Math.min(total, start + pageSize)};
 }
+
+/** Histórico filtrable sin alterar el orden cronológico del vehículo. */
+export function filterVehicleHistory(orders, query = '', status = 'all') {
+  return orders.filter(order => {
+    const isActive = ['received', 'progress', 'waiting'].includes(order.status);
+    const okStatus = status === 'all' || (status === 'active' && isActive) || (status === 'closed' && !isActive);
+    return okStatus && matchesFields(query, [order.title, order.category, order.description, order.notes, order.openedAt, order.mileage]);
+  }).sort((a, b) => b.openedAt.localeCompare(a.openedAt) || b.createdAt?.localeCompare(a.createdAt||'') || 0);
+}

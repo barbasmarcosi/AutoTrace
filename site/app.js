@@ -1,5 +1,5 @@
 import {validateData, csvCell, pendingAmount, margin} from "./model.mjs";
-import {matchesClient, matchesVehicle, matchesOrder, paginate} from "./search.mjs";
+import {matchesClient, matchesVehicle, matchesOrder, paginate, filterVehicleHistory} from "./search.mjs";
 /** AutoTrace v1 — sin backend, datos almacenados exclusivamente en este navegador. */
 const DB_NAME = 'autotrace-v1';
 const STORE = 'application';
@@ -82,6 +82,10 @@ let modalOriginal = '';
 const modalSnapshot = form => JSON.stringify([...new FormData(form).entries()]);
 let clientFilter = 'all';
 let vehicleFilter = 'all';
+let historyVehicle = '';
+let historyQuery = '';
+let historyStatus = 'all';
+let historyPage = 1;
 let dbConnection = null;
 let memoryOnly = false;
 let toastTimeout;
@@ -244,10 +248,32 @@ function renderClientDetail(id){
   const orders=db.orders.filter(o=>vehicles.some(v=>v.id===o.vehicleId)).sort((a,b)=>b.openedAt.localeCompare(a.openedAt));
   return `${back('clientes','Clientes')}${sectionHead(c.name,`${vehicles.length} vehículo${vehicles.length===1?'':'s'} · ${orders.length} trabajo${orders.length===1?'':'s'}`,`${button(`${icon('pencil')} Editar`,'edit-client','btn-secondary',`data-id="${esc(id)}"`)} ${button(`${icon('plus')} Agregar vehículo`,'new-vehicle','btn-primary',`data-client="${esc(id)}"`)}`)}<div class="detail-layout"><div><div class="card card-pad detail-section"><h3>Información de contacto</h3><div class="info-grid">${descView('Teléfono',phoneLink(c.phone))}${descView('Correo',c.email?`<a href="mailto:${encodeURIComponent(c.email)}">${esc(c.email)}</a>`:'—')}${descView('Registrado',formatDate(c.createdAt))}${descView('Vehículos',String(vehicles.length))}</div>${c.notes?`<div class="divider"></div><p class="section-intro">${esc(c.notes)}</p>`:''}</div><div class="card detail-section"><div class="card-heading"><h3>Vehículos asociados</h3></div>${vehicles.length?`<div class="detail-list">${vehicles.map(v=>`<button class="detail-row table-link" data-nav="vehiculo" data-id="${esc(v.id)}"><span class="detail-icon">${icon('car')}</span><div class="detail-content"><strong>${esc(fullVehicle(v))}</strong><small>${esc(v.plate)} · ${num(v.mileage)} km</small></div>${icon('chevron',17)}</button>`).join('')}</div>`:empty('Sin vehículos','Agregá el primer automóvil del cliente.')}</div></div><div><div class="card detail-section"><div class="card-heading"><h3>Últimos trabajos</h3></div>${orders.length?`<div class="detail-list">${orders.slice(0,8).map(o=>`<button class="detail-row table-link" data-nav="trabajo" data-id="${esc(o.id)}"><div class="detail-content"><strong>${esc(o.title)}</strong><small>${formatDate(o.openedAt)} · ${esc(findVehicle(o.vehicleId)?.plate||'')}</small></div>${icon('chevron',16)}</button>`).join('')}</div>`:empty('Sin trabajos','El historial aparecerá al cargar el primer servicio.')}</div><div class="card card-pad"><h3>Administración</h3><p class="muted-sm">Solo podés eliminar un cliente cuando no tenga vehículos asociados.</p>${button(`${icon('trash')} Eliminar cliente`,'delete-client','btn-danger-ghost btn-sm',`data-id="${esc(id)}"`)}</div></div></div>`;
 }
+function renderHistoryToolbar(){
+  return `<div class="history-toolbar" aria-label="Buscar en el historial del vehículo"><div class="history-search">${icon('search',17)}<label class="sr-only" for="history-search">Buscar intervenciones de este vehículo</label><input id="history-search" type="search" autocomplete="off" placeholder="Buscar servicio, diagnóstico, fecha…" value="${esc(historyQuery)}" /></div><div class="history-filters" role="group" aria-label="Filtrar servicios">${[['all','Todos'],['active','En curso'],['closed','Finalizados']].map(([key,label])=>`<button type="button" data-history-filter="${key}" class="filter-tab ${historyStatus===key?'active':''}" aria-pressed="${historyStatus===key}">${label}</button>`).join('')}</div></div>`;
+}
+function renderVehicleHistory(id){
+  const works=db.orders.filter(o=>o.vehicleId===id);
+  const matches=filterVehicleHistory(works,historyQuery,historyStatus);
+  const page=paginate(matches,historyPage,8);historyPage=page.page;
+  return `<div class="history-count" role="status">${page.total} de ${works.length} intervenciones</div>
+  ${page.total?`<div class="timeline history-timeline">${page.items.map(o=>`<article class="timeline-item"><div class="history-item-top"><button class="table-link" data-nav="trabajo" data-id="${esc(o.id)}"><strong class="timeline-title">${esc(o.title)}</strong></button>${pill(o.status)}</div><div class="timeline-meta">${formatDate(o.openedAt)} · ${esc(o.category)} · ${num(o.mileage)} km</div>${o.description?`<p class="timeline-body history-description">${esc(o.description)}</p>`:''}<button class="history-detail-link" data-nav="trabajo" data-id="${esc(o.id)}">Ver ficha completa ${icon('arrow',14)}</button></article>`).join('')}</div>`:empty('Sin resultados en el historial','Probá otro término o cambiá el filtro.',button('Mostrar todos','clear-history','btn-secondary'),'search')}
+  ${page.pages>1?`<div class="history-pagination"><button type="button" class="btn btn-secondary btn-sm" data-history-page="${page.page-1}" ${page.page===1?'disabled':''}>${icon('back',15)} Anterior</button><span>Página ${page.page} de ${page.pages}</span><button type="button" class="btn btn-secondary btn-sm" data-history-page="${page.page+1}" ${page.page===page.pages?'disabled':''}>Siguiente ${icon('arrow',15)}</button></div>`:''}`;
+}
+function refreshVehicleHistory(){
+  const node=document.querySelector('#vehicle-history-results');if(node)node.innerHTML=renderVehicleHistory(route().id);
+  document.querySelectorAll('[data-history-filter]').forEach(b=>{const active=b.dataset.historyFilter===historyStatus;b.classList.toggle('active',active);b.setAttribute('aria-pressed',String(active));});
+}
 function renderVehicleDetail(id){
-  const v=findVehicle(id);if(!v)return notFound('vehículo','vehiculos');const c=vehicleClient(v);
+  const v=findVehicle(id);if(!v)return notFound('vehículo','vehiculos');
+  if(historyVehicle!==id){historyVehicle=id;historyQuery='';historyStatus='all';historyPage=1;}
+  const c=vehicleClient(v);
   const works=db.orders.filter(o=>o.vehicleId===id).sort((a,b)=>b.openedAt.localeCompare(a.openedAt));
-  return `${back('vehiculos','Vehículos')}${sectionHead(fullVehicle(v),`${v.plate} · ${v.year||'Año sin especificar'}`,`${button(`${icon('pencil')} Editar vehículo`,'edit-vehicle','btn-secondary',`data-id="${esc(id)}"`)} ${button(`${icon('plus')} Nuevo trabajo`,'new-order','btn-primary',`data-vehicle="${esc(id)}"`)}`)}<div class="detail-layout"><div><div class="card card-pad detail-section"><h3>Ficha del vehículo</h3><div class="info-grid">${descView('Patente',`<span class="plate">${esc(v.plate)}</span>`)}${descView('Cliente',`<button class="table-link" data-nav="cliente" data-id="${esc(v.clientId)}"><span class="main-cell">${esc(c?.name||'—')}</span></button>`)}${descView('Año',esc(v.year||'—'))}${descView('Kilometraje',`${num(v.mileage)} km`)}${descView('Número de chasis (VIN)',esc(v.vin||'—'))}${descView('Color',esc(v.color||'—'))}${descView('Próximo servicio',formatDate(v.nextServiceDate))}${descView('Intervenciones',String(works.length))}</div>${v.notes?`<div class="divider"></div><p class="section-intro">${esc(v.notes)}</p>`:''}</div><div class="card card-pad detail-section"><div class="card-heading" style="padding:0 0 22px"><h3>Historial de servicios</h3><span class="tag">${works.length} registros</span></div>${works.length?`<div class="timeline">${works.map(o=>`<div class="timeline-item"><button class="table-link" data-nav="trabajo" data-id="${esc(o.id)}"><span class="timeline-title">${esc(o.title)}</span></button><div class="timeline-meta">${formatDate(o.openedAt)} · ${esc(o.category)} · ${num(o.mileage)} km</div>${pill(o.status)}${o.description?`<p class="timeline-body">${esc(o.description)}</p>`:''}</div>`).join('')}</div>`:empty('Sin historial','Agregá un trabajo para iniciar el registro de este vehículo.')}</div></div><div><div class="card card-pad detail-section"><h3>Propietario</h3><div class="card-top"><div class="avatar">${esc(initials(c?.name))}</div><div class="person-info"><h3>${esc(c?.name||'Sin propietario')}</h3><p>${esc(c?.phone||'Sin teléfono')}</p></div></div><div style="margin-top:20px">${button('Abrir ficha del cliente','view-client','btn-secondary',`data-id="${esc(c?.id||'')}"`)}</div></div><div class="card card-pad"><h3>Administración</h3><p class="muted-sm">Solo podés eliminar un vehículo sin trabajos asociados.</p>${button(`${icon('trash')} Eliminar vehículo`,'delete-vehicle','btn-danger-ghost btn-sm',`data-id="${esc(id)}"`)}</div></div></div>`;
+  const latest=works[0],open=works.filter(o=>['received','progress','waiting'].includes(o.status)).length;
+  return `${back('vehiculos','Vehículos')}${sectionHead(fullVehicle(v),`${v.plate} · ${v.year||'Año sin especificar'}`,`${button(`${icon('pencil')} Editar vehículo`,'edit-vehicle','btn-secondary',`data-id="${esc(id)}"`)} ${button(`${icon('plus')} Nuevo trabajo`,'new-order','btn-primary',`data-vehicle="${esc(id)}"`)}`)}
+  <div class="vehicle-quick-summary" aria-label="Resumen del vehículo"><div><small>Última visita</small><strong>${latest?formatDate(latest.openedAt):'Sin intervenciones'}</strong></div><div><small>Trabajos registrados</small><strong>${works.length}</strong></div><div><small>En curso</small><strong>${open}</strong></div><div><small>Kilometraje actual</small><strong>${num(v.mileage)} km</strong></div></div>
+  <div class="detail-layout"><div><div class="card card-pad detail-section"><h3>Ficha del vehículo</h3><div class="info-grid">${descView('Patente',`<span class="plate">${esc(v.plate)}</span>`)}${descView('Cliente',`<button class="table-link" data-nav="cliente" data-id="${esc(v.clientId)}"><span class="main-cell">${esc(c?.name||'—')}</span></button>`)}${descView('Año',esc(v.year||'—'))}${descView('Kilometraje',`${num(v.mileage)} km`)}${descView('Número de chasis (VIN)',esc(v.vin||'—'))}${descView('Color',esc(v.color||'—'))}${descView('Próximo servicio',formatDate(v.nextServiceDate))}${descView('Intervenciones',String(works.length))}</div>${v.notes?`<div class="divider"></div><p class="section-intro">${esc(v.notes)}</p>`:''}</div>
+  <section class="card card-pad detail-section"><div class="card-heading history-heading"><div><h3>Historial de servicios</h3><p>Todo lo que se hizo en este vehículo, organizado por fecha.</p></div><span class="tag">${works.length} registros</span></div>${works.length?`${renderHistoryToolbar()}<div id="vehicle-history-results">${renderVehicleHistory(id)}</div>`:empty('Sin historial','Agregá el primer trabajo para construir el historial del vehículo.',button('Registrar primer trabajo','new-order','btn-primary',`data-vehicle="${esc(id)}"`))}</section></div>
+  <div><div class="card card-pad detail-section"><h3>Propietario</h3><div class="card-top"><div class="avatar">${esc(initials(c?.name))}</div><div class="person-info"><h3>${esc(c?.name||'Sin propietario')}</h3><p>${esc(c?.phone||'Sin teléfono')}</p></div></div><div class="vehicle-owner-actions">${button('Abrir ficha del cliente','view-client','btn-secondary',`data-id="${esc(c?.id||'')}"`)}${c?.phone?phoneLink(c.phone):''}</div></div><div class="card card-pad"><h3>Administración</h3><p class="muted-sm">Solo podés eliminar un vehículo sin trabajos asociados.</p>${button(`${icon('trash')} Eliminar vehículo`,'delete-vehicle','btn-danger-ghost btn-sm',`data-id="${esc(id)}"`)}</div></div></div>`;
 }
 function renderOrderDetail(id){
   const o=findOrder(id);if(!o)return notFound('trabajo','trabajos');const v=findVehicle(o.vehicleId);const c=vehicleClient(v);
@@ -301,26 +327,51 @@ function vehicleForm(id='',presetClient=''){
     input('Observaciones','notes',v?.notes,{textarea:true,full:true,placeholder:'Datos útiles sobre el vehículo…'})
   ].join(''),id);
 }
+function vehiclePickerOption(v){
+  const c=vehicleClient(v);
+  return `<button type="button" class="vehicle-picker-option" data-action="pick-vehicle" data-id="${esc(v.id)}"><span class="plate">${esc(v.plate)}</span><span class="vehicle-picker-name"><strong>${esc(fullVehicle(v))}</strong><small>${esc(c?.name||'Cliente sin datos')} · ${num(v.mileage)} km</small></span>${icon('chevron',16)}</button>`;
+}
+function vehiclePickerResults(query=''){
+  const choices=db.vehicles.filter(v=>matchesVehicle(v,vehicleClient(v),query)).sort((a,b)=>a.plate.localeCompare(b.plate,'es'));
+  return `<div class="vehicle-picker-count" role="status">${query?`${choices.length} vehículo${choices.length===1?'':'s'} encontrado${choices.length===1?'':'s'}`:'Elegí un vehículo de la lista'}</div>${choices.length?choices.slice(0,7).map(vehiclePickerOption).join(''):`<div class="vehicle-picker-empty">No encontramos esa patente o vehículo. Probá otro término.</div>`}${choices.length>7?`<div class="vehicle-picker-more">Mostrando 7 de ${choices.length}. Escribí para encontrar el correcto.</div>`:''}`;
+}
+function vehiclePicker(selectedId=''){
+  const selected=findVehicle(selectedId);
+  return `<div class="vehicle-picker span-2"><label for="vehicle-lookup">Vehículo *</label><input id="f-vehicleId" name="vehicleId" type="hidden" value="${esc(selectedId)}" /><div id="vehicle-selected" class="vehicle-selected" ${selected?'':'hidden'}>${selected?`<span class="selected-mark">${icon('check',17)}</span><div><strong>${esc(selected.plate)} · ${esc(fullVehicle(selected))}</strong><small>${esc(vehicleClient(selected)?.name||'')} · ${num(selected.mileage)} km</small></div>`:''}<button type="button" class="btn btn-secondary btn-sm" data-action="change-vehicle">Cambiar</button></div><div class="vehicle-picker-search" ${selected?'hidden':''}><div class="history-search">${icon('search',17)}<input id="vehicle-lookup" type="search" placeholder="Patente, marca o cliente…" autocomplete="off" aria-controls="vehicle-suggestions" aria-describedby="vehicle-picker-help" /></div><small id="vehicle-picker-help">Buscá por patente, vehículo o nombre del cliente. Elegí un resultado para continuar.</small><div id="vehicle-suggestions" class="vehicle-picker-list">${vehiclePickerResults()}</div></div></div>`;
+}
+function selectVehicleForOrder(id){
+  const selected=findVehicle(id);if(!selected)return;
+  const form=document.querySelector('#entity-form');if(!form||form.dataset.kind!=='order')return;
+  const current=form.querySelector('#f-vehicleId');const prior=current.value;
+  current.value=id;
+  const block=form.querySelector('#vehicle-selected');block.innerHTML=`<span class="selected-mark">${icon('check',17)}</span><div><strong>${esc(selected.plate)} · ${esc(fullVehicle(selected))}</strong><small>${esc(vehicleClient(selected)?.name||'')} · ${num(selected.mileage)} km</small></div><button type="button" class="btn btn-secondary btn-sm" data-action="change-vehicle">Cambiar</button>`;
+  block.hidden=false;form.querySelector('.vehicle-picker-search').hidden=true;
+  const mileage=form.elements.namedItem('mileage');const oldVehicle=findVehicle(prior);
+  if(!form.dataset.id && (!mileage.value || Number(mileage.value)===Number(oldVehicle?.mileage??0)))mileage.value=selected.mileage;
+  form.elements.namedItem('title').focus();
+}
 function orderForm(id='',presetVehicle=''){
   const o=id?findOrder(id):null;
   if(!db.vehicles.length){toast('Primero agregá un vehículo para registrar un trabajo.','error');navigate('vehiculos');return;}
-  const vehicleOptions=[{value:'',label:'Seleccionar vehículo…'},...db.vehicles.map(v=>({value:v.id,label:`${v.plate} · ${fullVehicle(v)} — ${findClient(v.clientId)?.name||''}`}))];
   const chosen=findVehicle(o?.vehicleId||presetVehicle);
-  showModal(o?'Editar trabajo':'Registrar trabajo','La ficha se incorpora al historial permanente del vehículo.','order',[
-    input('Vehículo','vehicleId',o?.vehicleId||presetVehicle,{select:vehicleOptions,required:true,full:true}),
-    input('Nombre del trabajo','title',o?.title,{required:true,full:true,placeholder:'Ej. Service de 80.000 km',maxlength:150}),
-    input('Tipo de servicio','category',o?.category||CATEGORIES[0],{select:CATEGORIES.map(c=>({value:c,label:c})),required:true}),
+  const hasAdvanced=!!o && !!(o.partsCost||o.laborCost||o.charged||o.paid||o.notes);
+  showModal(o?'Editar trabajo':'Nuevo trabajo','Elegí el vehículo, anotá el servicio y listo. Los importes son opcionales.','order',[
+    vehiclePicker(o?.vehicleId||presetVehicle),
+    input('Trabajo o servicio','title',o?.title,{required:true,full:true,placeholder:'Ej. Revisión de frenos',maxlength:150}),
+    input('Categoría','category',o?.category||CATEGORIES[0],{select:CATEGORIES.map(c=>({value:c,label:c})),required:true}),
     input('Estado','status',o?.status||'received',{select:Object.entries(STATUSES).map(([value,label])=>({value,label})),required:true}),
-    input('Fecha de ingreso','openedAt',o?.openedAt||isoDate(new Date()),{type:'date',required:true}),
+    input('Fecha','openedAt',o?.openedAt||isoDate(new Date()),{type:'date',required:true}),
     input('Kilometraje','mileage',o?.mileage??chosen?.mileage??0,{type:'number',min:0,step:1}),
-    input('Diagnóstico y tareas realizadas','description',o?.description,{textarea:true,full:true,placeholder:'Síntomas, diagnóstico, trabajos, repuestos…'}),
-    `<div class="form-group-label span-2">Balance simple</div>`,
-    input('Costo de repuestos','partsCost',o?.partsCost??0,{type:'number',min:0,step:'.01'}),
-    input('Costo interno de mano de obra','laborCost',o?.laborCost??0,{type:'number',min:0,step:'.01'}),
-    input('Importe acordado con cliente','charged',o?.charged??0,{type:'number',min:0,step:'.01'}),
-    input('Total ya pagado','paid',o?.paid??0,{type:'number',min:0,step:'.01',hint:'Importe acumulado recibido hasta ahora.'}),
-    input('Notas adicionales','notes',o?.notes,{textarea:true,full:true,placeholder:'Pendientes, recomendaciones…'})
+    input('Diagnóstico y tareas realizadas','description',o?.description,{textarea:true,full:true,placeholder:'Qué sucede, qué revisaste o reparaste…'}),
+    `<div class="span-2"><details class="order-extras" ${hasAdvanced?'open':''}><summary>${icon('wallet',18)} Costos, cobros y notas <span class="extras-optional">Opcional</span>${icon('chevron',17)}</summary><div class="form-grid order-extras-grid">${[
+      input('Costo de repuestos','partsCost',o?.partsCost??0,{type:'number',min:0,step:'.01'}),
+      input('Costo interno de mano de obra','laborCost',o?.laborCost??0,{type:'number',min:0,step:'.01'}),
+      input('Importe acordado','charged',o?.charged??0,{type:'number',min:0,step:'.01'}),
+      input('Ya pagado','paid',o?.paid??0,{type:'number',min:0,step:'.01',hint:'Total recibido hasta ahora.'}),
+      input('Notas adicionales','notes',o?.notes,{textarea:true,full:true,placeholder:'Pendientes o recomendaciones…'})
+    ].join('')}</div></details></div>`
   ].join(''),id);
+  setTimeout(()=>document.querySelector(chosen?'#f-title':'#vehicle-lookup')?.focus(),0);
 }
 function paymentForm(id){
   const o=findOrder(id);if(!o)return;
@@ -347,7 +398,7 @@ async function saveForm(form){
     next={id:baseId,clientId:get('clientId'),plate,make:get('make'),model:get('model'),year:get('year')?Number(get('year')):'',mileage:amount(get('mileage')),vin:get('vin'),color:get('color'),nextServiceDate:get('nextServiceDate'),notes:get('notes'),createdAt:findVehicle(id)?.createdAt||isoDate(new Date())};
     routeTo=['vehiculo',baseId];message=existing?'Vehículo actualizado.':'Vehículo agregado.';
   }else if(kind==='order'){
-    if(!get('vehicleId')||!findVehicle(get('vehicleId'))){toast('Seleccioná un vehículo.','error');return;}
+    if(!get('vehicleId')||!findVehicle(get('vehicleId'))){toast('Primero buscá y seleccioná un vehículo de la lista.','error');form.querySelector('#vehicle-lookup')?.focus();return;}
     const price=amount(get('charged')),paid=amount(get('paid'));
     if(paid>price){toast('El total pagado no puede superar el importe acordado.','error');return;}
     if(!get('openedAt')){toast('Ingresá la fecha del trabajo.','error');return;}
@@ -423,6 +474,8 @@ function printOrder(id){
 document.addEventListener('click',async event=>{
   const target=event.target.closest('[data-action],[data-nav],[data-filter],[data-list-filter],[data-list-page],[data-finance-filter]');if(!target)return;
   if(target.dataset.nav){event.preventDefault();navigate(target.dataset.nav,target.dataset.id||'');return;}
+  if(target.dataset.historyFilter){historyStatus=target.dataset.historyFilter;historyPage=1;refreshVehicleHistory();return;}
+  if(target.dataset.historyPage){const page=Number(target.dataset.historyPage);if(!Number.isSafeInteger(page)||page<1)return;historyPage=page;refreshVehicleHistory();document.querySelector('.history-toolbar')?.scrollIntoView({block:'nearest',behavior:'instant'});return;}
   if(target.dataset.listFilter){const section=route().page;const key=target.dataset.listFilter;if(section==='clientes'&&['all','with','without'].includes(key))clientFilter=key;else if(section==='vehiculos'&&['all','overdue','soon','undated'].includes(key))vehicleFilter=key;else if(section==='trabajos'&&['all','active','closed','unpaid'].includes(key))activeFilter=key;else return;listPages[section]=1;refreshListResults();return;}
   if(target.dataset.financeFilter){financeFilter=target.dataset.financeFilter;financePage=1;refreshFinanceResults();return;}
   if(target.dataset.financePage){financePage=Number(target.dataset.financePage);refreshFinanceResults();return;}
@@ -439,6 +492,13 @@ document.addEventListener('click',async event=>{
     case 'edit-vehicle':vehicleForm(id);break;
     case 'view-vehicle':navigate('vehiculo',id);break;
     case 'new-order':orderForm('',target.dataset.vehicle||'');break;
+    case 'pick-vehicle':selectVehicleForOrder(id);break;
+    case 'change-vehicle':{
+      const form=document.querySelector('#entity-form');if(!form||form.dataset.kind!=='order')break;
+      form.querySelector('#f-vehicleId').value='';form.querySelector('#vehicle-selected').hidden=true;form.querySelector('.vehicle-picker-search').hidden=false;
+      form.querySelector('#vehicle-lookup').value='';form.querySelector('#vehicle-suggestions').innerHTML=vehiclePickerResults();form.querySelector('#vehicle-lookup').focus();break;
+    }
+    case 'clear-history':historyQuery='';historyPage=1;historyStatus='all';refreshVehicleHistory();break;
     case 'edit-order':orderForm(id);break;
     case 'add-payment':paymentForm(id);break;
     case 'print-order':printOrder(id);break;
@@ -480,6 +540,8 @@ document.addEventListener('change',async event=>{
 });
 document.addEventListener('input',event=>{
   if(event.target.id==='global-search'){activeQuery=event.target.value;refreshPage();}
+  if(event.target.id==='vehicle-lookup'){const results=document.querySelector('#vehicle-suggestions');if(results)results.innerHTML=vehiclePickerResults(event.target.value);}
+  if(event.target.id==='history-search'){historyQuery=event.target.value;historyPage=1;refreshVehicleHistory();}
   if(event.target.id==='finance-search'){financeQuery=event.target.value;financePage=1;refreshFinanceResults();}
   if(event.target.dataset.listSearch){const section=event.target.dataset.listSearch;if(!Object.hasOwn(listQueries,section))return;listQueries[section]=event.target.value;listPages[section]=1;refreshListResults();}
 });
