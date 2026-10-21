@@ -18,7 +18,7 @@ function makeWorker(keys) {
   return {listeners,removed};
 }
 test('la actualización no borra cachés de otras aplicaciones',async()=>{
-  const {listeners,removed}=makeWorker(['autotrace-shell-v3','autotrace-shell-v5','autotrace-shell-v6','otra-pwa-v1']);
+  const {listeners,removed}=makeWorker(['autotrace-shell-v3','autotrace-shell-v5','autotrace-shell-v7','otra-pwa-v1']);
   let work;listeners.activate({waitUntil:p=>work=p});await work;
   assert.deepEqual(removed,['autotrace-shell-v3','autotrace-shell-v5']);
 });

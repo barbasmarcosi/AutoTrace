@@ -75,3 +75,7 @@ El manifest y las URLs de recursos son relativas al directorio del sitio, por lo
 ## Próxima etapa posible
 
 Autenticación, sincronización de datos y respaldo server-side, roles, adjuntos/fotografías, recordatorios, turnos, inventario y presupuestos detallados. Cada capacidad necesita un backend con control de acceso apropiado; no usar Pages para alojar información privada compartida.
+
+### Ajustes de interfaz móvil
+
+Los formularios se desplazan solo en vertical, dentro del diálogo y con acciones visibles. El encabezado móvil usa tres controles táctiles de 44 × 44 px con íconos centrados: búsqueda, alta rápida y ajustes. El botón de alta rápida conserva su etiqueta accesible.

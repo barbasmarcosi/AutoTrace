@@ -339,3 +339,82 @@ body:has(.modal[open]){overflow:hidden}
   .topbar .mobile-search-close{display:none}
   .topbar.search-open .mobile-search-close{display:grid}
 }
+
+
+/* Corrección iOS: cada hoja tiene un único scroll VERTICAL, sin arrastre lateral.
+   Las pistas de fecha/select de Safari tienen ancho intrínseco: sus grid items
+   deben poder achicarse o el navegador habilita el paneo horizontal implícito. */
+html:has(#form-dialog[open]),
+body:has(#form-dialog[open]) { overscroll-behavior: none; }
+#form-dialog.modal {
+  overflow-x: hidden;
+  overscroll-behavior-x: none;
+  touch-action: pan-y;
+}
+#form-dialog #modal-content,
+#form-dialog #entity-form,
+#form-dialog .modal-head,
+#form-dialog .modal-body,
+#form-dialog .modal-actions,
+#form-dialog .form-grid,
+#form-dialog .form-grid > *,
+#form-dialog .field,
+#form-dialog .field-full {
+  min-width: 0;
+  max-width: 100%;
+}
+#form-dialog #modal-content,
+#form-dialog #entity-form { width: 100%; }
+#form-dialog .modal-body {
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-x: none;
+  overscroll-behavior-y: contain;
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
+}
+#form-dialog .form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+#form-dialog .field input,
+#form-dialog .field select,
+#form-dialog .field textarea,
+#form-dialog .field-full input,
+#form-dialog .field-full select,
+#form-dialog .field-full textarea {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+/* Un botón con icono y etiqueta REALES: ocultar texto con display:none evita
+   el ítem flex invisible que desplazaba el signo + del centro. */
+.topbar-create-label { display: inline; }
+.topbar .topbar-create svg { flex: none; }
+@media (max-width: 550px) {
+  #form-dialog .form-grid { grid-template-columns: minmax(0, 1fr); }
+  #form-dialog .form-grid .span-2 { grid-column: 1; }
+  .topbar .topbar-create {
+    display: grid;
+    place-items: center;
+    flex: 0 0 44px;
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    min-height: 44px;
+    padding: 0;
+    gap: 0;
+    border-radius: 12px;
+    line-height: 1;
+  }
+  .topbar .topbar-create-label { display: none; }
+  .topbar .topbar-create svg { width: 20px; height: 20px; }
+  .topbar .icon-btn {
+    display: grid;
+    place-items: center;
+    flex: 0 0 44px;
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    min-height: 44px;
+    padding: 0;
+  }
+  .topbar-right { align-items: center; }
+}
