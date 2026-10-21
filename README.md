@@ -12,17 +12,21 @@ Al publicarse por GitHub Pages: <https://barbasmarcosi.github.io/AutoTrace/>
 - Relaciones cliente → vehículos → historial de trabajos.
 - Estados: recibido, en proceso, esperando repuesto, finalizado y entregado.
 - Costos de repuestos y mano de obra, importe acordado, total pagado, saldo y margen estimado.
-- Registro de pagos parciales, impresión de ficha de trabajo, búsqueda global y buscadores por sección (patente, cliente, teléfono, marca, servicio) tolerantes a tildes y separadores de patente.
+- Registro de pagos parciales, resumen imprimible apto para clientes (sin costos internos ni notas privadas), búsqueda global y buscadores por sección (patente, cliente, teléfono, marca, servicio) tolerantes a tildes y separadores de patente.
 - Filtros específicos de clientes, vehículos y trabajos, con resultados paginados (12 fichas o 20 trabajos por página) y avisos de próximos servicios por fecha.
 - Alta ágil de trabajos con selector de vehículo buscable por patente, propietario, marca o modelo; la ficha precarga el kilometraje del vehículo, muestra los campos esenciales primero y permite desplegar costos y notas cuando hacen falta.
 - Historial por vehículo con resumen de visitas, búsqueda por diagnóstico/fecha/servicio, filtros por estado y paginación en conjuntos grandes.
-- Panel de trabajo orientado a pendientes (órdenes abiertas, cobros y servicios por vencer) y guía de inicio en tres pasos.
+- Panel de trabajo orientado a pendientes (órdenes abiertas, cobros y servicios por vencer), con acceso directo a los listados ya filtrados y guía de inicio en tres pasos.
 - Fichas de trabajos y movimientos económicos adaptadas a celulares, sin desplazamiento lateral para leer los datos principales.
 - Finanzas con búsqueda, filtro de saldos y márgenes negativos, paginación y exportación CSV.
 - Formularios que piden confirmación antes de descartar cambios, navegación por teclado y búsqueda global con `/` o `Ctrl/⌘ + K`.
 - Panel de indicadores y finanzas, exportación CSV de trabajos, respaldo y restauración JSON.
-- PWA instalable y usable offline (después de primera carga), sin dependencias externas de ejecución.
+- PWA instalable y usable offline (después de primera carga), sin dependencias externas de ejecución. Caché limitado a AutoTrace, sin borrar cachés de otras aplicaciones del mismo origen.
 - Ejemplos ficticios iniciales, señalizados y eliminables desde la interfaz.
+
+## Calidad y documentación de impresión
+
+El botón **Resumen para cliente** genera una hoja de servicio informativa, no fiscal, sin incluir costos internos de repuestos/mano de obra ni las notas privadas de la orden. Los importes de cobro sí se muestran al destinatario, como corresponde a un resumen de servicio. Los filtros de historial y pendientes están probados con tests automatizados.
 
 ## Persistencia y privacidad
 
