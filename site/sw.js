@@ -1,8 +1,8 @@
 // Mantener separados los cachés de AutoTrace: otros proyectos de GitHub Pages
 // comparten el mismo origen, pero no deben verse afectados por esta PWA.
-const CACHE = 'autotrace-shell-v5';
+const CACHE = 'autotrace-shell-v6';
 const PREFIX = 'autotrace-shell-';
-const ASSETS = ['./', './index.html', './styles.css', './app.js', './model.mjs', './search.mjs', './customer-summary.mjs', './manifest.webmanifest', './assets/icon.svg', './assets/icon-192.png', './assets/icon-512.png', './assets/apple-touch-icon.png'];
+const ASSETS = ['./', './index.html', './styles.css', './app.js', './model.mjs', './search.mjs', './pickers.mjs', './customer-summary.mjs', './manifest.webmanifest', './assets/icon.svg', './assets/icon-192.png', './assets/icon-512.png', './assets/apple-touch-icon.png'];
 const scope = self.registration.scope;
 const shellPaths = new Set(ASSETS.map(asset => new URL(asset, scope).pathname));
 self.addEventListener('install', event => {

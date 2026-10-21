@@ -244,3 +244,98 @@ body { -webkit-font-smoothing: antialiased; }
 .vehicle-owner-actions {display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:20px;}
 @media(max-width:1200px){.vehicle-quick-summary {grid-template-columns:repeat(2,minmax(0,1fr));}}
 @media(max-width:550px){.vehicle-quick-summary>div {padding:13px;}.vehicle-quick-summary strong {font-size:15px;}.vehicle-picker-option {padding-inline:9px;gap:9px;}.vehicle-picker-option .plate {min-width:76px;font-size:10px;}.vehicle-selected {flex-wrap:wrap;}.vehicle-selected button {margin-left:auto;}.history-search input {font-size:16px;}.history-filters {flex-wrap:nowrap;overflow-x:auto;}.history-filters button {flex:none;}}
+
+/* Mobile-first UX pass: forms are real scrollable sheets, not overflowing pages. */
+.mobile-search-toggle,.mobile-search-close{display:none}
+.demo-mini{display:none}
+body:has(.modal[open]){overflow:hidden}
+.modal{overflow:hidden;overscroll-behavior:contain}
+.modal #modal-content{min-width:0;min-height:0}
+.modal #entity-form{display:grid;grid-template-rows:auto minmax(0,1fr) auto;max-height:min(88dvh,850px);min-height:0}
+.modal #entity-form .modal-head,.modal #entity-form .modal-actions{position:relative;flex-shrink:0}
+.modal #entity-form .modal-body{min-height:0;overflow-y:auto;overscroll-behavior:contain;scrollbar-gutter:stable}
+.modal-head h2{line-height:1.22}
+.modal-close{width:44px;height:44px;flex:0 0 44px}
+.modal .field label,.modal .field-full label{font-size:12px}
+.modal .field input,.modal .field select,.modal .field textarea{min-height:46px}
+.vehicle-picker-list,.client-picker-list{display:grid;max-height:none;overflow:visible;border:1px solid var(--border);border-radius:13px;background:#fff;min-width:0}
+.vehicle-picker-list .vehicle-picker-option:last-of-type,.client-picker-list .client-picker-option:last-of-type{border-bottom:0}
+.picker-count{padding:10px 13px;color:#516f72;font-size:11px;font-weight:780;letter-spacing:.05px;background:#f4f8f6;border-radius:12px 12px 0 0}
+.picker-empty{padding:20px 13px;text-align:center;font-size:12px;color:var(--muted)}
+.picker-more{margin:0;padding:10px 13px;background:#f8fbf9;border-top:1px solid #e8eeeb;border-radius:0 0 12px 12px;font-size:11px;line-height:1.4;color:#577871}
+.vehicle-picker-search>small,.client-picker-search>small{font-size:11px;line-height:1.4;color:#6e8287}
+.client-picker{display:grid;gap:10px;min-width:0}
+.client-picker>label{font-weight:750;color:var(--ink);font-size:12px}
+.client-picker-search{display:grid;gap:10px;min-width:0}
+.client-picker-search[hidden],.picker-selected[hidden]{display:none!important}
+.client-picker-option{display:flex;align-items:center;gap:12px;text-align:left;width:100%;min-height:61px;padding:9px 12px;border:0;border-bottom:1px solid #eff3f2;background:#fff;color:var(--ink)}
+.client-picker-option:hover,.client-picker-option:focus-visible{background:#eff9f3}
+.client-picker-option .avatar{width:35px;height:35px;min-width:35px;border-radius:10px;font-size:11px}
+.client-picker-option>span:nth-child(2){display:grid;gap:4px;flex:1;min-width:0}
+.client-picker-option strong{font-size:12px}
+.client-picker-option small{font-size:11px;color:var(--muted);overflow-wrap:anywhere}
+.client-picker-option>svg{color:#829b9e}
+.picker-selected{display:flex;align-items:center;gap:11px;padding:12px;border:1px solid #a0dac3;border-radius:12px;background:#eefaf3;min-width:0}
+.picker-selected .selected-mark{display:grid;place-items:center;flex:none;width:30px;height:30px;background:#1b866c;color:#fff;border-radius:10px}
+.picker-selected>div{display:grid;gap:5px;flex:1;min-width:0}
+.picker-selected strong{font-size:13px}
+.picker-selected small{font-size:11px;color:#55796c}
+.picker-selected button{flex:none}
+@media(max-width:550px){
+  .topbar{height:62px}
+  .mobile-search-toggle,.mobile-search-close{display:grid;place-items:center;width:44px;height:44px;min-width:44px;background:#f6f9f8;color:#36545c;border:1px solid #e2e9e9;border-radius:12px}
+  .topbar .search-wrap{display:none}
+  .topbar.search-open .topbar-title,.topbar.search-open .mobile-search-toggle,.topbar.search-open .topbar-right>.btn{display:none}
+  .topbar.search-open .topbar-right{flex:1;width:100%;gap:7px}
+  .topbar.search-open .search-wrap{display:block;flex:1;min-width:0}
+  .topbar.search-open .mobile-search-close{display:grid}
+  .topbar.search-open .search{width:100%;padding-left:39px}
+  .topbar.search-open .search-wrap>svg{left:13px}
+  .topbar .search{font-size:16px}
+  .demo-banner{padding:10px 12px;gap:10px;display:flex;flex-direction:row;align-items:center;margin-bottom:19px}
+  .demo-banner p{line-height:1.4;font-size:11px;flex:1;min-width:0}
+  .demo-banner .demo-explanation{display:none}
+  .demo-banner .demo-mini{display:inline}
+  .demo-banner .btn{flex:none;font-size:10px;min-height:38px;padding:7px 10px;white-space:normal;max-width:132px;text-align:center}
+  .content>.heading,.content>.demo-banner+.heading{margin-bottom:15px}
+  .heading .eyebrow{margin-bottom:6px;font-size:10px}
+  .heading h1{font-size:24px}
+  .heading>div>p:last-child{font-size:12px;line-height:1.4;margin-bottom:0}
+  .heading .badge-local{display:none}
+  .hero{min-height:0;max-height:none;margin-bottom:14px;padding:16px 17px;border-radius:15px}
+  .hero::before,.hero::after,.hero-watermark{display:none}
+  .hero-eyebrow{margin-bottom:7px;font-size:10px}
+  .hero h2{font-size:16px;margin-bottom:11px;line-height:1.25;letter-spacing:-.25px}
+  .hero p{display:none}
+  .hero-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .hero-actions .btn{min-height:44px;padding:9px 10px;font-size:12px}
+  .hero-actions svg{height:16px;width:16px}
+  .priority-strip{margin-top:0;margin-bottom:16px}
+  .priority-card{min-height:68px}
+  .stats-grid{margin-bottom:17px}
+  .modal{position:fixed;inset:auto 0 0;max-width:none;width:100%;max-height:calc(100dvh - 40px);margin:0;border-radius:22px 22px 0 0}
+  .modal #entity-form{max-height:calc(100dvh - 40px)}
+  .modal #entity-form .modal-head{padding:17px 19px 13px}
+  .modal-head h2{font-size:20px;margin-bottom:5px}
+  .modal-head p{font-size:12px;line-height:1.5;max-width:300px}
+  .modal .modal-body{padding:14px 19px 20px;scrollbar-gutter:auto}
+  .modal .form-grid{gap:14px}
+  .modal .modal-actions{padding:11px 17px calc(12px + env(safe-area-inset-bottom));box-shadow:0 -4px 20px #102b3112}
+  .modal .modal-actions .btn{min-height:49px;font-size:13px}
+  .modal .field input,.modal .field select,.modal .field textarea{font-size:16px}
+  .vehicle-picker-option{min-height:57px}
+  .vehicle-picker-option .plate{min-width:76px;font-size:10px}
+  .client-picker-option,.vehicle-picker-option{padding-inline:11px}
+  .vehicle-picker-name strong{font-size:12px}
+  .vehicle-picker-name small{font-size:11px}
+  .vehicle-picker-list,.client-picker-list{max-height:none}
+}
+@media(max-width:360px){
+  .hero-actions .btn{font-size:11px;padding:8px 6px}
+  .demo-banner .btn{max-width:112px}
+  .topbar-title::before{content:'AutoTrace';font-size:15px}
+}
+@media(max-width:550px){
+  .topbar .mobile-search-close{display:none}
+  .topbar.search-open .mobile-search-close{display:grid}
+}

@@ -18,9 +18,9 @@ function makeWorker(keys) {
   return {listeners,removed};
 }
 test('la actualización no borra cachés de otras aplicaciones',async()=>{
-  const {listeners,removed}=makeWorker(['autotrace-shell-v3','autotrace-shell-v5','otra-pwa-v1']);
+  const {listeners,removed}=makeWorker(['autotrace-shell-v3','autotrace-shell-v5','autotrace-shell-v6','otra-pwa-v1']);
   let work;listeners.activate({waitUntil:p=>work=p});await work;
-  assert.deepEqual(removed,['autotrace-shell-v3']);
+  assert.deepEqual(removed,['autotrace-shell-v3','autotrace-shell-v5']);
 });
 test('el SW atiende solo rutas y recursos de AutoTrace',()=>{
   const {listeners}=makeWorker([]);
@@ -31,6 +31,7 @@ test('el SW atiende solo rutas y recursos de AutoTrace',()=>{
   };
   assert.equal(doesIntercept('https://example.com/AutoTrace/app.js'),true);
   assert.equal(doesIntercept('https://example.com/AutoTrace/customer-summary.mjs'),true);
+  assert.equal(doesIntercept('https://example.com/AutoTrace/pickers.mjs'),true);
   assert.equal(doesIntercept('https://example.com/AutoTrace/'),true);
   assert.equal(doesIntercept('https://example.com/AutoTrace/clientes','#not-navigate'),false);
   assert.equal(doesIntercept('https://example.com/OtroProyecto/app.js'),false);

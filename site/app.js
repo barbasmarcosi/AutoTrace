@@ -1,6 +1,7 @@
 import {validateData, csvCell, pendingAmount, margin} from "./model.mjs";
 import {matchesClient, matchesVehicle, matchesOrder, paginate, filterVehicleHistory} from "./search.mjs";
 import {buildCustomerSummary} from "./customer-summary.mjs";
+import {suggestVehicles, suggestClients} from "./pickers.mjs";
 /** AutoTrace v1 — sin backend, datos almacenados exclusivamente en este navegador. */
 const DB_NAME = 'autotrace-v1';
 const STORE = 'application';
@@ -79,6 +80,7 @@ let financeQuery = '';
 let financeFilter = 'all';
 let financePage = 1;
 let modalOriginal = '';
+let mobileSearchOpen = false;
 const modalSnapshot = form => JSON.stringify([...new FormData(form).entries()]);
 let clientFilter = 'all';
 let vehicleFilter = 'all';
@@ -128,7 +130,7 @@ const fullVehicle=v=>v?`${v.make} ${v.model}`:'Vehículo eliminado';
 const vehicleClient=v=>v?findClient(v.clientId):null;
 const activeOrders=()=>db.orders.filter(o=>['received','progress','waiting'].includes(o.status));
 const route=()=>{const h=decodeURIComponent(location.hash.replace(/^#\/?/,''));const [page,id]=h.split('/');return {page:page||'inicio',id:id||''};};
-function navigate(page,id='') {activeQuery='';location.hash=`#${page}${id?`/${encodeURIComponent(id)}`:''}`;if(route().page===page)render();window.scrollTo({top:0,behavior:'instant'});}
+function navigate(page,id='') {activeQuery='';mobileSearchOpen=false;location.hash=`#${page}${id?`/${encodeURIComponent(id)}`:''}`;if(route().page===page)render();window.scrollTo({top:0,behavior:'instant'});}
 const navActive = page => ({cliente:'clientes',vehiculo:'vehiculos',trabajo:'trabajos',buscar:'inicio'}[page]||page);
 const button=(label,action,style='btn-secondary',attrs='')=>`<button type="button" class="btn ${style}" data-action="${action}" ${attrs}>${label}</button>`;
 const pill=status=>`<span class="pill pill-${STATUS_STYLE[status]||'received'}">${esc(STATUSES[status]||status)}</span>`;
@@ -138,7 +140,7 @@ const phoneLink = value => value ? `<a class="contact-link" href="tel:${esc(Stri
 const descView=(label,value)=>`<div class="info-item"><small>${esc(label)}</small><strong>${value||'—'}</strong></div>`;
 function render(){
   const current=route(); const currentNav=navActive(current.page);
-  app.innerHTML=`<a href="#page-content" class="skip-link">Saltar al contenido</a><div class="shell"><aside class="sidebar"><a class="brand" href="#inicio" aria-label="AutoTrace, ir al inicio"><span class="brand-logo">${icon('car',24)}</span><span><span class="brand-name">AutoTrace</span><span class="brand-sub">Gestión de taller</span></span></a><div class="sidebar-label">ESPACIO DE TRABAJO</div><nav aria-label="Navegación principal">${NAV.map(n=>`<button class="nav-item ${currentNav===n.id?'active':''}" data-nav="${n.id}" ${currentNav===n.id?'aria-current="page"':''}>${icon(n.icon)}${n.label}${n.id==='trabajos'&&activeOrders().length?`<span class="count">${activeOrders().length}</span>`:''}</button>`).join('')}</nav><div class="sidebar-spacer"></div><div class="sidebar-footer"><div class="online"><span class="status-dot"></span>Guardado en este dispositivo</div><p>Funciona sin conexión. Hacé respaldos frecuentes: los datos no se sincronizan entre dispositivos.</p></div></aside><div class="main-column"><header class="topbar"><div class="topbar-title">Tu taller <span class="slash">/</span> <span class="desktop-only">${esc(NAV.find(n=>n.id===currentNav)?.label||'Detalle')}</span></div><div class="topbar-right"><div class="search-wrap">${icon('search',17)}<input class="search" id="global-search" type="search" aria-label="Buscar en AutoTrace" placeholder="Buscar en todo el taller…" title="Atajo: / o Ctrl + K" value="${esc(activeQuery)}" autocomplete="off" />${activeQuery?`<button class="search-clear" data-action="clear-search" aria-label="Borrar búsqueda">${icon('x',16)}</button>`:''}</div>${button(`${icon('plus')} Nuevo trabajo`,'new-order','btn-primary')}${button(icon('settings'),'go-settings','btn-secondary icon-btn','aria-label="Ajustes"')}</div></header><main class="content" id="page-content" tabindex="-1">${memoryOnly?`<div class="notice warning storage-alert" role="alert">${icon('alert',17)} No se puede guardar en este navegador. No registres datos reales en esta sesión.</div>`:''}${renderPage()}</main></div></div><nav class="mobile-nav" aria-label="Navegación móvil">${NAV.filter(x=>x.id!=='ajustes').map(n=>`<button class="${currentNav===n.id?'active':''}" data-nav="${n.id}" aria-label="${n.label}" ${currentNav===n.id?'aria-current="page"':''}>${icon(n.icon,21)}<span>${n.label}</span></button>`).join('')}</nav>`;
+  app.innerHTML=`<a href="#page-content" class="skip-link">Saltar al contenido</a><div class="shell"><aside class="sidebar"><a class="brand" href="#inicio" aria-label="AutoTrace, ir al inicio"><span class="brand-logo">${icon('car',24)}</span><span><span class="brand-name">AutoTrace</span><span class="brand-sub">Gestión de taller</span></span></a><div class="sidebar-label">ESPACIO DE TRABAJO</div><nav aria-label="Navegación principal">${NAV.map(n=>`<button class="nav-item ${currentNav===n.id?'active':''}" data-nav="${n.id}" ${currentNav===n.id?'aria-current="page"':''}>${icon(n.icon)}${n.label}${n.id==='trabajos'&&activeOrders().length?`<span class="count">${activeOrders().length}</span>`:''}</button>`).join('')}</nav><div class="sidebar-spacer"></div><div class="sidebar-footer"><div class="online"><span class="status-dot"></span>Guardado en este dispositivo</div><p>Funciona sin conexión. Hacé respaldos frecuentes: los datos no se sincronizan entre dispositivos.</p></div></aside><div class="main-column"><header class="topbar ${mobileSearchOpen?'search-open':''}"><div class="topbar-title">Tu taller <span class="slash">/</span> <span class="desktop-only">${esc(NAV.find(n=>n.id===currentNav)?.label||'Detalle')}</span></div><div class="topbar-right"><button type="button" class="mobile-search-toggle" data-action="open-mobile-search" aria-label="Abrir búsqueda global">${icon('search',21)}</button><div class="search-wrap">${icon('search',17)}<input class="search" id="global-search" type="search" aria-label="Buscar en AutoTrace" placeholder="Buscar en todo el taller…" title="Atajo: / o Ctrl + K" value="${esc(activeQuery)}" autocomplete="off" />${activeQuery?`<button class="search-clear" data-action="clear-search" aria-label="Borrar búsqueda">${icon('x',16)}</button>`:''}</div><button type="button" class="mobile-search-close" data-action="close-mobile-search" aria-label="Cerrar búsqueda">${icon('x',20)}</button>${button(`${icon('plus')} Nuevo trabajo`,'new-order','btn-primary')}${button(icon('settings'),'go-settings','btn-secondary icon-btn','aria-label="Ajustes"')}</div></header><main class="content" id="page-content" tabindex="-1">${memoryOnly?`<div class="notice warning storage-alert" role="alert">${icon('alert',17)} No se puede guardar en este navegador. No registres datos reales en esta sesión.</div>`:''}${renderPage()}</main></div></div><nav class="mobile-nav" aria-label="Navegación móvil">${NAV.filter(x=>x.id!=='ajustes').map(n=>`<button class="${currentNav===n.id?'active':''}" data-nav="${n.id}" aria-label="${n.label}" ${currentNav===n.id?'aria-current="page"':''}>${icon(n.icon,21)}<span>${n.label}</span></button>`).join('')}</nav>`;
 }
 function renderPage(){
   if(activeQuery.trim())return renderSearch();
@@ -146,7 +148,7 @@ function renderPage(){
   switch(r.page){case 'inicio':return renderDashboard();case 'clientes':return renderClients();case 'vehiculos':return renderVehicles();case 'trabajos':return renderOrders();case 'finanzas':return renderFinance();case 'ajustes':return renderSettings();case 'cliente':return renderClientDetail(r.id);case 'vehiculo':return renderVehicleDetail(r.id);case 'trabajo':return renderOrderDetail(r.id);default:return empty('Página no encontrada','Elegí una sección para continuar.',button('Volver al inicio','go-home'));}
 }
 function refreshPage(){const target=document.querySelector('#page-content');if(target)target.innerHTML=renderPage();}
-function demoBanner(){return db.settings.demo?`<div class="demo-banner"><p><strong>Datos de demostración.</strong> Los nombres, vehículos e importes son ficticios. Podés explorar sin riesgo y luego comenzar con tus propios registros.</p>${button('Comenzar desde cero','reset-demo','btn-secondary btn-sm')}</div>`:'';}
+function demoBanner(){return db.settings.demo?`<div class="demo-banner"><p><strong>Modo demostración.</strong><span class="demo-explanation"> Los nombres, vehículos e importes son ficticios. Podés explorar sin riesgo y luego comenzar con tus propios registros.</span><span class="demo-mini"> Datos ficticios para explorar.</span></p>${button('Comenzar desde cero','reset-demo','btn-secondary btn-sm')}</div>`:'';}
 function renderDashboard(){
   const recent=[...db.orders].sort((a,b)=>b.openedAt.localeCompare(a.openedAt)).slice(0,5);
   const open=activeOrders();
@@ -154,11 +156,11 @@ function renderDashboard(){
   const monthly=db.orders.filter(x=>x.openedAt.startsWith(thisMonth));
   const due=db.vehicles.filter(v=>v.nextServiceDate&&daysUntil(v.nextServiceDate)<=30).sort((a,b)=>a.nextServiceDate.localeCompare(b.nextServiceDate)).slice(0,5);
   const pending=sum(db.orders,pendingAmount);
-  return `${demoBanner()}<div class="heading"><div><p class="eyebrow">PANEL DE CONTROL</p><h1>${db.settings.garageName==='Mi taller'?'Así va tu taller':`Así va ${esc(db.settings.garageName)}`}</h1><p>Lo importante primero: trabajos, próximos servicios y cobros por resolver.</p></div><span class="badge-local">${icon('shield',15)} Privado y local</span></div>
-  <section class="hero"><div class="hero-content"><div class="hero-eyebrow">${icon('sparkle',16)} TU TALLER EN ORDEN</div><h2>Cada vehículo tiene una historia.</h2><p>Registrá intervenciones, seguí tus trabajos y mantené toda la información a mano.</p><div class="hero-actions">${button(`${icon('plus')} Registrar trabajo`,'new-order','btn-lime')}${button(`${icon('users')} Nuevo cliente`,'new-client','btn-secondary')}</div></div><div class="hero-watermark">${icon('car',210)}</div></section>
+  return `${demoBanner()}<div class="heading"><div><p class="eyebrow">PANEL DE CONTROL</p><h1>${db.settings.garageName==='Mi taller'?'Tu taller, hoy':`Resumen de ${esc(db.settings.garageName)}`}</h1><p>Todo lo que necesitás resolver, en un solo lugar.</p></div><span class="badge-local">${icon('shield',15)} Privado y local</span></div>
+  <section class="hero"><div class="hero-content"><div class="hero-eyebrow">${icon('sparkle',16)} ACCIONES RÁPIDAS</div><h2>Todo listo para tu próximo trabajo.</h2><p>Creá una orden o sumá un cliente sin dar vueltas.</p><div class="hero-actions">${button(`${icon('plus')} Registrar trabajo`,'new-order','btn-lime')}${button(`${icon('users')} Nuevo cliente`,'new-client','btn-secondary')}</div></div><div class="hero-watermark">${icon('car',210)}</div></section>
+  <div class="priority-strip" aria-label="Pendientes del taller"><button data-action="show-active-orders" class="priority-card"><span class="priority-icon">${icon('wrench',20)}</span><span class="priority-body"><strong>${open.length} trabajos en curso</strong><small>Revisar el estado de las órdenes</small></span>${icon('chevron',18)}</button><button data-action="show-unpaid-orders" class="priority-card"><span class="priority-icon priority-amber">${icon('wallet',20)}</span><span class="priority-body"><strong>${db.orders.filter(o=>pendingAmount(o)>0).length} cobros pendientes</strong><small>${money(pending)} de saldo por cobrar</small></span>${icon('chevron',18)}</button><button data-action="show-due-vehicles" class="priority-card"><span class="priority-icon priority-blue">${icon('calendar',20)}</span><span class="priority-body"><strong>${db.vehicles.filter(v=>v.nextServiceDate&&daysUntil(v.nextServiceDate)<=30).length} servicios próximos o vencidos</strong><small>Revisar fechas de mantenimiento</small></span>${icon('chevron',18)}</button></div>
   <div class="stats-grid">${stat('Clientes',db.clients.length,'Registrados en el taller','users')}${stat('Trabajos activos',open.length,'En recepción o proceso','wrench')}${stat('Acordado este mes',money(sum(monthly,o=>o.charged)),'Trabajos ingresados este mes','trending')}${stat('Pendiente de cobro',money(pending),'Saldo de todos los trabajos','wallet')}</div>
   ${db.clients.length===0?`<section class="welcome-guide" aria-label="Primeros pasos"><div class="guide-head"><span class="guide-kicker">EMPEZÁ ACÁ</span><h2>Tu primer trabajo, en tres pasos</h2><p>Armá el historial del taller desde la primera visita.</p></div><div class="guide-steps"><div><span>01</span><strong>Registrá a tu cliente</strong><small>Guardá su nombre y contacto.</small></div><div><span>02</span><strong>Sumá su vehículo</strong><small>Identificalo por patente y modelo.</small></div><div><span>03</span><strong>Cargá el servicio</strong><small>Anotá diagnóstico, costos y cobros.</small></div></div>${button(`${icon('plus')} Crear primer cliente`,'new-client','btn-primary')}</section>`:''}
-  <div class="priority-strip" aria-label="Pendientes del taller"><button data-action="show-active-orders" class="priority-card"><span class="priority-icon">${icon('wrench',20)}</span><span class="priority-body"><strong>${open.length} trabajos en curso</strong><small>Revisar el estado de las órdenes</small></span>${icon('chevron',18)}</button><button data-action="show-unpaid-orders" class="priority-card"><span class="priority-icon priority-amber">${icon('wallet',20)}</span><span class="priority-body"><strong>${db.orders.filter(o=>pendingAmount(o)>0).length} cobros pendientes</strong><small>${money(pending)} de saldo por cobrar</small></span>${icon('chevron',18)}</button><button data-action="show-due-vehicles" class="priority-card"><span class="priority-icon priority-blue">${icon('calendar',20)}</span><span class="priority-body"><strong>${db.vehicles.filter(v=>v.nextServiceDate&&daysUntil(v.nextServiceDate)<=30).length} servicios próximos o vencidos</strong><small>Revisar fechas de mantenimiento</small></span>${icon('chevron',18)}</button></div>
   <div class="dashboard-grid"><div class="card"><div class="card-heading"><div><h3>Últimos trabajos</h3><p>Actividad reciente de tu taller</p></div><button class="link-btn" data-nav="trabajos">Ver todos ${icon('arrow',13)}</button></div>${recent.length?`<div class="table-scroll">${renderOrderTable(recent,true)}</div>`:empty('Todavía no hay trabajos','Registrá el primero para construir el historial de cada vehículo.',button('Nuevo trabajo','new-order','btn-primary'))}</div>
   <div class="card"><div class="card-heading"><div><h3>Próximos servicios</h3><p>Vencidos o dentro de los próximos 30 días</p></div>${icon('calendar',19)}</div>${due.length?`<div class="detail-list">${due.map(v=>{const d=daysUntil(v.nextServiceDate);return `<button class="detail-row table-link" data-nav="vehiculo" data-id="${esc(v.id)}"><div class="detail-icon">${icon('car')}</div><div class="detail-content"><strong>${esc(fullVehicle(v))}</strong><small>${esc(v.plate)} · ${formatDate(v.nextServiceDate)}</small></div><span class="pill pill-${d<0?'overdue':d<=7?'soon':'normal'}">${d<0?'Vencido':d===0?'Hoy':`En ${d} días`}</span></button>`;}).join('')}</div>`:empty('Todo al día','No hay servicios programados para los próximos 30 días.','','calendar')}</div></div>
   <div class="dashboard-grid" style="margin-top:21px"><div class="card card-pad"><div class="card-heading" style="padding:0 0 15px"><div><h3>Movimiento de los últimos 6 meses</h3><p>Importes cargados y costos estimados</p></div>${icon('chart',19)}</div>${renderChart()}</div><div class="card card-pad"><h3 style="font-size:15px;margin-bottom:15px">Accesos rápidos</h3><div style="display:grid;gap:10px">${button(`${icon('car')} Agregar vehículo`,'new-vehicle','btn-secondary')}${button(`${icon('users')} Agregar cliente`,'new-client','btn-secondary')}${button(`${icon('download')} Descargar respaldo`,'export-json','btn-secondary')}</div><p class="muted-sm" style="line-height:1.65;margin-top:17px;margin-bottom:0">Los datos viven solo en este navegador. Descargá un respaldo después de cargar trabajos importantes.</p></div></div>`;
@@ -299,7 +301,7 @@ function showModal(title,subtitle,kind,fields,id=''){
   document.querySelector('#modal-content').innerHTML=`<form id="entity-form" data-kind="${kind}" data-id="${esc(id)}"><div class="modal-head"><div><h2 id="modal-title">${esc(title)}</h2><p>${esc(subtitle)}</p></div><button class="modal-close" type="button" data-action="close-modal" aria-label="Cerrar formulario">${icon('x')}</button></div><div class="modal-body"><div class="form-grid">${fields}</div></div><div class="modal-actions"><button type="button" class="btn btn-secondary" data-action="close-modal">Cancelar</button><button type="submit" class="btn btn-primary">${icon('check')} Guardar</button></div></form>`;
   dialog.showModal();
   modalOriginal=modalSnapshot(dialog.querySelector('#entity-form'));
-  setTimeout(()=>dialog.querySelector('input:not([type=hidden]), select')?.focus(),0);
+  if(matchMedia('(min-width: 851px)').matches) setTimeout(()=>dialog.querySelector('input:not([type=hidden]), select')?.focus(),0);
 }
 function clientForm(id=''){
   const c=id?findClient(id):null;
@@ -313,14 +315,13 @@ function clientForm(id=''){
 function vehicleForm(id='',presetClient=''){
   const v=id?findVehicle(id):null;
   if(!db.clients.length){toast('Primero agregá un cliente para asociar el vehículo.','error');navigate('clientes');return;}
-  const customerOptions=[{value:'',label:'Seleccionar un cliente…'},...db.clients.map(c=>({value:c.id,label:c.name}))];
   showModal(v?'Editar vehículo':'Nuevo vehículo','Vinculá un automóvil con uno de tus clientes.','vehicle',[
-    input('Cliente','clientId',v?.clientId||presetClient,{required:true,select:customerOptions,full:true}),
+    clientPicker(v?.clientId||presetClient),
     input('Patente','plate',v?.plate,{required:true,placeholder:'Ej. AF 123 BC',maxlength:12}),
     input('Marca','make',v?.make,{required:true,placeholder:'Ej. Volkswagen'}),
     input('Modelo','model',v?.model,{required:true,placeholder:'Ej. Gol Trend'}),
     input('Año','year',v?.year||'',{type:'number',min:1900,max:new Date().getFullYear()+2}),
-    input('Kilometraje actual','mileage',v?.mileage||0,{type:'number',min:0,step:1}),
+    input('Kilometraje actual','mileage',v?.mileage??'',{type:'number',min:0,step:1,placeholder:'Ej. 62.500'}),
     input('VIN / chasis','vin',v?.vin,{placeholder:'Opcional',maxlength:40}),
     input('Color','color',v?.color,{placeholder:'Opcional'}),
     input('Próximo servicio (fecha)','nextServiceDate',v?.nextServiceDate,{type:'date',full:true}),
@@ -332,12 +333,34 @@ function vehiclePickerOption(v){
   return `<button type="button" class="vehicle-picker-option" data-action="pick-vehicle" data-id="${esc(v.id)}"><span class="plate">${esc(v.plate)}</span><span class="vehicle-picker-name"><strong>${esc(fullVehicle(v))}</strong><small>${esc(c?.name||'Cliente sin datos')} · ${num(v.mileage)} km</small></span>${icon('chevron',16)}</button>`;
 }
 function vehiclePickerResults(query=''){
-  const choices=db.vehicles.filter(v=>matchesVehicle(v,vehicleClient(v),query)).sort((a,b)=>a.plate.localeCompare(b.plate,'es'));
-  return `<div class="vehicle-picker-count" role="status">${query?`${choices.length} vehículo${choices.length===1?'':'s'} encontrado${choices.length===1?'':'s'}`:'Elegí un vehículo de la lista'}</div>${choices.length?choices.slice(0,7).map(vehiclePickerOption).join(''):`<div class="vehicle-picker-empty">No encontramos esa patente o vehículo. Probá otro término.</div>`}${choices.length>7?`<div class="vehicle-picker-more">Mostrando 7 de ${choices.length}. Escribí para encontrar el correcto.</div>`:''}`;
+  const {items,total,searching}=suggestVehicles(db.vehicles,db.clients,db.orders,query);
+  const caption=searching?`${total} coincidencia${total===1?'':'s'} · máx. 5 resultados`:`Vehículos recientes · ${Math.min(total,3)} de ${total}`;
+  return `<div class="picker-count" role="status">${caption}</div>${items.length?items.map(vehiclePickerOption).join(''):`<div class="picker-empty">Sin coincidencias. Probá con otra patente, marca o cliente.</div>`}${total>items.length?`<p class="picker-more">${searching?'Afiná la búsqueda para encontrar el vehículo.':'Escribí arriba para buscar en todos los vehículos.'}</p>`:''}`;
+}
+function clientPickerOption(c){
+  const n=db.vehicles.filter(v=>v.clientId===c.id).length;
+  return `<button type="button" class="client-picker-option" data-action="pick-client" data-id="${esc(c.id)}"><span class="avatar">${esc(initials(c.name))}</span><span><strong>${esc(c.name)}</strong><small>${n} vehículo${n===1?'':'s'} · ${esc(c.phone||'Sin teléfono')}</small></span>${icon('chevron',16)}</button>`;
+}
+function clientPickerResults(query=''){
+  const {items,total,searching}=suggestClients(db.clients,query);
+  return `<div class="picker-count" role="status">${searching?`${total} coincidencia${total===1?'':'s'} · máx. 5 resultados`:`Clientes recientes · ${Math.min(total,3)} de ${total}`}</div>${items.length?items.map(clientPickerOption).join(''):`<div class="picker-empty">No encontramos el cliente. Probá con su nombre o teléfono.</div>`}${total>items.length?`<p class="picker-more">${searching?'Escribí más para precisar la búsqueda.':'Buscá por nombre o teléfono para ver los demás.'}</p>`:''}`;
+}
+function clientPicker(selectedId=''){
+  const c=findClient(selectedId);
+  return `<div class="client-picker span-2"><label for="client-lookup">Cliente *</label><input type="hidden" id="f-clientId" name="clientId" value="${esc(selectedId)}"><div id="client-selected" class="picker-selected" ${c?'':'hidden'}>${c?`<span class="selected-mark">${icon('check',17)}</span><div><strong>${esc(c.name)}</strong><small>${esc(c.phone||'Sin teléfono')}</small></div><button class="btn btn-secondary btn-sm" type="button" data-action="change-client">Cambiar</button>`:''}</div><div class="client-picker-search" ${c?'hidden':''}><div class="history-search">${icon('search',17)}<input id="client-lookup" type="search" autocomplete="off" placeholder="Nombre o teléfono…" aria-describedby="client-picker-help" aria-controls="client-suggestions"></div><small id="client-picker-help">Seleccioná un cliente para vincular el vehículo.</small><div id="client-suggestions" class="client-picker-list">${clientPickerResults()}</div></div></div>`;
+}
+function selectClientForVehicle(id){
+  const c=findClient(id);const form=document.querySelector('#entity-form');
+  if(!c||form?.dataset.kind!=='vehicle')return;
+  form.querySelector('#f-clientId').value=id;
+  const selected=form.querySelector('#client-selected');
+  selected.innerHTML=`<span class="selected-mark">${icon('check',17)}</span><div><strong>${esc(c.name)}</strong><small>${esc(c.phone||'Sin teléfono')}</small></div><button class="btn btn-secondary btn-sm" type="button" data-action="change-client">Cambiar</button>`;
+  selected.hidden=false;form.querySelector('.client-picker-search').hidden=true;
+  if(matchMedia('(min-width: 851px)').matches)form.querySelector('#f-plate').focus();
 }
 function vehiclePicker(selectedId=''){
   const selected=findVehicle(selectedId);
-  return `<div class="vehicle-picker span-2"><label for="vehicle-lookup">Vehículo *</label><input id="f-vehicleId" name="vehicleId" type="hidden" value="${esc(selectedId)}" /><div id="vehicle-selected" class="vehicle-selected" ${selected?'':'hidden'}>${selected?`<span class="selected-mark">${icon('check',17)}</span><div><strong>${esc(selected.plate)} · ${esc(fullVehicle(selected))}</strong><small>${esc(vehicleClient(selected)?.name||'')} · ${num(selected.mileage)} km</small></div>`:''}<button type="button" class="btn btn-secondary btn-sm" data-action="change-vehicle">Cambiar</button></div><div class="vehicle-picker-search" ${selected?'hidden':''}><div class="history-search">${icon('search',17)}<input id="vehicle-lookup" type="search" placeholder="Patente, marca o cliente…" autocomplete="off" aria-controls="vehicle-suggestions" aria-describedby="vehicle-picker-help" /></div><small id="vehicle-picker-help">Buscá por patente, vehículo o nombre del cliente. Elegí un resultado para continuar.</small><div id="vehicle-suggestions" class="vehicle-picker-list">${vehiclePickerResults()}</div></div></div>`;
+  return `<div class="vehicle-picker span-2"><label for="vehicle-lookup">Vehículo *</label><input id="f-vehicleId" name="vehicleId" type="hidden" value="${esc(selectedId)}" /><div id="vehicle-selected" class="vehicle-selected" ${selected?'':'hidden'}>${selected?`<span class="selected-mark">${icon('check',17)}</span><div><strong>${esc(selected.plate)} · ${esc(fullVehicle(selected))}</strong><small>${esc(vehicleClient(selected)?.name||'')} · ${num(selected.mileage)} km</small></div>`:''}<button type="button" class="btn btn-secondary btn-sm" data-action="change-vehicle">Cambiar</button></div><div class="vehicle-picker-search" ${selected?'hidden':''}><div class="history-search">${icon('search',17)}<input id="vehicle-lookup" type="search" placeholder="Patente, marca o cliente…" autocomplete="off" aria-controls="vehicle-suggestions" aria-describedby="vehicle-picker-help" /></div><small id="vehicle-picker-help">Buscá por patente, vehículo o nombre del cliente. Mostramos 3 recientes o hasta 5 coincidencias; buscá para ver más.</small><div id="vehicle-suggestions" class="vehicle-picker-list">${vehiclePickerResults()}</div></div></div>`;
 }
 function selectVehicleForOrder(id){
   const selected=findVehicle(id);if(!selected)return;
@@ -371,7 +394,7 @@ function orderForm(id='',presetVehicle=''){
       input('Notas adicionales','notes',o?.notes,{textarea:true,full:true,placeholder:'Pendientes o recomendaciones…'})
     ].join('')}</div></details></div>`
   ].join(''),id);
-  setTimeout(()=>document.querySelector(chosen?'#f-title':'#vehicle-lookup')?.focus(),0);
+  if(matchMedia('(min-width: 851px)').matches) setTimeout(()=>document.querySelector(chosen?'#f-title':'#vehicle-lookup')?.focus(),0);
 }
 function paymentForm(id){
   const o=findOrder(id);if(!o)return;
@@ -392,7 +415,7 @@ async function saveForm(form){
     routeTo=['cliente',baseId];message=existing?'Cliente actualizado.':'Cliente registrado.';
   }else if(kind==='vehicle'){
     const plate=normPlate(get('plate'));
-    if(!get('clientId')||!findClient(get('clientId'))){toast('Seleccioná un cliente.','error');return;}
+    if(!get('clientId')||!findClient(get('clientId'))){toast('Buscá y seleccioná un cliente.','error');form.querySelector('#client-lookup')?.focus();return;}
     if(plate.length<5){toast('Ingresá una patente válida (al menos 5 caracteres).','error');return;}
     if(db.vehicles.some(v=>v.id!==id&&normPlate(v.plate)===plate)){toast('Ya existe un vehículo con esa patente.','error');return;}
     next={id:baseId,clientId:get('clientId'),plate,make:get('make'),model:get('model'),year:get('year')?Number(get('year')):'',mileage:amount(get('mileage')),vin:get('vin'),color:get('color'),nextServiceDate:get('nextServiceDate'),notes:get('notes'),createdAt:findVehicle(id)?.createdAt||isoDate(new Date())};
@@ -489,6 +512,8 @@ document.addEventListener('click',async event=>{
   const action=target.dataset.action,id=target.dataset.id||'';
   switch(action){
     case 'go-home':navigate('inicio');break;
+    case 'open-mobile-search':mobileSearchOpen=true;document.querySelector('.topbar')?.classList.add('search-open');document.querySelector('#global-search')?.focus();break;
+    case 'close-mobile-search':activeQuery='';mobileSearchOpen=false;render();break;
     case 'go-settings':navigate('ajustes');break;
     case 'show-active-orders':activeFilter='active';listPages.trabajos=1;navigate('trabajos');break;
     case 'show-unpaid-orders':activeFilter='unpaid';listPages.trabajos=1;navigate('trabajos');break;
@@ -501,6 +526,12 @@ document.addEventListener('click',async event=>{
     case 'view-vehicle':navigate('vehiculo',id);break;
     case 'new-order':orderForm('',target.dataset.vehicle||'');break;
     case 'pick-vehicle':selectVehicleForOrder(id);break;
+    case 'pick-client':selectClientForVehicle(id);break;
+    case 'change-client':{
+      const form=document.querySelector('#entity-form');if(form?.dataset.kind!=='vehicle')break;
+      form.querySelector('#f-clientId').value='';form.querySelector('#client-selected').hidden=true;form.querySelector('.client-picker-search').hidden=false;
+      form.querySelector('#client-lookup').value='';form.querySelector('#client-suggestions').innerHTML=clientPickerResults();form.querySelector('#client-lookup').focus();break;
+    }
     case 'change-vehicle':{
       const form=document.querySelector('#entity-form');if(!form||form.dataset.kind!=='order')break;
       form.querySelector('#f-vehicleId').value='';form.querySelector('#vehicle-selected').hidden=true;form.querySelector('.vehicle-picker-search').hidden=false;
@@ -548,6 +579,7 @@ document.addEventListener('change',async event=>{
 });
 document.addEventListener('input',event=>{
   if(event.target.id==='global-search'){activeQuery=event.target.value;refreshPage();}
+  if(event.target.id==='client-lookup'){const results=document.querySelector('#client-suggestions');if(results)results.innerHTML=clientPickerResults(event.target.value);}
   if(event.target.id==='vehicle-lookup'){const results=document.querySelector('#vehicle-suggestions');if(results)results.innerHTML=vehiclePickerResults(event.target.value);}
   if(event.target.id==='history-search'){historyQuery=event.target.value;historyPage=1;refreshVehicleHistory();}
   if(event.target.id==='finance-search'){financeQuery=event.target.value;financePage=1;refreshFinanceResults();}
