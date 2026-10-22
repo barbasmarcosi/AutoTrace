@@ -25,3 +25,21 @@ test('rejects invalid amounts, overpayment and dates',()=>{
 test('guards CSV formula injection and escapes quote',()=>{
  assert.equal(csvCell('=1+2'),'"\'=1+2"');assert.equal(csvCell('A "B"'),'"A ""B"""');
 });
+
+test('los desgloses son opcionales para registros viejos y conservan cantidad/importe al validar',()=>{
+  const data={
+    clients:[{id:'c',name:'Cliente',phone:'',email:'',notes:'',createdAt:''}],
+    vehicles:[{id:'v',clientId:'c',plate:'AF012BC',make:'Toyota',model:'Hilux',year:'',mileage:10,vin:'',color:'',nextServiceDate:'',notes:'',createdAt:''}],
+    orders:[{id:'o',vehicleId:'v',title:'Presupuesto',category:'Mecánica',status:'received',openedAt:'2026-10-22',completedAt:'',mileage:10,description:'',partsCost:0,laborCost:0,charged:347000,paid:0,notes:'',createdAt:''}],
+    settings:{garageName:'Taller',currency:'ARS',demo:false}
+  };
+  const old=validateData(data);
+  assert.equal(old.orders[0].items,undefined);
+  data.orders[0].items=[{id:'1',kind:'part',description:'Filtro',quantity:8,unitPrice:19000}];
+  data.orders[0].documentKind='quote';
+  const renewed=validateData(data);
+  assert.equal(renewed.orders[0].items[0].quantity,8);
+  assert.equal(pendingAmount(renewed.orders[0]),0);
+  data.orders[0].items[0].quantity=-1;
+  assert.throws(()=>validateData(data));
+});
