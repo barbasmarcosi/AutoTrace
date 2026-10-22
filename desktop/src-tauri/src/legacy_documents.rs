@@ -355,5 +355,31 @@ mod tests {
         }
     }
     #[test]
+    fn export_existing_client_work_to_both_legacy_formats_roundtrips(){
+        let raw=serde_json::json!({
+         "clients":[{"id":"c1","name":"CLIENTE PRUEBA","phone":"00123","email":"","notes":"","createdAt":""}],
+         "vehicles":[{"id":"v1","clientId":"c1","plate":"AF012BC","make":"Toyota","model":"Hilux","year":"","mileage":32450,"vin":"","color":"","nextServiceDate":"","notes":"","createdAt":""}],
+         "orders":[{"id":"o1","vehicleId":"v1","title":"Service","category":"Mecánica","status":"done",
+             "openedAt":"2026-10-22","completedAt":"","mileage":32450,"description":"","partsCost":0,
+             "laborCost":0,"charged":4400,"paid":0,"notes":"","createdAt":"",
+             "items":[{"id":"item1","kind":"part","description":"FILTRO","quantity":2,"unitPrice":1200},
+                      {"id":"item2","kind":"labor","description":"MANO DE OBRA - diagnóstico\ncontrol de bujías","quantity":1,"unitPrice":2000}]}],
+         "settings":{"garageName":"TALLER PRUEBA","currency":"ARS","demo":false}
+        });
+        let data:crate::store::AppData=serde_json::from_value(raw).unwrap();
+        for kind in ["quote","work"]{
+            let xlsx=generate(&data,"o1",kind).unwrap();
+            let document=parse(&xlsx).unwrap();
+            assert_eq!(document.document_kind,kind);
+            assert_eq!(document.customer_name,"CLIENTE PRUEBA");
+            assert_eq!(document.plate,"AF012BC");
+            assert_eq!(document.items.len(),2);
+            assert_eq!(document.items[0].quantity,2.);
+            assert_eq!(document.items[1].unit_price,2000.);
+            assert!(document.items[1].description.contains("control de bujías"));
+            assert_eq!(document.total,4400.);
+        }
+    }
+    #[test]
     fn refuses_unrecognized_file_without_creating_records(){assert!(parse(b"not excel").is_err());}
 }
