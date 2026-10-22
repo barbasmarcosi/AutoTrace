@@ -1,38 +1,24 @@
-# AutoTrace Desktop — primer incremento (D0/D1)
+# AutoTrace Desktop — implementación de escritorio (preview)
 
-La interfaz **se reutiliza directamente desde `../site/`**. En navegador, AutoTrace sigue utilizando IndexedDB. Cuando Tauri la abre, usa los comandos nativos `load_state` y `save_state` para persistir en SQLite en el directorio de datos privado de la aplicación. No hay servidor.
+AutoTrace usa Tauri v2 y SQLite local, sin servidor y sin cuotas mensuales obligatorias. Reutiliza la interfaz de `../site/`. La misma UI en navegador sigue utilizando IndexedDB y GitHub Pages; en Windows Desktop utiliza comandos nativos validados y SQLite.
 
-## Estado de esta entrega
+## Características implementadas en este PR
 
-Implementado en código: shell Tauri v2, migración SQLite v1, relaciones cliente → vehículo → trabajo, restricciones de patente y cobros, guardado por transacción con revision/compare-and-swap, carga con validación y puente de datos de la PWA. Esta **no es aún una versión apta para producción**: falta prueba real de compilación/instalación Windows, respaldo automático SQLite + XLSX, importación Excel, recuperación de equipos y endurecimiento operativo. No usar datos críticos hasta aprobar los gates D2–D5.
+- Modelo SQLite con restricciones, migración v1, escritura transaccional, revisión CAS e importación desde JSON de la PWA.
+- Exportación e importación de Excel completo con ID estables y validación, más informe Excel por cliente sin datos privados de otros clientes ni costos internos.
+- Respaldos automáticos locales SQLite + XLSX + manifiesto SHA-256 del mismo snapshot; opción de replicarlos a una **unidad/volumen distinto**.
+- Retención prudente, indicadores de copia verificada, recuperación con respaldo previo y opción de **probar recuperación** desde ambos formatos en bases temporales.
+- Copias **no cifradas**: no usar carpetas públicas ni sincronizar a la nube sin cifrado adicional.
+- Instalador **NSIS unsigned** generado con workflow Windows, con CI Rust/SQLite/Node y prueba de instalación/desinstalación silenciosa en runner descartable (solo tras su primera ejecución verde).
 
-## Ejecutar en desarrollo
+## Instalación y pruebas
 
-Requiere Rust estable reciente, dependencias de Tauri v2, WebView2 en Windows y CLI de Tauri:
+Requiere Windows 10/11 x64, WebView2 y runtime de Tauri. Para desarrollo: Rust estable, Tauri CLI v2, `cd desktop/src-tauri && cargo tauri dev`.
+Para tests: `cargo test --manifest-path desktop/src-tauri/Cargo.toml --all-targets`. Para distribución: el workflow `.github/workflows/desktop-installer.yml` genera un instalador NSIS sin firma; su artefacto se retiene 7 días.
 
-```bash
-cargo install tauri-cli --version '^2' --locked
-cd desktop/src-tauri
-cargo tauri dev
-```
+**No es un release productivo.** Falta la prueba en una computadora Windows real con instalación y actualización de la aplicación, recuperación desde un soporte físico distinto, cifrado antes de la nube y aceptación del usuario final. Las pruebas del runner NO demuestran recuperación ante robo/falla física de la PC.
 
-El `frontendDist` apunta a `../../site`; no hay `npm build` ni copia duplicada de HTML. Para pruebas de Rust: `cd desktop/src-tauri && cargo test`. En Windows, el futuro instalador NSIS podrá generarse con `cargo tauri build` tras pasar la CI desktop.
+## Migración y respaldo
 
-## Reglas de seguridad
-
-- La única escritura permitida desde JavaScript es `save_state` con contenido canónico, tipos controlados y revisión esperada.
-- `save_state` valida todos los registros, sus importes, patentes, IDs y fechas, y hace el reemplazo completo en **una transacción**. Se aborta si otra ventana modificó la revisión mientras tanto. Para un usuario es suficiente en esta primera fase; una futura etapa podrá ejecutar cambios por registro para mejorar escalabilidad.
-- Los datos nunca viajan a GitHub ni a un endpoint HTTP. No se expone SQL arbitrario a la WebView.
-- El primer inicio desktop arranca **sin datos de demostración**. Para migrar desde la PWA hay que exportar su JSON y elegir «Importar JSON» en AutoTrace Desktop. El archivo de origen permanece intacto.
-- Sin copia externa, SQLite local **no es suficiente** frente a pérdida/robo de la computadora. Ver `../docs/desktop/BACKUP_AND_RECOVERY.md`.
-
-## Gate verificable
-
-`python3 -m unittest discover -s tests -p 'test_desktop_schema.py' -v` desde la raíz del repositorio confirma las constraints SQLite usando el engine de Python. Esto **no sustituye** la compilación Rust/Tauri en Windows ni un test de recuperación de backups.
-
-## Avance: exportación Excel y respaldo local en rama experimental
-
-Se agregaron comandos nativos `backup_now`, `backup_status`, `export_excel_dialog` y `choose_excel_import`.
-El respaldo local produce SQLite + Excel desde el mismo snapshot, con SHA-256 y verificación de integridad. En Ajustes se puede exportar/importar XLSX; toda restauración exige confirmación y copia local previa. Una tarea en primer arranque y cada 4 horas **mientras está abierta la aplicación** comprueba si corresponde generar la copia.
-
-**No confundir con protección ante pérdida de computadora:** aún falta configurar una copia fuera del disco y una restauración probada en otra instalación. El Excel completo incluye datos privados; no es un informe para entregar a clientes. Véase `docs/desktop/IMPLEMENTATION_D2_D4_INCREMENT.md`.
+En la PWA: Ajustes > Exportar JSON. En AutoTrace Desktop: Ajustes > Importar JSON (previa confirmación). Conservá el JSON original.
+Los datos del cliente no se cargan en CI, el instalador no contiene datos reales y el sitio Pages no se modifica desde este PR.

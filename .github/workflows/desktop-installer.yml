@@ -5,6 +5,7 @@ on:
     paths:
       - '.github/workflows/desktop-installer.yml'
       - 'desktop/src-tauri/tauri.conf.json'
+      - 'desktop/scripts/smoke-installer.ps1'
   workflow_dispatch:
 
 permissions:
@@ -45,6 +46,9 @@ jobs:
             Write-Output "Size: $($exe.Length) bytes"
             Get-FileHash -Algorithm SHA256 $exe.FullName | Format-Table -HideTableHeaders
           }
+      - name: Silent installation and uninstallation smoke (ephemeral runner)
+        shell: pwsh
+        run: ./desktop/scripts/smoke-installer.ps1
       - name: Upload preview installer (UNSIGNED)
         uses: actions/upload-artifact@v4
         with:
