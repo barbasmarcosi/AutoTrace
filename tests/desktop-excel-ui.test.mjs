@@ -32,6 +32,14 @@ test('User can test recovery without mutating live SQLite',()=>{
   assert.match(backup,/Connection::open_in_memory/);
   assert.match(backup,/fn check_distinct_volume/);
 });
+test('Legacy workbook import and client document export are connected only on desktop',()=>{
+  assert.match(frontend,/import-legacy-document/);
+  assert.match(frontend,/choose_legacy_document/);
+  assert.match(frontend,/export-legacy-quote/);
+  assert.match(frontend,/export_legacy_document/);
+  assert.match(runtime,/legacy_documents::choose_legacy_document/);
+  assert.match(runtime,/legacy_documents::export_legacy_document/);
+});
 test('Restore and destructive changes take a backup first',()=>{
   assert.match(frontend,/if\(!await createDesktopBackup\(true\)\)throw Error/);
   assert.match(frontend,/if\(desktopInvoke && !await createDesktopBackup\(true\)\)break/);

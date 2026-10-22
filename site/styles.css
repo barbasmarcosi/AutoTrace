@@ -418,3 +418,12 @@ body:has(#form-dialog[open]) { overscroll-behavior: none; }
   }
   .topbar-right { align-items: center; }
 }
+
+/* Detalle de presupuestos: grilla flexible sin scroll horizontal del formulario. */
+.order-line-editor{min-width:0;border:1px solid #dae5e4;border-radius:14px;padding:14px}
+.order-line-heading{display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;font-size:13px}
+.order-line-row{display:grid;grid-template-columns:minmax(0,2fr) minmax(92px,1fr) 78px 105px 38px;gap:8px;padding:12px 0;border-bottom:1px solid #e2e9e9;min-width:0;align-items:end}
+.order-line-row label{display:grid;gap:4px;min-width:0;font-size:11px;font-weight:650}
+.order-line-row input,.order-line-row select{min-width:0;width:100%}
+.order-line-row button{min-width:36px;padding:8px}
+@media(max-width:680px){.order-line-row{grid-template-columns:minmax(0,1fr) minmax(0,1fr) 39px}.order-line-row .line-description{grid-column:1/-1}.order-line-row>label:nth-child(4){grid-column:2}.order-line-row>button{grid-column:3;grid-row:3}.order-line-row label{font-size:12px}}
