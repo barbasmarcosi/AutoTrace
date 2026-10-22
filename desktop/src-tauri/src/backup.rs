@@ -61,6 +61,7 @@ fn backup_pair(src:&Connection, dest:&Path, id:&str)->Result<BackupResult,String
         let bytes=fs::read(&temp_xlsx).map_err(err)?;
         let restored=excel::from_xlsx(&bytes)?;
         if excel::canonical_bytes(&restored)?!=excel::canonical_bytes(&s.data)?{return Err("Excel no reproduce el snapshot SQLite".into());}
+        drop(snap); // Windows no permite mover un .sqlite3 mientras la conexión lo mantiene abierto.
         let metadata=serde_json::json!({"kind":"autotrace-dual-backup","version":1,"snapshotId":id,"revision":s.revision,"clients":s.data.clients_count(),"vehicles":s.data.vehicles_count(),"orders":s.data.orders_count(),"sqliteSha256":sha(&temp_db)?,"excelSha256":sha(&temp_xlsx)?});
         let temp_manifest=staging.join("manifest.json");
         fs::write(&temp_manifest,serde_json::to_vec_pretty(&metadata).map_err(err)?).map_err(err)?;
@@ -127,4 +128,25 @@ pub(crate) fn choose_excel_import()->Result<Option<ExcelPreview>,String>{
     let bytes=fs::read(&path).map_err(err)?;
     let data=excel::from_xlsx(&bytes)?;
     Ok(Some(ExcelPreview{data,filename:path.file_name().unwrap_or_default().to_string_lossy().into_owned()}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn backup_pair_contains_restorable_sqlite_and_excel() {
+        let temp=std::env::temp_dir().join(format!("autotrace-test-{}",uuid::Uuid::new_v4()));
+        fs::create_dir_all(&temp).unwrap();
+        let source=Connection::open_in_memory().unwrap();
+        source.execute_batch(include_str!("../migrations/001_init.sql")).unwrap();
+        let done=backup_pair(&source,&temp,"fixture").unwrap();
+        let manifest:serde_json::Value=serde_json::from_slice(&fs::read(&done.manifest_path).unwrap()).unwrap();
+        assert_eq!(manifest["kind"],"autotrace-dual-backup");
+        assert_eq!(manifest["sqliteSha256"],sha(Path::new(&done.sqlite_path)).unwrap());
+        assert_eq!(manifest["excelSha256"],sha(Path::new(&done.excel_path)).unwrap());
+        let restored=excel::from_xlsx(&fs::read(done.excel_path).unwrap()).unwrap();
+        assert_eq!(restored.clients_count(),0);
+        assert!(backup_pair(&source,&temp,"fixture").is_err());
+        fs::remove_dir_all(temp).unwrap();
+    }
 }

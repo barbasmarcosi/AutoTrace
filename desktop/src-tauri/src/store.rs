@@ -88,8 +88,8 @@ impl Default for AppData {
 
 #[derive(Serialize)]
 pub struct Snapshot {
-    data: AppData,
-    revision: u64,
+    pub(crate) data: AppData,
+    pub(crate) revision: u64,
 }
 
 #[derive(Serialize)]
@@ -284,7 +284,8 @@ fn write(conn: &mut Connection, data: &AppData, expected_revision: u64) -> Resul
     }
     tx.execute("INSERT INTO app_settings(id,record_json) VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET record_json=excluded.record_json", [serde_json::to_string(&data.settings).map_err(sqlite_error)?]).map_err(sqlite_error)?;
     let next = existing.checked_add(1).ok_or("Se agotó la revisión de datos")?;
-    tx.execute("UPDATE app_meta SET int_value=?1 WHERE key='revision'", [next]).map_err(sqlite_error)?;
+    let sql_next = i64::try_from(next).map_err(|_| "Revisión fuera del rango de SQLite")?;
+    tx.execute("UPDATE app_meta SET int_value=?1 WHERE key='revision'", [sql_next]).map_err(sqlite_error)?;
     tx.commit().map_err(sqlite_error)?;
     Ok(SaveResult { revision: next })
 }
