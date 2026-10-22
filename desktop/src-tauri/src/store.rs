@@ -69,11 +69,16 @@ impl Default for Settings {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct AppData {
-    clients: Vec<Client>,
-    vehicles: Vec<Vehicle>,
-    orders: Vec<Order>,
+pub(crate) struct AppData {
+    pub(crate) clients: Vec<Client>,
+    pub(crate) vehicles: Vec<Vehicle>,
+    pub(crate) orders: Vec<Order>,
     settings: Settings,
+}
+impl AppData {
+    pub(crate) fn clients_count(&self)->usize{self.clients.len()}
+    pub(crate) fn vehicles_count(&self)->usize{self.vehicles.len()}
+    pub(crate) fn orders_count(&self)->usize{self.orders.len()}
 }
 impl Default for AppData {
     fn default() -> Self {
@@ -109,7 +114,7 @@ fn open(path: &std::path::Path) -> Result<Connection, String> {
     Ok(conn)
 }
 
-fn open_app(app: &tauri::AppHandle) -> Result<Connection, String> {
+pub(crate) fn open_app(app: &tauri::AppHandle) -> Result<Connection, String> {
     let dir: PathBuf = app.path().app_local_data_dir().map_err(sqlite_error)?;
     fs::create_dir_all(&dir).map_err(sqlite_error)?;
     open(&dir.join("autotrace.sqlite3"))
@@ -152,7 +157,7 @@ fn normalized_plate(plate: &str) -> String {
     plate.chars().filter(|c| c.is_ascii_alphanumeric()).flat_map(|c| c.to_uppercase()).collect()
 }
 
-fn validate(data: &AppData) -> Result<(), String> {
+pub(crate) fn validate(data: &AppData) -> Result<(), String> {
     if data.clients.len() > MAX_RECORDS.0 || data.vehicles.len() > MAX_RECORDS.1 || data.orders.len() > MAX_RECORDS.2 {
         return Err("Se superó el límite admitido de registros".into());
     }
@@ -221,7 +226,7 @@ fn current_revision(conn: &Connection) -> Result<u64, String> {
     u64::try_from(val).map_err(sqlite_error)
 }
 
-fn read(conn: &Connection) -> Result<Snapshot, String> {
+pub(crate) fn read(conn: &Connection) -> Result<Snapshot, String> {
     let mut data = AppData::default();
     for (sql, target) in [
         ("SELECT record_json FROM clients ORDER BY rowid", 0),
@@ -279,8 +284,7 @@ fn write(conn: &mut Connection, data: &AppData, expected_revision: u64) -> Resul
     }
     tx.execute("INSERT INTO app_settings(id,record_json) VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET record_json=excluded.record_json", [serde_json::to_string(&data.settings).map_err(sqlite_error)?]).map_err(sqlite_error)?;
     let next = existing.checked_add(1).ok_or("Se agotó la revisión de datos")?;
-    let sql_revision = i64::try_from(next).map_err(|_| "La revisión excedió el rango de SQLite")?;
-    tx.execute("UPDATE app_meta SET int_value=?1 WHERE key='revision'", [sql_revision]).map_err(sqlite_error)?;
+    tx.execute("UPDATE app_meta SET int_value=?1 WHERE key='revision'", [next]).map_err(sqlite_error)?;
     tx.commit().map_err(sqlite_error)?;
     Ok(SaveResult { revision: next })
 }

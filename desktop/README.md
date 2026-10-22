@@ -29,3 +29,10 @@ El `frontendDist` apunta a `../../site`; no hay `npm build` ni copia duplicada d
 ## Gate verificable
 
 `python3 -m unittest discover -s tests -p 'test_desktop_schema.py' -v` desde la raíz del repositorio confirma las constraints SQLite usando el engine de Python. Esto **no sustituye** la compilación Rust/Tauri en Windows ni un test de recuperación de backups.
+
+## Avance: exportación Excel y respaldo local en rama experimental
+
+Se agregaron comandos nativos `backup_now`, `backup_status`, `export_excel_dialog` y `choose_excel_import`.
+El respaldo local produce SQLite + Excel desde el mismo snapshot, con SHA-256 y verificación de integridad. En Ajustes se puede exportar/importar XLSX; toda restauración exige confirmación y copia local previa. Una tarea en primer arranque y cada 4 horas **mientras está abierta la aplicación** comprueba si corresponde generar la copia.
+
+**No confundir con protección ante pérdida de computadora:** aún falta configurar una copia fuera del disco y una restauración probada en otra instalación. El Excel completo incluye datos privados; no es un informe para entregar a clientes. Véase `docs/desktop/IMPLEMENTATION_D2_D4_INCREMENT.md`.
