@@ -300,7 +300,7 @@ function renderVehicleDetail(id){
 function renderOrderDetail(id){
   const o=findOrder(id);if(!o)return notFound('trabajo','trabajos');const v=findVehicle(o.vehicleId);const c=vehicleClient(v);
   const cost=amount(o.partsCost)+amount(o.laborCost);
-  return `${back('trabajos','Trabajos')}${sectionHead(o.title,`${fullVehicle(v)} · ${v?.plate||''} · ${formatDate(o.openedAt)}`,`${button(`${icon('pencil')} Editar trabajo`,'edit-order','btn-secondary',`data-id="${esc(id)}"`)} ${button(`${icon('printer')} Resumen para cliente`,'print-order','btn-secondary',`data-id="${esc(id)}"`)}`)}<div class="detail-layout"><div><div class="card card-pad detail-section"><div style="display:flex;align-items:center;justify-content:space-between;gap:10px"><h3 style="margin:0">Detalle de la intervención</h3>${pill(o.status)}</div><div class="divider"></div><div class="info-grid">${descView('Categoría',esc(o.category))}${descView('Fecha de ingreso',formatDate(o.openedAt))}${descView('Kilometraje registrado',`${num(o.mileage)} km`)}${descView('Fecha de cierre',formatDate(o.completedAt))}</div><div class="divider"></div><h3 style="font-size:13px">Diagnóstico / Descripción</h3><p class="section-intro" style="white-space:pre-wrap">${esc(o.description||'Sin descripción adicional.')}</p>${o.notes?`<h3 style="font-size:13px">Notas</h3><p class="section-intro" style="white-space:pre-wrap">${esc(o.notes)}</p>`:''}</div><div class="card card-pad detail-section"><h3>Seguimiento</h3><p class="section-intro">Actualizá el estado del trabajo sin tener que abrir el formulario completo.</p><div class="field"><label for="status-quick">Estado actual</label><select id="status-quick" data-status-order="${esc(id)}">${Object.entries(STATUSES).map(([k,label])=>`<option value="${k}" ${k===o.status?'selected':''}>${label}</option>`).join('')}</select></div></div></div><div><div class="card card-pad detail-section"><h3>Balance del trabajo</h3><div class="money-grid" style="margin-top:18px"><div class="money-box"><small>Costo de repuestos</small><strong>${money(o.partsCost)}</strong></div><div class="money-box"><small>Costo de mano de obra</small><strong>${money(o.laborCost)}</strong></div><div class="money-box"><small>Costo total</small><strong>${money(cost)}</strong></div><div class="money-box"><small>Importe acordado</small><strong>${money(o.charged)}</strong></div><div class="money-box highlight"><small>Pagado</small><strong>${money(o.paid)}</strong></div><div class="money-box ${pendingAmount(o)?'due':''}"><small>Saldo pendiente</small><strong>${money(pendingAmount(o))}</strong></div></div><div class="divider"></div><div class="info-item"><small>Margen bruto estimado</small><strong class="${margin(o)<0?'text-negative':'text-positive'}" style="font-size:22px">${money(margin(o))}</strong></div><div style="margin-top:20px">${button(`${icon('plus')} Registrar cobro`,'add-payment',pendingAmount(o)>0?'btn-primary':'btn-secondary',`data-id="${esc(id)}" ${pendingAmount(o)===0?'disabled':''}`)}</div></div><div class="card card-pad detail-section"><h3>Vehículo y cliente</h3><div class="info-grid">${descView('Vehículo',esc(fullVehicle(v)))}${descView('Patente',esc(v?.plate||''))}${descView('Cliente',esc(c?.name||''))}${descView('Contacto',phoneLink(c?.phone))}</div><div style="margin-top:20px">${button('Ver vehículo','view-vehicle','btn-secondary btn-sm',`data-id="${esc(v?.id||'')}"`)}</div></div><div class="card card-pad">${button(`${icon('trash')} Eliminar trabajo`,'delete-order','btn-danger-ghost btn-sm',`data-id="${esc(id)}"`)}</div></div></div>`;
+  return `${back('trabajos','Trabajos')}${sectionHead(o.title,`${fullVehicle(v)} · ${v?.plate||''} · ${formatDate(o.openedAt)}`,`${button(`${icon('pencil')} Editar trabajo`,'edit-order','btn-secondary',`data-id="${esc(id)}"`)} ${button(`${icon('printer')} Resumen para cliente`,'print-order','btn-secondary',`data-id="${esc(id)}"`)}`)}<div class="detail-layout"><div><div class="card card-pad detail-section"><div style="display:flex;align-items:center;justify-content:space-between;gap:10px"><h3 style="margin:0">Detalle de la intervención</h3>${pill(o.status)}</div><div class="divider"></div><div class="info-grid">${descView('Categoría',esc(o.category))}${descView('Fecha de ingreso',formatDate(o.openedAt))}${descView('Kilometraje registrado',`${num(o.mileage)} km`)}${descView('Fecha de cierre',formatDate(o.completedAt))}</div><div class="divider"></div><h3 style="font-size:13px">Diagnóstico / Descripción</h3><p class="section-intro" style="white-space:pre-wrap">${esc(o.description||'Sin descripción adicional.')}</p>${renderOrderLines(o)}${o.notes?`<h3 style="font-size:13px">Notas</h3><p class="section-intro" style="white-space:pre-wrap">${esc(o.notes)}</p>`:''}</div><div class="card card-pad detail-section"><h3>Seguimiento</h3><p class="section-intro">Actualizá el estado del trabajo sin tener que abrir el formulario completo.</p><div class="field"><label for="status-quick">Estado actual</label><select id="status-quick" data-status-order="${esc(id)}">${Object.entries(STATUSES).map(([k,label])=>`<option value="${k}" ${k===o.status?'selected':''}>${label}</option>`).join('')}</select></div></div></div><div><div class="card card-pad detail-section"><h3>Balance del trabajo</h3><div class="money-grid" style="margin-top:18px"><div class="money-box"><small>Costo de repuestos</small><strong>${money(o.partsCost)}</strong></div><div class="money-box"><small>Costo de mano de obra</small><strong>${money(o.laborCost)}</strong></div><div class="money-box"><small>Costo total</small><strong>${money(cost)}</strong></div><div class="money-box"><small>Importe acordado</small><strong>${money(o.charged)}</strong></div><div class="money-box highlight"><small>Pagado</small><strong>${money(o.paid)}</strong></div><div class="money-box ${pendingAmount(o)?'due':''}"><small>Saldo pendiente</small><strong>${money(pendingAmount(o))}</strong></div></div><div class="divider"></div><div class="info-item"><small>Margen bruto estimado</small><strong class="${margin(o)<0?'text-negative':'text-positive'}" style="font-size:22px">${money(margin(o))}</strong></div><div style="margin-top:20px">${button(`${icon('plus')} Registrar cobro`,'add-payment',pendingAmount(o)>0?'btn-primary':'btn-secondary',`data-id="${esc(id)}" ${pendingAmount(o)===0?'disabled':''}`)}</div></div><div class="card card-pad detail-section"><h3>Vehículo y cliente</h3><div class="info-grid">${descView('Vehículo',esc(fullVehicle(v)))}${descView('Patente',esc(v?.plate||''))}${descView('Cliente',esc(c?.name||''))}${descView('Contacto',phoneLink(c?.phone))}</div><div style="margin-top:20px">${button('Ver vehículo','view-vehicle','btn-secondary btn-sm',`data-id="${esc(v?.id||'')}"`)}</div></div><div class="card card-pad">${button(`${icon('trash')} Eliminar trabajo`,'delete-order','btn-danger-ghost btn-sm',`data-id="${esc(id)}"`)}</div></div></div>`;
 }
 function notFound(item,to){return `${back(to,'Volver')}${empty('No encontramos este '+item,'Es posible que el registro se haya eliminado.')}`;}
 function back(to,label){return `<button class="back-btn" data-nav="${to}">${icon('back',15)} Volver a ${esc(label)}</button>`;}
@@ -397,6 +397,55 @@ function selectVehicleForOrder(id){
   if(!form.dataset.id && (!mileage.value || Number(mileage.value)===Number(oldVehicle?.mileage??0)))mileage.value=selected.mileage;
   form.elements.namedItem('title').focus();
 }
+function orderLineRow(item={}){
+  const id=esc(item.id||'');
+  const choices=[['part','Pieza / insumo'],['labor','Mano de obra'],['other','Otro']];
+  return '<div class="order-line-row" data-order-line data-item-id="'+id+'">'+
+    '<label class="line-description">Descripción<input name="lineDescription" maxlength="1500" value="'+esc(item.description||'')+'" placeholder="Pieza o tarea realizada" required></label>'+
+    '<label>Tipo<select name="lineKind">'+choices.map(([key,label])=>'<option value="'+key+'" '+(item.kind===key?'selected':'')+'>'+label+'</option>').join('')+'</select></label>'+
+    '<label>Cantidad<input name="lineQuantity" type="number" min=".001" step="any" value="'+esc(item.quantity??1)+'" required></label>'+
+    '<label>Precio unitario<input name="lineUnitPrice" type="number" min="0" step=".01" value="'+esc(item.unitPrice??0)+'" required></label>'+
+    '<button type="button" class="btn btn-secondary btn-sm" data-action="remove-order-line" aria-label="Quitar renglón">'+icon('trash',15)+'</button></div>';
+}
+function formOrderLines(form){
+  const rows=[...form.querySelectorAll('[data-order-line]')];if(rows.length>100)throw Error('Máximo 100 renglones.');
+  return rows.map((row,i)=>{
+    const description=row.querySelector('[name="lineDescription"]').value.trim();
+    const kind=row.querySelector('[name="lineKind"]').value;
+    const quantity=Number(row.querySelector('[name="lineQuantity"]').value);
+    const unitPrice=Number(row.querySelector('[name="lineUnitPrice"]').value);
+    if(!description||!['part','labor','other'].includes(kind)||!Number.isFinite(quantity)||quantity<=0||quantity>100000||
+      !Number.isFinite(unitPrice)||unitPrice<0||Math.abs(unitPrice*100-Math.round(unitPrice*100))>1e-5){
+        throw Error('Revisá descripción, cantidad y precio unitario del detalle.');
+    }
+    return {id:row.dataset.itemId||'line-'+(i+1),description,kind,quantity,unitPrice};
+  });
+}
+function lineAmount(items){return Math.round(items.reduce((a,x)=>a+Math.round(x.quantity*x.unitPrice*100)/100,0)*100)/100;}
+function refreshOrderLineTotal(form){
+  if(!form||form.dataset.kind!=='order')return;
+  let sum=0;for(const row of form.querySelectorAll('[data-order-line]')){
+    const q=Number(row.querySelector('[name="lineQuantity"]').value);
+    const u=Number(row.querySelector('[name="lineUnitPrice"]').value);
+    if(Number.isFinite(q)&&Number.isFinite(u)&&q>=0&&u>=0)sum+=Math.round(q*u*100)/100;
+  }
+  const label=form.querySelector('#order-lines-total');if(label)label.textContent=money(sum);
+  const charged=form.querySelector('[name="charged"]');
+  if(charged&&form.querySelector('[data-order-line]'))charged.value=String(Math.round(sum*100)/100);
+}
+function orderLinesPanel(order){
+  const lines=order?.items||[];
+  return '<div class="span-2 order-line-editor"><div class="order-line-heading"><strong>Detalle de piezas y tareas</strong><span>Total: <b id="order-lines-total">'+money(lineAmount(lines))+'</b></span></div>'+
+    '<p class="form-hint">Opcional. Podés agregar cada pieza o tarea con su cantidad y precio unitario; esto calculará el importe acordado.</p>'+
+    '<div id="order-lines">'+lines.map(orderLineRow).join('')+'</div>'+
+    button(icon('plus',15)+' Agregar renglón','add-order-line','btn-secondary btn-sm')+'</div>';
+}
+function renderOrderLines(order){
+  if(!order.items?.length)return '';
+  return '<h3>Detalle de piezas y tareas</h3><div class="table-scroll"><table class="data-table"><thead><tr><th>Descripción</th><th>Cantidad</th><th>Precio unitario</th><th>Subtotal</th></tr></thead><tbody>'+
+     order.items.map(item=>'<tr><td style="white-space:pre-wrap">'+esc(item.description)+'</td><td>'+num(item.quantity)+'</td><td>'+money(item.unitPrice)+'</td><td><strong>'+money(item.quantity*item.unitPrice)+'</strong></td></tr>').join('')+
+     '</tbody></table></div>';
+}
 function orderForm(id='',presetVehicle=''){
   const o=id?findOrder(id):null;
   if(!db.vehicles.length){toast('Primero agregá un vehículo para registrar un trabajo.','error');navigate('vehiculos');return;}
@@ -410,6 +459,7 @@ function orderForm(id='',presetVehicle=''){
     input('Fecha','openedAt',o?.openedAt||isoDate(new Date()),{type:'date',required:true}),
     input('Kilometraje','mileage',o?.mileage??chosen?.mileage??0,{type:'number',min:0,step:1}),
     input('Diagnóstico y tareas realizadas','description',o?.description,{textarea:true,full:true,placeholder:'Qué sucede, qué revisaste o reparaste…'}),
+    orderLinesPanel(o),
     `<div class="span-2"><details class="order-extras" ${hasAdvanced?'open':''}><summary>${icon('wallet',18)} Costos, cobros y notas <span class="extras-optional">Opcional</span>${icon('chevron',17)}</summary><div class="form-grid order-extras-grid">${[
       input('Costo de repuestos','partsCost',o?.partsCost??0,{type:'number',min:0,step:'.01'}),
       input('Costo interno de mano de obra','laborCost',o?.laborCost??0,{type:'number',min:0,step:'.01'}),
@@ -450,9 +500,13 @@ async function saveForm(form){
     if(paid>price){toast('El total pagado no puede superar el importe acordado.','error');return;}
     if(!get('openedAt')){toast('Ingresá la fecha del trabajo.','error');return;}
     const previous=findOrder(id);
+    let items;try{items=formOrderLines(form);}catch(error){toast(error.message,'error');return;}
+    if(items.length&&Math.abs(lineAmount(items)-price)>0.011){
+      toast('El importe acordado debe coincidir con los renglones.','error');return;
+    }
     const status=get('status');
     const wasClosed=previous&&['done','delivered'].includes(previous.status);
-    next={id:baseId,vehicleId:get('vehicleId'),title:get('title'),category:get('category'),status,openedAt:get('openedAt'),completedAt:['done','delivered'].includes(status)?(wasClosed?previous.completedAt||isoDate(new Date()):isoDate(new Date())):'',mileage:amount(get('mileage')),description:get('description'),partsCost:amount(get('partsCost')),laborCost:amount(get('laborCost')),charged:price,paid,notes:get('notes'),createdAt:previous?.createdAt||isoDate(new Date())};
+    next={id:baseId,vehicleId:get('vehicleId'),title:get('title'),category:get('category'),status,openedAt:get('openedAt'),completedAt:['done','delivered'].includes(status)?(wasClosed?previous.completedAt||isoDate(new Date()):isoDate(new Date())):'',mileage:amount(get('mileage')),description:get('description'),partsCost:amount(get('partsCost')),laborCost:amount(get('laborCost')),charged:price,paid,notes:get('notes'),createdAt:previous?.createdAt||isoDate(new Date()),...(items.length?{items}:{}),...(previous?.documentKind?{documentKind:previous.documentKind}:{}),...(previous?.documentNumber?{documentNumber:previous.documentNumber}:{}),...(previous?.sourceFingerprint?{sourceFingerprint:previous.sourceFingerprint}:{})};
     routeTo=['trabajo',baseId];message=existing?'Trabajo actualizado.':'Trabajo registrado.';
   }else if(kind==='payment'){
     const o=findOrder(id);const payment=Number(get('payment'));
@@ -622,6 +676,16 @@ document.addEventListener('click',async event=>{
     case 'edit-vehicle':vehicleForm(id);break;
     case 'view-vehicle':navigate('vehiculo',id);break;
     case 'new-order':orderForm('',target.dataset.vehicle||'');break;
+    case 'add-order-line':{
+      const form=document.querySelector('#entity-form');if(form?.dataset.kind!=='order')break;
+      const list=form.querySelector('#order-lines');if(list.children.length>=100){toast('Máximo 100 renglones.','error');break;}
+      list.insertAdjacentHTML('beforeend',orderLineRow());refreshOrderLineTotal(form);
+      list.lastElementChild.querySelector('[name="lineDescription"]')?.focus();break;
+    }
+    case 'remove-order-line':{
+      const form=document.querySelector('#entity-form');if(form?.dataset.kind!=='order')break;
+      target.closest('[data-order-line]')?.remove();refreshOrderLineTotal(form);break;
+    }
     case 'pick-vehicle':selectVehicleForOrder(id);break;
     case 'pick-client':selectClientForVehicle(id);break;
     case 'change-client':{
@@ -684,6 +748,7 @@ document.addEventListener('change',async event=>{
   }
 });
 document.addEventListener('input',event=>{
+  if(event.target.closest('[data-order-line]')&&['lineQuantity','lineUnitPrice'].includes(event.target.name))refreshOrderLineTotal(document.querySelector('#entity-form'));
   if(event.target.id==='global-search'){activeQuery=event.target.value;refreshPage();}
   if(event.target.id==='client-lookup'){const results=document.querySelector('#client-suggestions');if(results)results.innerHTML=clientPickerResults(event.target.value);}
   if(event.target.id==='vehicle-lookup'){const results=document.querySelector('#vehicle-suggestions');if(results)results.innerHTML=vehiclePickerResults(event.target.value);}
