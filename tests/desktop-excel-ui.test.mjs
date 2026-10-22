@@ -24,6 +24,14 @@ test('SQLite recovery is checked native-side, and shown only on desktop',()=>{
   assert.match(backup,/SQLITE_OPEN_READ_ONLY/);
   assert.match(backup,/PRAGMA user_version/);
 });
+test('User can test recovery without mutating live SQLite',()=>{
+  assert.match(frontend,/test-backup-recovery/);
+  assert.match(frontend,/test_backup_recovery/);
+  assert.match(runtime,/backup::test_backup_recovery/);
+  assert.match(backup,/fn recovery_rehearsal/);
+  assert.match(backup,/Connection::open_in_memory/);
+  assert.match(backup,/fn check_distinct_volume/);
+});
 test('Restore and destructive changes take a backup first',()=>{
   assert.match(frontend,/if\(!await createDesktopBackup\(true\)\)throw Error/);
   assert.match(frontend,/if\(desktopInvoke && !await createDesktopBackup\(true\)\)break/);

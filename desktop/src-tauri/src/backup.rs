@@ -110,6 +110,30 @@ fn verify_pair_marker(path:&Path)->Result<(),String>{
     }
     Ok(())
 }
+/// Conservatively reject a "secondary" backup on the same filesystem/volume.
+/// A separate volume does NOT itself prove another physical device.
+fn check_distinct_volume(primary:&Path,secondary:&Path)->Result<(),String>{
+    #[cfg(windows)]
+    {
+        use std::path::Component;
+        let root=|p:&Path|p.components().find_map(|c|match c{
+            Component::Prefix(prefix)=>Some(prefix.as_os_str().to_os_string()),
+            _=>None,
+        });
+        let a=root(primary).ok_or("No se pudo determinar la unidad principal")?;
+        let b=root(secondary).ok_or("No se pudo determinar la unidad del respaldo")?;
+        if a==b{return Err("Elegí otra unidad o disco. Una carpeta en la misma unidad no protege ante fallas.".into());}
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let a=fs::metadata(primary).map_err(err)?.dev();
+        let b=fs::metadata(secondary).map_err(err)?.dev();
+        if a==b{return Err("La copia debe estar en otro volumen o dispositivo, no en la misma unidad.".into());}
+    }
+    Ok(())
+}
+
 fn external_config_path(app:&tauri::AppHandle)->Result<PathBuf,String>{
     let folder=app.path().app_local_data_dir().map_err(err)?;
     fs::create_dir_all(&folder).map_err(err)?;
@@ -133,6 +157,7 @@ pub(crate) fn configure_external_backup(app:tauri::AppHandle)->Result<Option<Str
     if destination.starts_with(&local)||local.starts_with(&destination){
         return Err("La carpeta elegida no puede contener los datos de AutoTrace".into());
     }
+    check_distinct_volume(&local,&destination)?;
     let config=external_config_path(&app)?;
     fs::write(&config,serde_json::to_vec(&serde_json::json!({"directory":destination})).map_err(err)?).map_err(err)?;
     Ok(Some(destination.display().to_string()))
@@ -257,10 +282,11 @@ pub(crate) fn backup_now(app:tauri::AppHandle)->Result<BackupResult,String>{
     let id=format!("{}-{}",now_ms()?,uuid::Uuid::new_v4().simple());
     let mut backup=backup_pair(&src,&backup_dir(&app)?,&id)?;
     if let Some(folder)=configured_folder(&app)?{
-        match mirror_pair(&backup,&folder){
+        let main=backup_dir(&app)?;
+        let copy=check_distinct_volume(&main,&folder).and_then(|()|mirror_pair(&backup,&folder));
+        match copy{
             Ok(())=>{
                 backup.external_copy_ok=true;
-                // Failure to clean older files never invalidates the new backup.
                 if let Err(e)=prune_verified(&folder){eprintln!("AutoTrace external retention: {e}");}
             },
             Err(e)=>backup.external_copy_error=Some(e),
@@ -273,7 +299,9 @@ pub(crate) fn backup_now(app:tauri::AppHandle)->Result<BackupResult,String>{
 pub(crate) fn backup_status(app:tauri::AppHandle)->Result<BackupStatus,String>{
     let local=backup_dir(&app)?;
     let external=configured_folder(&app)?;
-    let last_external=if let Some(folder)=external.as_ref(){latest_verified(folder)?}else{None};
+    let last_external=if let Some(folder)=external.as_ref(){
+        if check_distinct_volume(&local,folder).is_ok(){latest_verified(folder)?}else{None}
+    }else{None};
     Ok(BackupStatus{
         last_backup_unix_ms:latest_verified(&local)?,
         local_only:last_external.is_none(),
@@ -369,6 +397,54 @@ pub(crate) fn choose_sqlite_import()->Result<Option<SqlitePreview>,String>{
         filename:path.file_name().unwrap_or_default().to_string_lossy().into_owned()
     }))
 }
+#[derive(Debug, Serialize)]
+#[serde(rename_all="camelCase")]
+pub(crate) struct RecoveryTestResult{
+    pub filename:String,
+    pub clients:usize,
+    pub vehicles:usize,
+    pub orders:usize,
+    pub sqlite_and_excel_match:bool,
+}
+/// Destructive-free restore rehearsal: independently import SQLite and Excel
+/// into two FRESH SQLite databases and compare canonical data with snapshot.
+fn recovery_rehearsal(manifest_path:&Path)->Result<RecoveryTestResult,String>{
+    verify_pair_marker(manifest_path)?;
+    let doc:serde_json::Value=serde_json::from_slice(&fs::read(manifest_path).map_err(err)?).map_err(err)?;
+    let id=doc["snapshotId"].as_str().ok_or("Respaldo sin identificador")?;
+    let dir=manifest_path.parent().ok_or("Respaldo sin carpeta")?;
+    let sql_path=dir.join(format!("AutoTrace_{id}.sqlite3"));
+    let xlsx_path=dir.join(format!("AutoTrace_{id}.xlsx"));
+    // This also validates schema version and app-level constraints.
+    let (source, verified)=read_sqlite_candidate(&sql_path)?;
+    if !verified{return Err("Respaldo sin manifiesto verificado".into());}
+    let book=excel::from_xlsx(&fs::read(&xlsx_path).map_err(err)?)?;
+    for candidate in [&source,&book]{
+        let mut fresh=Connection::open_in_memory().map_err(err)?;
+        fresh.execute_batch(include_str!("../migrations/001_init.sql")).map_err(err)?;
+        store::write(&mut fresh,candidate,0)?;
+        verify_db(&fresh)?;
+        let loaded=store::read(&fresh)?.data;
+        if excel::canonical_bytes(&loaded)?!=excel::canonical_bytes(&source)?{
+            return Err("La recuperación en una base nueva no reproduce los datos originales".into());
+        }
+    }
+    Ok(RecoveryTestResult{
+        filename:manifest_path.file_name().unwrap_or_default().to_string_lossy().into_owned(),
+        clients:source.clients_count(),
+        vehicles:source.vehicles_count(),
+        orders:source.orders_count(),
+        sqlite_and_excel_match:true
+    })
+}
+#[tauri::command]
+pub(crate) fn test_backup_recovery()->Result<Option<RecoveryTestResult>,String>{
+    let Some(manifest)=rfd::FileDialog::new()
+        .set_title("Seleccioná el archivo .manifest.json del respaldo")
+        .add_filter("Manifiesto AutoTrace",&["json"]).pick_file() else{return Ok(None)};
+    recovery_rehearsal(&manifest).map(Some)
+}
+
 #[derive(Serialize)]
 #[serde(rename_all="camelCase")]
 pub(crate) struct ExcelPreview{pub data:store::AppData,pub filename:String}
@@ -459,6 +535,25 @@ mod tests {
         fs::write(&done.excel_path,b"damaged").unwrap();
         assert!(read_sqlite_candidate(Path::new(&done.sqlite_path)).is_err());
         fs::remove_dir_all(location).unwrap();
+    }
+    #[test]
+    fn recovery_rehearsal_uses_two_fresh_databases_and_rejects_damage(){
+        let temp=std::env::temp_dir().join(format!("autotrace-rehearsal-{}",uuid::Uuid::new_v4()));
+        fs::create_dir_all(&temp).unwrap();
+        let source=Connection::open_in_memory().unwrap();
+        source.execute_batch(include_str!("../migrations/001_init.sql")).unwrap();
+        let pair=backup_pair(&source,&temp,"fixture").unwrap();
+        let report=recovery_rehearsal(Path::new(&pair.manifest_path)).unwrap();
+        assert!(report.sqlite_and_excel_match);
+        assert_eq!(report.clients,0);
+        fs::write(&pair.excel_path,b"tampered").unwrap();
+        assert!(recovery_rehearsal(Path::new(&pair.manifest_path)).is_err());
+        fs::remove_dir_all(&temp).unwrap();
+    }
+    #[test]
+    fn same_volume_cannot_be_selected_as_independent_backup(){
+        let base=std::env::temp_dir();
+        assert!(check_distinct_volume(&base,&base.join("secondary")).is_err());
     }
     #[test]
     fn backup_pair_contains_restorable_sqlite_and_excel() {
