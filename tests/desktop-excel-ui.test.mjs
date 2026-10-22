@@ -17,6 +17,13 @@ test('The client-facing Excel command is desktop-only and separate from private 
   assert.match(runtime,/mod client_report;/);
   assert.match(runtime,/backup::export_customer_excel_dialog/);
 });
+test('SQLite recovery is checked native-side, and shown only on desktop',()=>{
+  assert.match(frontend,/restore-sqlite-desktop/);
+  assert.match(frontend,/choose_sqlite_import/);
+  assert.match(runtime,/backup::choose_sqlite_import/);
+  assert.match(backup,/SQLITE_OPEN_READ_ONLY/);
+  assert.match(backup,/PRAGMA user_version/);
+});
 test('Restore and destructive changes take a backup first',()=>{
   assert.match(frontend,/if\(!await createDesktopBackup\(true\)\)throw Error/);
   assert.match(frontend,/if\(desktopInvoke && !await createDesktopBackup\(true\)\)break/);
