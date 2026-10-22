@@ -3,7 +3,8 @@ use crate::{excel, store};
 use rusqlite::{backup::Backup, Connection, OpenFlags};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::{fs, path::{Path,PathBuf}, time::{Duration, SystemTime, UNIX_EPOCH}};
+use std::{collections::HashSet, fs, path::{Path,PathBuf}, time::{Duration, SystemTime, UNIX_EPOCH}};
+use chrono::{DateTime, Datelike, Utc};
 use tauri::Manager;
 
 #[derive(Debug,Serialize)]
@@ -176,6 +177,76 @@ fn latest_verified(directory:&Path)->Result<Option<u128>,String>{
     }
     Ok(None)
 }
+
+/// Retention uses verified, app-owned snapshot triplets only. Unrecognized files,
+/// damaged copies, and manual exports are NEVER removed.
+const RECENT_KEEP: usize=12;
+const DAY_KEEP: usize=14;
+const WEEK_KEEP: usize=8;
+const MONTH_KEEP: usize=12;
+
+fn keep_snapshot_times(mut times:Vec<u128>)->HashSet<u128>{
+    times.sort_unstable_by(|a,b|b.cmp(a));
+    times.dedup();
+    let mut keep=HashSet::new();
+    let mut day=HashSet::new();
+    let mut week=HashSet::new();
+    let mut month=HashSet::new();
+    for (i,ts) in times.into_iter().enumerate(){
+        let Ok(ms)=i64::try_from(ts) else{keep.insert(ts);continue};
+        let Some(dt)=DateTime::<Utc>::from_timestamp_millis(ms) else{keep.insert(ts);continue};
+        let day_id=(dt.year(),dt.ordinal());
+        let week_id=(dt.iso_week().year(),dt.iso_week().week());
+        let month_id=(dt.year(),dt.month());
+        let fresh_day= !day.contains(&day_id)&&day.len()<DAY_KEEP;
+        let fresh_week= !week.contains(&week_id)&&week.len()<WEEK_KEEP;
+        let fresh_month= !month.contains(&month_id)&&month.len()<MONTH_KEEP;
+        if i<RECENT_KEEP||fresh_day||fresh_week||fresh_month{
+            keep.insert(ts);
+            if day.len()<DAY_KEEP {day.insert(day_id);}
+            if week.len()<WEEK_KEEP {week.insert(week_id);}
+            if month.len()<MONTH_KEEP {month.insert(month_id);}
+        }
+    }
+    keep
+}
+fn snapshot_stamp(name:&str)->Option<u128>{
+    let base=name.strip_prefix("AutoTrace_")?.strip_suffix(".manifest.json")?;
+    let (number,uuid)=base.split_once('-')?;
+    if number.len()<12||number.len()>16||uuid.is_empty()||!uuid.chars().all(|c|c.is_ascii_hexdigit()){
+        return None;
+    }
+    number.parse().ok()
+}
+/// Old verified triplets beyond the retention policy can be removed. This is
+/// conservative: any verification or parsing failure means preserve the files.
+fn prune_verified(dir:&Path)->Result<usize,String>{
+    if !dir.is_dir(){return Ok(0);}
+    let mut valid:Vec<(u128,PathBuf)>=Vec::new();
+    for entry in fs::read_dir(dir).map_err(err)?{
+        let entry=entry.map_err(err)?;
+        let name=entry.file_name();
+        let Some(name)=name.to_str() else{continue};
+        let Some(stamp)=snapshot_stamp(name) else{continue};
+        if verify_pair_marker(&entry.path()).is_ok(){valid.push((stamp,entry.path()));}
+    }
+    let keep=keep_snapshot_times(valid.iter().map(|(s,_)|*s).collect());
+    let mut removed=0;
+    for (stamp,manifest) in valid{
+        if keep.contains(&stamp){continue;}
+        let Some(base)=manifest.file_name().and_then(|s|s.to_str())
+            .and_then(|s|s.strip_suffix(".manifest.json")) else{continue};
+        let db=dir.join(format!("{base}.sqlite3"));
+        let excel=dir.join(format!("{base}.xlsx"));
+        // Marker first: interruption cannot leave a formally complete triplet.
+        fs::remove_file(manifest).map_err(err)?;
+        fs::remove_file(db).map_err(err)?;
+        fs::remove_file(excel).map_err(err)?;
+        removed+=1;
+    }
+    Ok(removed)
+}
+
 #[tauri::command]
 pub(crate) fn backup_now(app:tauri::AppHandle)->Result<BackupResult,String>{
     let src=store::open_app(&app)?;
@@ -183,10 +254,15 @@ pub(crate) fn backup_now(app:tauri::AppHandle)->Result<BackupResult,String>{
     let mut backup=backup_pair(&src,&backup_dir(&app)?,&id)?;
     if let Some(folder)=configured_folder(&app)?{
         match mirror_pair(&backup,&folder){
-            Ok(())=>backup.external_copy_ok=true,
+            Ok(())=>{
+                backup.external_copy_ok=true;
+                // Failure to clean older files never invalidates the new backup.
+                if let Err(e)=prune_verified(&folder){eprintln!("AutoTrace external retention: {e}");}
+            },
             Err(e)=>backup.external_copy_error=Some(e),
         }
     }
+    if let Err(e)=prune_verified(&backup_dir(&app)?){eprintln!("AutoTrace local retention: {e}");}
     Ok(backup)
 }
 #[tauri::command]
@@ -302,6 +378,46 @@ pub(crate) fn choose_excel_import()->Result<Option<ExcelPreview>,String>{
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn retention_keeps_frequent_recent_and_monthly_recovery_points(){
+        let mut times=Vec::new();
+        // 17 months, 6 consecutive snapshots each month plus a 4-hour cadence
+        // on the last day: force daily, weekly and monthly retention to apply.
+        for month in 1..=17 {
+            let stamp=chrono::NaiveDate::from_ymd_opt(2025+(month-1)/12, (month-1)%12+1, 15)
+                .unwrap().and_hms_opt(12,0,0).unwrap().and_utc().timestamp_millis() as u128;
+            for increment in 0..6{times.push(stamp+increment*14_400_000);}
+        }
+        let keep=keep_snapshot_times(times.clone());
+        assert!(keep.len()>=RECENT_KEEP);
+        assert!(keep.len()<times.len());
+        assert!(keep.contains(times.last().unwrap()));
+        assert!(!keep.contains(&times[0]));
+    }
+    #[test]
+    fn only_verified_triplets_may_be_pruned(){
+        let tmp=std::env::temp_dir().join(format!("autotrace-retention-{}",uuid::Uuid::new_v4()));
+        fs::create_dir_all(&tmp).unwrap();
+        let db=Connection::open_in_memory().unwrap();
+        db.execute_batch(include_str!("../migrations/001_init.sql")).unwrap();
+        let base=chrono::NaiveDate::from_ymd_opt(2024,1,3).unwrap()
+            .and_hms_opt(12,0,0).unwrap().and_utc().timestamp_millis() as u128;
+        for i in 0..17 {
+            let id=format!("{}-{}",base+(i as u128)*1000,uuid::Uuid::new_v4().simple());
+            backup_pair(&db,&tmp,&id).unwrap();
+        }
+        // A malformed and a user-owned file must survive cleanup.
+        let private=tmp.join("informe_cliente.xlsx");
+        fs::write(&private,b"keep").unwrap();
+        let corrupt=tmp.join(format!("AutoTrace_{}-deadbeef.manifest.json",base-86_400_000));
+        fs::write(&corrupt,b"bad").unwrap();
+        let deleted=prune_verified(&tmp).unwrap();
+        assert!(deleted>0);
+        assert!(private.exists());
+        assert!(corrupt.exists());
+        assert!(latest_verified(&tmp).unwrap().is_some());
+        fs::remove_dir_all(tmp).unwrap();
+    }
     #[test]
     fn backup_pair_contains_restorable_sqlite_and_excel() {
         let temp=std::env::temp_dir().join(format!("autotrace-test-{}",uuid::Uuid::new_v4()));
