@@ -15,11 +15,35 @@ if (-not $p.WaitForExit(180000)) {
 }
 if ($p.ExitCode -ne 0) { throw "El instalador devolvió $($p.ExitCode)" }
 
-$installBase = Join-Path $env:LOCALAPPDATA "Programs"
-if (-not (Test-Path $installBase)) { throw "No se creó carpeta de programas para el usuario" }
-$installed = @(Get-ChildItem $installBase -Recurse -Filter "autotrace-desktop.exe" -File -ErrorAction Stop)
+# Tauri/NSIS can choose different per-user directories across versions.
+# Prefer the actual Windows uninstall registry entry over guessed paths.
+$keys = @(
+    Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*" -ErrorAction SilentlyContinue
+    Get-ItemProperty "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*" -ErrorAction SilentlyContinue
+)
+$entries = @($keys | Where-Object { $_.DisplayName -like "AutoTrace*" })
+$folders = @(
+    (Join-Path $env:LOCALAPPDATA "AutoTrace")
+    (Join-Path $env:LOCALAPPDATA "Programs\AutoTrace")
+    (Join-Path $env:APPDATA "AutoTrace")
+)
+foreach ($entry in $entries) {
+    if ($entry.InstallLocation) { $folders += $entry.InstallLocation.Trim('"') }
+}
+$installed = @()
+foreach ($folder in ($folders | Select-Object -Unique)) {
+    if (-not (Test-Path $folder)) { continue }
+    $installed += @(Get-ChildItem -Path $folder -File -Filter "autotrace-desktop.exe" -Recurse -ErrorAction SilentlyContinue)
+}
+# Final fallback for runners where NSIS uses an unexpected per-user folder.
+if ($installed.Count -eq 0) {
+    $installed = @(Get-ChildItem -Path $env:LOCALAPPDATA -Filter "autotrace-desktop.exe" -File -Recurse -ErrorAction SilentlyContinue)
+}
+$installed = @($installed | Sort-Object -Property FullName -Unique)
 if ($installed.Count -ne 1) {
-    throw "Se esperó un único AutoTrace instalado, encontrados: $($installed.Count)"
+    Write-Host "AutoTrace uninstall registry entries:"
+    $entries | Select-Object DisplayName, InstallLocation, UninstallString | Format-Table -AutoSize
+    throw "Se esperó exactamente un ejecutable instalado, encontrados: $($installed.Count)"
 }
 $exe = $installed[0]
 $shaOriginal=(Get-FileHash $builtExe -Algorithm SHA256).Hash
