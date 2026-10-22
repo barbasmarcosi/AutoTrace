@@ -481,10 +481,12 @@ mod tests {
         let usb=temp.join("usb");fs::create_dir(&usb).unwrap();
         mirror_pair(&done,&usb).unwrap();
         assert!(latest_verified(&usb).unwrap().is_some());
+        assert!(read_sqlite_candidate(Path::new(&done.sqlite_path)).unwrap().1);
         fs::write(&done.excel_path,b"malformado").unwrap();
         assert!(latest_verified(&temp).unwrap().is_none());
         assert!(latest_verified(&usb).unwrap().is_some());
-        assert!(read_sqlite_candidate(Path::new(&done.sqlite_path)).unwrap().1);
+        // Un SQLite cuyo Excel emparejado se dañó NO es un respaldo completo verificado.
+        assert!(read_sqlite_candidate(Path::new(&done.sqlite_path)).is_err());
         let broken=temp.join("broken.sqlite3");fs::write(&broken,b"corrupt").unwrap();
         assert!(read_sqlite_candidate(&broken).is_err());
         fs::remove_dir_all(temp).unwrap();
