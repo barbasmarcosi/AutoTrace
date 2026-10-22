@@ -159,6 +159,113 @@ pub(crate) fn choose_legacy_document()->Result<Option<LegacyDocument>,String>{
     parse(&file).map(Some)
 }
 
+/// Export in the same cell layout as the customer's document templates.
+/// Importing a PDF, the spreadsheet header/footer VML logo, and full workbook
+/// formatting are deliberately outside this first compatibility increment.
+pub(crate) fn generate(data:&crate::store::AppData,order_id:&str,kind:&str)->Result<Vec<u8>,String>{
+    crate::store::validate(data)?;
+    if !matches!(kind,"quote"|"work"){return Err("Tipo de documento no admitido".into());}
+    let v=serde_json::to_value(data).map_err(error)?;
+    let order=v["orders"].as_array().ok_or("Trabajos inválidos")?.iter()
+        .find(|x|x["id"]==order_id).ok_or("Trabajo inexistente")?;
+    let vehicle=v["vehicles"].as_array().ok_or("Vehículos inválidos")?.iter()
+        .find(|x|x["id"]==order["vehicleId"]).ok_or("Vehículo inexistente")?;
+    let client=v["clients"].as_array().ok_or("Clientes inválidos")?.iter()
+        .find(|x|x["id"]==vehicle["clientId"]).ok_or("Cliente inexistente")?;
+    let items=order["items"].as_array().ok_or("Este trabajo no tiene renglones. Editalo y cargá el detalle antes de exportar.")?;
+    if items.is_empty()||items.len()>26{return Err("El documento debe tener entre 1 y 26 renglones".into());}
+    let agreed=order["charged"].as_f64().ok_or("Importe acordado inválido")?;
+    let mut wb=rust_xlsxwriter::Workbook::new();
+    let sheet=wb.add_worksheet();
+    sheet.set_name("Hoja1").map_err(error)?;
+    let header=rust_xlsxwriter::Format::new().set_bold().set_font_size(17.0);
+    let emphasis=rust_xlsxwriter::Format::new().set_bold();
+    sheet.set_column_width(0,3).map_err(error)?;
+    for c in 1..=6{sheet.set_column_width(c,14).map_err(error)?;}
+    sheet.set_column_width(7,13).map_err(error)?;
+    sheet.set_column_width(8,19).map_err(error)?;
+    sheet.set_column_width(9,19).map_err(error)?;
+    let title=if kind=="quote"{"PRESUPUESTO - ESTIMACION REPARACION"}else{"REMITO TRABAJO"};
+    sheet.merge_range(0,1,1,9,title,&header).map_err(error)?;
+    sheet.write_string(3,1,if kind=="quote"{"N° Presupuesto:"}else{"N° Remito:"}).map_err(error)?;
+    sheet.write_string(3,7,if kind=="quote"{"Fecha Creación:"}else{"Fecha Trabajo:"}).map_err(error)?;
+    let day=NaiveDate::parse_from_str(order["openedAt"].as_str().ok_or("Fecha faltante")?,"%Y-%m-%d").map_err(error)?;
+    let base=NaiveDate::from_ymd_opt(1899,12,30).ok_or("Fecha base inválida")?;
+    sheet.write_number_with_format(3,9,(day-base).num_days() as f64,
+        &rust_xlsxwriter::Format::new().set_num_format("dd/mm/yyyy")).map_err(error)?;
+    sheet.write_string_with_format(5,1,v["settings"]["garageName"].as_str().unwrap_or("Mi taller"),&emphasis).map_err(error)?;
+    for (row,label,value) in [
+        (5,"Cliente:",client["name"].as_str().unwrap_or("")),
+        (6,"Teléfono:",client["phone"].as_str().unwrap_or("")),
+        (7,"Dirección:",""),
+        (8,"Mail:",client["email"].as_str().unwrap_or("")),
+        (9,"Observación:","")
+    ]{
+        sheet.write_string(row,7,label).map_err(error)?;
+        if !value.is_empty(){sheet.write_string(row,8,value).map_err(error)?;}
+    }
+    for(row,label,val) in [
+       (11,"MARCA:",vehicle["make"].as_str().unwrap_or("")),
+       (12,"MODELO:",vehicle["model"].as_str().unwrap_or("")),
+       (13,"MATRICULA:",vehicle["plate"].as_str().unwrap_or("")),
+       (14,"VIN:",vehicle["vin"].as_str().unwrap_or(""))
+    ]{
+        sheet.write_string(row,1,label).map_err(error)?;
+        if !val.is_empty(){sheet.write_string(row,3,val).map_err(error)?;}
+    }
+    sheet.write_string(15,1,"OBSERVACION:").map_err(error)?;
+    sheet.write_number(15,3,order["mileage"].as_f64().unwrap_or(0.0)).map_err(error)?;
+    for (column,label) in [(1,"REFERENCIA / DETALLE PIEZAS"),(7,"CANTIDAD"),(8,"VALOR UNITARIO"),(9,"TOTAL")]{
+        sheet.write_string_with_format(17,column,label,&emphasis).map_err(error)?;
+    }
+    let mut sum=0.0;
+    for(i,item)in items.iter().enumerate(){
+        let row=19+i as u32;
+        let description=item["description"].as_str().ok_or("Renglón sin descripción")?;
+        let q=item["quantity"].as_f64().ok_or("Cantidad inválida")?;
+        let u=item["unitPrice"].as_f64().ok_or("Unitario inválido")?;
+        if q<=0.0||u<0.0{return Err("Valores negativos en renglón".into());}
+        let subtotal=(q*u*100.0).round()/100.0;
+        sheet.write_string(row,1,description).map_err(error)?;
+        sheet.write_number(row,7,q).map_err(error)?;
+        sheet.write_number(row,8,u).map_err(error)?;
+        sheet.write_number(row,9,subtotal).map_err(error)?;
+        sum+=subtotal;
+        if description.contains('\n'){sheet.set_row_height(row,44).map_err(error)?;}
+    }
+    let sum=(sum*100.0).round()/100.0;
+    if (sum-agreed).abs()>.011{return Err("El detalle no coincide con el importe acordado. Corregí el trabajo antes de exportar.".into());}
+    let total=if kind=="quote"{46}else{45};
+    sheet.write_string_with_format(total,8,"TOTAL",&emphasis).map_err(error)?;
+    sheet.write_number_with_format(total,9,sum,&emphasis).map_err(error)?;
+    sheet.write_string(total,1,if kind=="quote"{"Presupuesto sujeto a revisión. Validez 15 días."}else{"Detalle de trabajo realizado."}).map_err(error)?;
+    wb.save_to_buffer().map_err(error)
+}
+#[tauri::command]
+pub(crate) fn export_legacy_document(app:tauri::AppHandle,order_id:String,kind:String)->Result<bool,String>{
+    use tauri::Manager;
+    let data=crate::store::read(&crate::store::open_app(&app)?)?.data;
+    let bytes=generate(&data,&order_id,&kind)?;
+    // Self-check: a generated customer document must parse back to identical lines.
+    let checked=parse(&bytes)?;
+    if checked.document_kind!=kind{return Err("Error al verificar el documento generado".into());}
+    let base=if kind=="quote"{"AutoTrace_presupuesto.xlsx"}else{"AutoTrace_remito.xlsx"};
+    let Some(path)=rfd::FileDialog::new().set_file_name(base).add_filter("Documento Excel",&["xlsx"]).save_file()
+        else{return Ok(false)};
+    if path.exists(){return Err("Para no pisar un documento, elegí un nombre nuevo".into());}
+    let parent=path.parent().ok_or("Carpeta inválida")?;
+    let temp=parent.join(format!(".autotrace-export-{}.tmp",uuid::Uuid::new_v4()));
+    let result=(||{
+        fs::write(&temp,&bytes).map_err(error)?;
+        let check=fs::read(&temp).map_err(error)?;
+        if check!=bytes{return Err("Error de integridad al guardar documento".into());}
+        fs::rename(&temp,&path).map_err(error)?;
+        Ok(true)
+    })();
+    if result.is_err(){let _=fs::remove_file(temp);}
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
