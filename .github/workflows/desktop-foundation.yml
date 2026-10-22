@@ -1,0 +1,34 @@
+name: Desktop foundation (PR)
+
+on:
+  pull_request:
+    paths:
+      - 'desktop/**'
+      - 'tests/desktop-adapter.test.mjs'
+      - 'tests/test_desktop_schema.py'
+      - 'site/app.js'
+      - '.github/workflows/desktop-foundation.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  domain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate current browser model and desktop bridge
+        run: |
+          node --check site/app.js
+          node --test tests/*.test.mjs
+      - name: Verify SQLite D1 migration constraints and rollback
+        run: python3 -m unittest discover -s tests -p 'test_desktop_schema.py' -v
+  windows-compile:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Rust unit tests and Windows compile smoke
+        working-directory: desktop/src-tauri
+        run: cargo test --all-targets

@@ -29,3 +29,6 @@ Multiusuario, SaaS, backend HTTP, suscripciones, roles avanzados, facturación e
 - El esquema de origen continúa definido en `site/model.mjs`.
 
 **Estado de este PR:** documentación y criterios de aceptación; no significa que ya existan instalador, SQLite, XLSX automático, restauración ni pruebas ejecutadas.
+
+## Avance de implementación: D0/D1
+Se incorporó la primera implementación Tauri/SQLite y el puente de persistencia dentro de la rama de este PR (ver [IMPLEMENTATION_D0_D1.md](IMPLEMENTATION_D0_D1.md)). **No es un instalador entregable todavía**: la CI Windows debe compilar correctamente y faltan backup automático, Excel importable, restore y ensayo de recuperación externa. El PR continúa Draft.

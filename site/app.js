@@ -89,6 +89,8 @@ let historyQuery = '';
 let historyStatus = 'all';
 let historyPage = 1;
 let dbConnection = null;
+const desktopInvoke = window.__TAURI__?.core?.invoke ?? null;
+let desktopRevision = 0;
 let memoryOnly = false;
 let toastTimeout;
 const app = document.querySelector('#app');
@@ -100,6 +102,14 @@ function openDatabase(){
   });
 }
 async function loadData(){
+  if(desktopInvoke){
+    // El escritorio nunca siembra registros ficticios ni reutiliza IndexedDB por error.
+    // Fallar cerrado ante daños o incompatibilidades: no permitir ediciones en memoria.
+    const snapshot=await desktopInvoke('load_state');
+    db=validateData(snapshot.data);
+    desktopRevision=snapshot.revision;
+    return;
+  }
   try {
     dbConnection=await openDatabase();
     const saved=await new Promise((resolve,reject)=>{const tx=dbConnection.transaction(STORE,'readonly');const req=tx.objectStore(STORE).get(KEY);req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error);});
@@ -108,6 +118,14 @@ async function loadData(){
   } catch(err){ console.error('AutoTrace storage unavailable:',err); memoryOnly=true;db=seedDemo(); }
 }
 async function saveData(next){
+  if(desktopInvoke){
+    // La revisión SQL protege contra una segunda ventana con datos desactualizados.
+    const canonical=validateData(next);
+    const result=await desktopInvoke('save_state',{data:canonical,expectedRevision:desktopRevision});
+    desktopRevision=result.revision;
+    db=canonical;
+    return;
+  }
   if(memoryOnly)throw Error('El almacenamiento local no está disponible. No se guardaron los cambios.');
   await new Promise((resolve,reject)=>{
     const tx=dbConnection.transaction(STORE,'readwrite');tx.objectStore(STORE).put(next,KEY);tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);tx.onabort=()=>reject(tx.error);
@@ -603,7 +621,12 @@ document.addEventListener('keydown',event=>{
   if(event.key==='Escape' && document.activeElement?.id==='global-search' && activeQuery){activeQuery='';render();document.querySelector('#global-search')?.focus();}
 });
 window.addEventListener('hashchange' ,()=>{activeQuery='';render();});
-if('serviceWorker' in navigator&&(location.protocol==='https:'||location.hostname==='localhost')){
+if(!desktopInvoke && 'serviceWorker' in navigator&&(location.protocol==='https:'||location.hostname==='localhost')){
   window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(err=>console.warn('PWA sin service worker:',err)));
 }
-await loadData();render();
+try {
+  await loadData();render();
+} catch(err) {
+  console.error('No se pudo abrir la base de AutoTrace:',err);
+  app.textContent='No se pudo abrir la base de datos de AutoTrace. No se realizaron cambios. Revisá los permisos y la versión de la aplicación antes de continuar.';
+}
