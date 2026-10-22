@@ -33,6 +33,8 @@ test('User can test recovery without mutating live SQLite',()=>{
   assert.match(backup,/fn check_distinct_volume/);
 });
 test('Legacy workbook import and client document export are connected only on desktop',()=>{
+  assert.match(frontend,/choose-workshop-logo/);
+  assert.match(runtime,/legacy_documents::choose_workshop_logo/);
   assert.match(frontend,/import-legacy-document/);
   assert.match(frontend,/choose_legacy_document/);
   assert.match(frontend,/export-legacy-quote/);

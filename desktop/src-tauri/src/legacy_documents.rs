@@ -243,7 +243,7 @@ fn generate_with_logo(data:&crate::store::AppData,order_id:&str,kind:&str,logo_p
         if description.contains('\n'){sheet.set_row_height(row,44).map_err(error)?;}
     }
     let sum=(sum*100.0).round()/100.0;
-    if (sum-agreed).abs()>.011{return Err("El detalle no coincide con el importe acordado. Corregí el trabajo antes de exportar.".into());}
+    if (sum-agreed).abs()>0.011{return Err("El detalle no coincide con el importe acordado. Corregí el trabajo antes de exportar.".into());}
     let total=if kind=="quote"{46}else{45};
     sheet.write_string_with_format(total,8,"TOTAL",&emphasis).map_err(error)?;
     sheet.write_number_with_format(total,9,sum,&emphasis).map_err(error)?;
@@ -290,7 +290,6 @@ pub(crate) fn choose_workshop_logo(app:tauri::AppHandle)->Result<Option<String>,
 
 #[tauri::command]
 pub(crate) fn export_legacy_document(app:tauri::AppHandle,order_id:String,kind:String)->Result<bool,String>{
-    use tauri::Manager;
     let data=crate::store::read(&crate::store::open_app(&app)?)?.data;
     let configured=existing_logo(&app)?;
     let bytes=generate_with_logo(&data,&order_id,&kind,configured.as_deref())?;

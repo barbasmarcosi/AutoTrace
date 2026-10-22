@@ -1,7 +1,7 @@
 /** Funciones puras compartidas por la aplicación y sus pruebas. */
 export const normalizePlate = value => String(value ?? '').toUpperCase().replace(/[^A-Z0-9]/g,'');
 export const amount = value => {const n=Number(value);return Number.isFinite(n)&&n>=0?Math.round(n*100)/100:0;};
-export const pendingAmount = work => Math.max(0,Math.round((amount(work.charged)-amount(work.paid))*100)/100);
+export const pendingAmount = work => work.documentKind==='quote'?0:Math.max(0,Math.round((amount(work.charged)-amount(work.paid))*100)/100);
 export const margin = work => Math.round((amount(work.charged)-amount(work.partsCost)-amount(work.laborCost))*100)/100;
 export function csvCell(value){let text=String(value??'');if(/^[\s]*[=+@-]/.test(text))text="'"+text;return `"${text.replace(/"/g,'""')}"`;}
 const str=(v,n=3000)=>typeof v==='string'?v.slice(0,n):'';
