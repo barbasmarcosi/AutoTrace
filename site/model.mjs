@@ -29,10 +29,25 @@ export function validateData(data){
   const vehicleIds=new Set(vehicles.map(v=>v.id));
   const validStatuses=new Set(['received','progress','waiting','done','delivered']);
   const orders=data.orders.map(o=>{
+    const rawLines=o.items===undefined?[]:o.items;
+    if(!Array.isArray(rawLines)||rawLines.length>100)throw Error('El detalle del trabajo supera los 100 renglones.');
+    const lineIds=new Set();
+    const items=rawLines.map(item=>{
+      if(!item||typeof item!=='object')throw Error('Renglón de trabajo inválido.');
+      const id=str(item.id,100),kind=str(item.kind,20),description=str(item.description,1500);
+      if(!id.trim()||!description.trim()||!['part','labor','other'].includes(kind)||lineIds.has(id))throw Error('Hay renglones incompletos o repetidos.');
+      lineIds.add(id);
+      const quantity=number(item.quantity,'cantidad'),unitPrice=number(item.unitPrice,'valor unitario');
+      if(quantity<=0||quantity>100000||quantity*unitPrice>1e12)throw Error('Cantidad o total del renglón fuera de rango.');
+      return {id,kind,description,quantity,unitPrice};
+    });
+    const documentKind=str(o.documentKind,16),documentNumber=str(o.documentNumber,80),sourceFingerprint=str(o.sourceFingerprint,64);
+    if(documentKind&&!['quote','work'].includes(documentKind))throw Error('Tipo de documento inválido.');
+    if(sourceFingerprint&&!/^[0-9a-f]{64}$/.test(sourceFingerprint))throw Error('Identificador de archivo inválido.');
     if(!o||typeof o!=='object'||!str(o.id,100).trim()||!vehicleIds.has(o.vehicleId)||!str(o.title,150).trim()||!validStatuses.has(o.status))throw Error('Hay trabajos inválidos.');
     const partsCost=number(o.partsCost,'costo de repuestos'),laborCost=number(o.laborCost,'costo de mano de obra'),charged=number(o.charged,'importe'),paid=number(o.paid,'pagado');
     if(paid>charged)throw Error('Un trabajo tiene un pago mayor a su importe.');
-    return {id:str(o.id,100),vehicleId:o.vehicleId,title:str(o.title,150),category:str(o.category,120),status:o.status,openedAt:date(o.openedAt,'de trabajo'),completedAt:date(o.completedAt,'de cierre'),mileage:number(o.mileage,'kilometraje de trabajo'),description:str(o.description),partsCost,laborCost,charged,paid,notes:str(o.notes),createdAt:date(o.createdAt,'de alta de trabajo')};
+    return {id:str(o.id,100),vehicleId:o.vehicleId,title:str(o.title,150),category:str(o.category,120),status:o.status,openedAt:date(o.openedAt,'de trabajo'),completedAt:date(o.completedAt,'de cierre'),mileage:number(o.mileage,'kilometraje de trabajo'),description:str(o.description),partsCost,laborCost,charged,paid,notes:str(o.notes),createdAt:date(o.createdAt,'de alta de trabajo'),...(items.length?{items}:{}),...(documentKind?{documentKind}:{}),...(documentNumber?{documentNumber}:{}),...(sourceFingerprint?{sourceFingerprint}:{})};
   });
   checkUnique(orders,'trabajos');
   return {clients,vehicles,orders,settings:{garageName:str(data.settings?.garageName,100)||'Mi taller',currency:['ARS','USD','EUR'].includes(data.settings?.currency)?data.settings.currency:'ARS',demo:!!data.settings?.demo}};

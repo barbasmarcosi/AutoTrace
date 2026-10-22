@@ -36,6 +36,15 @@ pub(crate) struct Vehicle {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct OrderItem {
+    id: String,
+    kind: String,
+    description: String,
+    quantity: f64,
+    unit_price: f64,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct Order {
     id: String,
     vehicle_id: String,
@@ -52,6 +61,14 @@ pub(crate) struct Order {
     paid: f64,
     notes: String,
     created_at: String,
+    #[serde(default,skip_serializing_if="Vec::is_empty")]
+    items: Vec<OrderItem>,
+    #[serde(default,skip_serializing_if="String::is_empty")]
+    document_kind: String,
+    #[serde(default,skip_serializing_if="String::is_empty")]
+    document_number: String,
+    #[serde(default,skip_serializing_if="String::is_empty")]
+    source_fingerprint: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -216,6 +233,26 @@ pub(crate) fn validate(data: &AppData) -> Result<(), String> {
         }
         cents(o.parts_cost, "trabajo.repuestos")?;
         cents(o.labor_cost, "trabajo.manoDeObra")?;
+        if !o.document_kind.is_empty() && !matches!(o.document_kind.as_str(),"quote"|"work"){
+            return Err("Clase de documento inválida".into());
+        }
+        valid_text(&o.document_number,80,"documento.numero",false)?;
+        if !o.source_fingerprint.is_empty() && (o.source_fingerprint.len()!=64
+           || !o.source_fingerprint.chars().all(|c|c.is_ascii_hexdigit() && !c.is_ascii_uppercase())){
+            return Err("Huella digital del archivo inválida".into());
+        }
+        if o.items.len()>100{return Err("Demasiados renglones".into());}
+        let mut lines=HashSet::new();
+        for line in &o.items {
+            valid_text(&line.id,100,"renglon.id",true)?;
+            valid_text(&line.description,1500,"renglon.descripcion",true)?;
+            if !matches!(line.kind.as_str(),"part"|"labor"|"other"){return Err("Tipo de renglón inválido".into());}
+            natural(line.quantity,"renglon.cantidad")?;
+            if line.quantity<=0.0||line.quantity>100000.0{return Err("Cantidad inválida".into());}
+            cents(line.unit_price,"renglon.precio")?;
+            if !lines.insert(line.id.as_str()){return Err("Renglón duplicado".into());}
+            cents(line.quantity*line.unit_price,"renglon.total")?;
+        }
         if !orders.insert(o.id.as_str()) { return Err("Trabajo duplicado".into()); }
     }
     Ok(())
