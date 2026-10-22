@@ -1,6 +1,6 @@
 //! Two matching, locally verified artifacts. Does not claim off-device durability.
 use crate::{excel, store};
-use rusqlite::{backup::Backup, Connection};
+use rusqlite::{backup::Backup, Connection, OpenFlags};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{fs, path::{Path,PathBuf}, time::{Duration, SystemTime, UNIX_EPOCH}};
@@ -135,6 +135,50 @@ pub(crate) fn export_customer_excel_dialog(app:tauri::AppHandle,client_id:String
     if result.is_err(){let _=fs::remove_file(tmp);}
     result
 }
+// Only data from a verified and validated SQLite source enters the current app.
+// Copying a user-selected SQLite database directly to the live path is forbidden.
+fn read_sqlite_candidate(path:&Path)->Result<(store::AppData,bool),String>{
+    let meta=fs::metadata(path).map_err(err)?;
+    if !meta.is_file() || meta.len()>512_000_000 || meta.len()<100 {
+        return Err("Archivo SQLite vacío o demasiado grande".into());
+    }
+    let mut verified=false;
+    let marker=path.with_extension("manifest.json");
+    if marker.exists(){
+        let doc:serde_json::Value=serde_json::from_slice(&fs::read(&marker).map_err(err)?).map_err(err)?;
+        if doc["kind"]!="autotrace-dual-backup" || doc["version"]!=1 ||
+            doc["sqliteSha256"].as_str()!=Some(sha(path)?.as_str()) {
+            return Err("Manifest o SHA-256 del backup no coinciden".into());
+        }
+        let stem=path.file_stem().and_then(|s|s.to_str()).ok_or("Nombre inválido")?;
+        let id=doc["snapshotId"].as_str().ok_or("Falta ID del backup")?;
+        if stem!=format!("AutoTrace_{id}") {return Err("ID de respaldo incorrecto".into());}
+        verified=true;
+    }
+    let conn=Connection::open_with_flags(path,OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(err)?;
+    let version:i64=conn.query_row("PRAGMA user_version",[],|r|r.get(0)).map_err(err)?;
+    if version!=1 {return Err("Versión de base SQLite no admitida".into());}
+    verify_db(&conn)?;
+    Ok((store::read(&conn)?.data,verified))
+}
+#[derive(Serialize)]
+#[serde(rename_all="camelCase")]
+pub(crate) struct SqlitePreview {
+    pub data:store::AppData,
+    pub filename:String,
+    pub verified:bool,
+}
+#[tauri::command]
+pub(crate) fn choose_sqlite_import()->Result<Option<SqlitePreview>,String>{
+    let Some(path)=rfd::FileDialog::new().add_filter("Respaldo SQLite AutoTrace",&["sqlite3"]).pick_file() else{
+        return Ok(None);
+    };
+    let (data,verified)=read_sqlite_candidate(&path)?;
+    Ok(Some(SqlitePreview{
+        data,verified,
+        filename:path.file_name().unwrap_or_default().to_string_lossy().into_owned()
+    }))
+}
 #[derive(Serialize)]
 #[serde(rename_all="camelCase")]
 pub(crate) struct ExcelPreview{pub data:store::AppData,pub filename:String}
@@ -165,6 +209,9 @@ mod tests {
         let restored=excel::from_xlsx(&fs::read(done.excel_path).unwrap()).unwrap();
         assert_eq!(restored.clients_count(),0);
         assert!(backup_pair(&source,&temp,"fixture").is_err());
+        assert!(read_sqlite_candidate(Path::new(&done.sqlite_path)).unwrap().1);
+        let broken=temp.join("broken.sqlite3");fs::write(&broken,b"corrupt").unwrap();
+        assert!(read_sqlite_candidate(&broken).is_err());
         fs::remove_dir_all(temp).unwrap();
     }
 }
