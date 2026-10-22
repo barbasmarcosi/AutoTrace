@@ -12,6 +12,8 @@ pub(crate) struct BackupStatus {
     pub last_backup_unix_ms: Option<u128>,
     pub local_only: bool,
     pub directory: String,
+    pub external_directory: Option<String>,
+    pub last_external_backup_unix_ms: Option<u128>,
 }
 #[derive(Debug,Serialize)]
 #[serde(rename_all="camelCase")]
@@ -19,6 +21,8 @@ pub(crate) struct BackupResult {
     pub sqlite_path: String,
     pub excel_path: String,
     pub manifest_path: String,
+    pub external_copy_ok: bool,
+    pub external_copy_error: Option<String>,
 }
 fn err(e:impl std::fmt::Display)->String {format!("No se pudo crear o verificar el respaldo: {e}")}
 fn now_ms()->Result<u128,String> {Ok(SystemTime::now().duration_since(UNIX_EPOCH).map_err(err)?.as_millis())}
@@ -70,30 +74,133 @@ fn backup_pair(src:&Connection, dest:&Path, id:&str)->Result<BackupResult,String
         fs::rename(&temp_xlsx,&excel).map_err(err)?;
         fs::rename(&temp_manifest,&manifest).map_err(err)?;
         if sha(&db)?!=metadata["sqliteSha256"].as_str().unwrap_or("") || sha(&excel)?!=metadata["excelSha256"].as_str().unwrap_or("") {return Err("Checksum no coincide después de copiar".into());}
-        Ok(BackupResult{sqlite_path:db.display().to_string(),excel_path:excel.display().to_string(),manifest_path:manifest.display().to_string()})
+        Ok(BackupResult{sqlite_path:db.display().to_string(),excel_path:excel.display().to_string(),manifest_path:manifest.display().to_string(),external_copy_ok:false,external_copy_error:None})
     })();
     let _=fs::remove_dir_all(staging);
     if result.is_err(){let _=fs::remove_file(db);let _=fs::remove_file(excel);let _=fs::remove_file(manifest);}
     result
 }
+fn verify_pair_marker(path:&Path)->Result<(),String>{
+    let manifest:serde_json::Value=serde_json::from_slice(&fs::read(path).map_err(err)?).map_err(err)?;
+    if manifest["kind"]!="autotrace-dual-backup" || manifest["version"]!=1 {
+        return Err("Manifiesto de respaldo no reconocido".into());
+    }
+    let id=manifest["snapshotId"].as_str().ok_or("Manifiesto sin ID")?;
+    if id.is_empty()||id.len()>120||!id.chars().all(|c|c.is_ascii_alphanumeric()||c=='-') {
+        return Err("ID de respaldo inválido".into());
+    }
+    let dir=path.parent().ok_or("Carpeta de respaldo inválida")?;
+    let database=dir.join(format!("AutoTrace_{id}.sqlite3"));
+    let excel_path=dir.join(format!("AutoTrace_{id}.xlsx"));
+    if sha(&database)?!=manifest["sqliteSha256"].as_str().unwrap_or("") ||
+       sha(&excel_path)?!=manifest["excelSha256"].as_str().unwrap_or("") {
+        return Err("Checksum de los archivos de respaldo incorrecto".into());
+    }
+    let conn=Connection::open_with_flags(&database,OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(err)?;
+    verify_db(&conn)?;
+    let sqlite_data=store::read(&conn)?.data;
+    let workbook=excel::from_xlsx(&fs::read(&excel_path).map_err(err)?)?;
+    if excel::canonical_bytes(&sqlite_data)?!=excel::canonical_bytes(&workbook)? {
+        return Err("Los datos de Excel y SQLite difieren".into());
+    }
+    Ok(())
+}
+fn external_config_path(app:&tauri::AppHandle)->Result<PathBuf,String>{
+    let folder=app.path().app_local_data_dir().map_err(err)?;
+    fs::create_dir_all(&folder).map_err(err)?;
+    Ok(folder.join("external-backup-destination.json"))
+}
+fn configured_folder(app:&tauri::AppHandle)->Result<Option<PathBuf>,String>{
+    let cfg=external_config_path(app)?;
+    if !cfg.exists(){return Ok(None);}
+    let doc:serde_json::Value=serde_json::from_slice(&fs::read(cfg).map_err(err)?).map_err(err)?;
+    let dir=doc["directory"].as_str().ok_or("Destino externo inválido")?;
+    if dir.is_empty(){return Ok(None);}
+    Ok(Some(PathBuf::from(dir)))
+}
+#[tauri::command]
+pub(crate) fn configure_external_backup(app:tauri::AppHandle)->Result<Option<String>,String>{
+    let Some(folder)=rfd::FileDialog::new().set_title("Carpeta o disco de respaldo externo").pick_folder() else{return Ok(None)};
+    let destination=fs::canonicalize(&folder).map_err(err)?;
+    let local=app.path().app_local_data_dir().map_err(err)?;
+    fs::create_dir_all(&local).map_err(err)?;
+    let local=fs::canonicalize(local).map_err(err)?;
+    if destination.starts_with(&local)||local.starts_with(&destination){
+        return Err("La carpeta elegida no puede contener los datos de AutoTrace".into());
+    }
+    let config=external_config_path(&app)?;
+    fs::write(&config,serde_json::to_vec(&serde_json::json!({"directory":destination})).map_err(err)?).map_err(err)?;
+    Ok(Some(destination.display().to_string()))
+}
+fn mirror_pair(result:&BackupResult,directory:&Path)->Result<(),String>{
+    if !directory.is_dir(){return Err("La carpeta externa no está disponible".into());}
+    let primary=Path::new(&result.manifest_path);
+    let stem=primary.file_name().ok_or("Nombre de respaldo inválido")?.to_string_lossy();
+    let base=stem.strip_suffix(".manifest.json").ok_or("Nombre de manifiesto inválido")?;
+    let files=[
+        (Path::new(&result.sqlite_path),directory.join(format!("{base}.sqlite3"))),
+        (Path::new(&result.excel_path),directory.join(format!("{base}.xlsx"))),
+        (primary,directory.join(format!("{base}.manifest.json")))
+    ];
+    if files.iter().any(|(_,p)|p.exists()){return Err("El respaldo ya existe en destino".into());}
+    let staging=directory.join(format!(".{base}.partial"));
+    fs::create_dir(&staging).map_err(err)?;
+    let result_copy=(||{
+        for(i,(from,_))in files.iter().enumerate(){
+            let tmp=staging.join(format!("{i}.part"));
+            fs::copy(from,&tmp).map_err(err)?;
+            if sha(from)?!=sha(&tmp)?{return Err("La copia externa no coincide".into());}
+        }
+        // Publicar el manifiesto último permite detectar pares incompletos.
+        for(i,(_,dst))in files.iter().enumerate(){
+            fs::rename(staging.join(format!("{i}.part")),dst).map_err(err)?;
+        }
+        verify_pair_marker(&files[2].1)
+    })();
+    let _=fs::remove_dir_all(staging);
+    if result_copy.is_err(){for(_,p)in files.iter(){let _=fs::remove_file(p);}}
+    result_copy
+}
+fn latest_verified(directory:&Path)->Result<Option<u128>,String>{
+    if !directory.is_dir(){return Ok(None);}
+    let mut entries=Vec::new();
+    for item in fs::read_dir(directory).map_err(err)?{
+        let entry=item.map_err(err)?;
+        if !entry.file_name().to_string_lossy().ends_with(".manifest.json"){continue;}
+        let age=entry.metadata().map_err(err)?.modified().map_err(err)?.duration_since(UNIX_EPOCH).map_err(err)?.as_millis();
+        entries.push((age,entry.path()));
+    }
+    entries.sort_by(|a,b|b.0.cmp(&a.0));
+    for (time,path) in entries {
+        if verify_pair_marker(&path).is_ok(){return Ok(Some(time));}
+    }
+    Ok(None)
+}
 #[tauri::command]
 pub(crate) fn backup_now(app:tauri::AppHandle)->Result<BackupResult,String>{
     let src=store::open_app(&app)?;
     let id=format!("{}-{}",now_ms()?,uuid::Uuid::new_v4().simple());
-    backup_pair(&src,&backup_dir(&app)?,&id)
+    let mut backup=backup_pair(&src,&backup_dir(&app)?,&id)?;
+    if let Some(folder)=configured_folder(&app)?{
+        match mirror_pair(&backup,&folder){
+            Ok(())=>backup.external_copy_ok=true,
+            Err(e)=>backup.external_copy_error=Some(e),
+        }
+    }
+    Ok(backup)
 }
 #[tauri::command]
 pub(crate) fn backup_status(app:tauri::AppHandle)->Result<BackupStatus,String>{
-    let dir=backup_dir(&app)?;
-    let mut last=None;
-    for file in fs::read_dir(&dir).map_err(err)?{
-        let entry=file.map_err(err)?;
-        if entry.path().extension().and_then(|s|s.to_str())!=Some("json") || !entry.file_name().to_string_lossy().ends_with(".manifest.json"){continue;}
-        let meta=entry.metadata().map_err(err)?;
-        let m=meta.modified().map_err(err)?.duration_since(UNIX_EPOCH).map_err(err)?.as_millis();
-        if last.is_none_or(|old|m>old){last=Some(m);}
-    }
-    Ok(BackupStatus{last_backup_unix_ms:last,local_only:true,directory:dir.display().to_string()})
+    let local=backup_dir(&app)?;
+    let external=configured_folder(&app)?;
+    let last_external=if let Some(folder)=external.as_ref(){latest_verified(folder)?}else{None};
+    Ok(BackupStatus{
+        last_backup_unix_ms:latest_verified(&local)?,
+        local_only:last_external.is_none(),
+        directory:local.display().to_string(),
+        external_directory:external.map(|p|p.display().to_string()),
+        last_external_backup_unix_ms:last_external
+    })
 }
 #[tauri::command]
 pub(crate) fn export_excel_dialog(app:tauri::AppHandle)->Result<bool,String>{
@@ -209,6 +316,13 @@ mod tests {
         let restored=excel::from_xlsx(&fs::read(done.excel_path).unwrap()).unwrap();
         assert_eq!(restored.clients_count(),0);
         assert!(backup_pair(&source,&temp,"fixture").is_err());
+        assert!(verify_pair_marker(Path::new(&done.manifest_path)).is_ok());
+        let usb=temp.join("usb");fs::create_dir(&usb).unwrap();
+        mirror_pair(&done,&usb).unwrap();
+        assert!(latest_verified(&usb).unwrap().is_some());
+        fs::write(&done.excel_path,b"malformado").unwrap();
+        assert!(latest_verified(&temp).unwrap().is_none());
+        assert!(latest_verified(&usb).unwrap().is_some());
         assert!(read_sqlite_candidate(Path::new(&done.sqlite_path)).unwrap().1);
         let broken=temp.join("broken.sqlite3");fs::write(&broken,b"corrupt").unwrap();
         assert!(read_sqlite_candidate(&broken).is_err());
