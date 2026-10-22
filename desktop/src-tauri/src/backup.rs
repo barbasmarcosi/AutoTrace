@@ -91,6 +91,10 @@ fn verify_pair_marker(path:&Path)->Result<(),String>{
         return Err("ID de respaldo inválido".into());
     }
     let dir=path.parent().ok_or("Carpeta de respaldo inválida")?;
+    let expected=format!("AutoTrace_{id}.manifest.json");
+    if path.file_name().and_then(|s|s.to_str())!=Some(expected.as_str()) {
+        return Err("La identidad del manifiesto y el nombre del archivo no coinciden".into());
+    }
     let database=dir.join(format!("AutoTrace_{id}.sqlite3"));
     let excel_path=dir.join(format!("AutoTrace_{id}.xlsx"));
     if sha(&database)?!=manifest["sqliteSha256"].as_str().unwrap_or("") ||
@@ -471,6 +475,9 @@ mod tests {
         assert_eq!(restored.clients_count(),0);
         assert!(backup_pair(&source,&temp,"fixture").is_err());
         assert!(verify_pair_marker(Path::new(&done.manifest_path)).is_ok());
+        let counterfeit=temp.join("AutoTrace_1234567890123-0a.manifest.json");
+        fs::copy(&done.manifest_path,&counterfeit).unwrap();
+        assert!(verify_pair_marker(&counterfeit).is_err(),"no aceptar manifiesto con identidad ajena");
         let usb=temp.join("usb");fs::create_dir(&usb).unwrap();
         mirror_pair(&done,&usb).unwrap();
         assert!(latest_verified(&usb).unwrap().is_some());
