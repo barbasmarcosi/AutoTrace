@@ -25,7 +25,20 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
-    "icon": ["../../site/assets/icon-512.png"]
+    "targets": [
+      "nsis"
+    ],
+    "icon": [
+      "icons/icon.ico",
+      "../../site/assets/icon-512.png"
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": [
+          "Spanish"
+        ]
+      }
+    }
   }
 }
