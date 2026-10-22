@@ -10,6 +10,8 @@ use std::io::Cursor;
 const CLIENTS: &[(&str, &str)] = &[("id","id"),("nombre","name"),("telefono","phone"),("email","email"),("notas","notes"),("creado_el","createdAt")];
 const VEHICLES: &[(&str,&str)] = &[("id","id"),("cliente_id","clientId"),("patente","plate"),("marca","make"),("modelo","model"),("anio","year"),("kilometraje","mileage"),("vin","vin"),("color","color"),("proximo_servicio","nextServiceDate"),("notas","notes"),("creado_el","createdAt")];
 const ORDERS: &[(&str,&str)] = &[("id","id"),("vehiculo_id","vehicleId"),("titulo","title"),("categoria","category"),("estado","status"),("fecha_apertura","openedAt"),("fecha_cierre","completedAt"),("kilometraje","mileage"),("descripcion","description"),("costo_repuestos","partsCost"),("costo_mano_obra","laborCost"),("importe_acordado","charged"),("total_pagado","paid"),("notas","notes"),("creado_el","createdAt")];
+const ORDERS_V2: &[(&str,&str)] = &[("id","id"),("vehiculo_id","vehicleId"),("titulo","title"),("categoria","category"),("estado","status"),("fecha_apertura","openedAt"),("fecha_cierre","completedAt"),("kilometraje","mileage"),("descripcion","description"),("costo_repuestos","partsCost"),("costo_mano_obra","laborCost"),("importe_acordado","charged"),("total_pagado","paid"),("notas","notes"),("creado_el","createdAt"),("tipo_documento","documentKind"),("numero_documento","documentNumber"),("huella_origen","sourceFingerprint")];
+const LINES: &[(&str,&str)] = &[("trabajo_id","orderId"),("renglon_id","id"),("tipo","kind"),("descripcion","description"),("cantidad","quantity"),("valor_unitario","unitPrice")];
 const SETTINGS: &[(&str,&str)] = &[("nombre_taller","garageName"),("moneda","currency"),("datos_demostracion","demo")];
 
 pub(crate) fn canonical_bytes(data: &AppData) -> Result<Vec<u8>, String> {
@@ -53,9 +55,19 @@ pub(crate) fn to_xlsx(data: &AppData) -> Result<Vec<u8>, String> {
     let v = serde_json::to_value(data).map_err(xlsx_err)?;
     let mut wb = Workbook::new();
     let digest = checksum(data)?;
+    let mut lines=Vec::new();
+    for order in v["orders"].as_array().ok_or("Trabajos inválidos")?{
+        if let Some(items)=order.get("items").and_then(Value::as_array){
+            for item in items {
+                let mut record=item.as_object().ok_or("Renglón inválido")?.clone();
+                record.insert("orderId".into(),order["id"].clone());
+                lines.push(Value::Object(record));
+            }
+        }
+    }
     let manifest = vec![
         ("format","autotrace-backup-xlsx".to_string()),
-        ("schema_version","1".to_string()),
+        ("schema_version","2".to_string()),
         ("created_at_utc",chrono::Utc::now().to_rfc3339()),
         ("snapshot_id",uuid::Uuid::new_v4().to_string()),
         ("app_version",env!("CARGO_PKG_VERSION").to_string()),
@@ -66,6 +78,7 @@ pub(crate) fn to_xlsx(data: &AppData) -> Result<Vec<u8>, String> {
         ("count_clients",data_count(&v,"clients")?.to_string()),
         ("count_vehicles",data_count(&v,"vehicles")?.to_string()),
         ("count_orders",data_count(&v,"orders")?.to_string()),
+        ("count_lines",lines.len().to_string()),
     ];
     let ws = wb.add_worksheet(); ws.set_name("Manifest").map_err(xlsx_err)?;
     ws.set_column_width(0,25).map_err(xlsx_err)?; ws.set_column_width(1,72).map_err(xlsx_err)?;
@@ -77,7 +90,8 @@ pub(crate) fn to_xlsx(data: &AppData) -> Result<Vec<u8>, String> {
     }
     emit_sheet(&mut wb,"Clientes",CLIENTS,v["clients"].as_array().ok_or("Falta Clientes")?)?;
     emit_sheet(&mut wb,"Vehiculos",VEHICLES,v["vehicles"].as_array().ok_or("Falta Vehiculos")?)?;
-    emit_sheet(&mut wb,"Trabajos",ORDERS,v["orders"].as_array().ok_or("Falta Trabajos")?)?;
+    emit_sheet(&mut wb,"Trabajos",ORDERS_V2,v["orders"].as_array().ok_or("Falta Trabajos")?)?;
+    emit_sheet(&mut wb,"DetalleTrabajos",LINES,&lines)?;
     emit_sheet(&mut wb,"Configuracion",SETTINGS,&[v["settings"].clone()])?;
     wb.save_to_buffer().map_err(xlsx_err)
 }
@@ -111,7 +125,7 @@ fn read_rows(excel: &mut Xlsx<Cursor<&[u8]>>, name:&str, cols:&[(&str,&str)], ma
         for (col, (_,field)) in cols.iter().enumerate() {
             let cell = cells.get(col).unwrap_or(&Data::Empty);
             let v = match *field {
-                "mileage" | "partsCost" | "laborCost" | "charged" | "paid" => cell_as_number(cell, field)?,
+                "mileage" | "partsCost" | "laborCost" | "charged" | "paid" | "quantity" | "unitPrice" => cell_as_number(cell, field)?,
                 "year" => match cell {
                     Data::Empty => Value::String(String::new()),
                     Data::String(s) if s.is_empty() => Value::String(String::new()),
@@ -130,7 +144,7 @@ fn read_rows(excel: &mut Xlsx<Cursor<&[u8]>>, name:&str, cols:&[(&str,&str)], ma
 }
 fn manifest(excel:&mut Xlsx<Cursor<&[u8]>>)->Result<std::collections::HashMap<String,String>,String>{
     let rows=excel.worksheet_range("Manifest").map_err(xlsx_err)?;
-    if rows.height()!=13 || rows.width()!=2 {return Err("Manifest incompleto".into());}
+    if !(rows.height()==13||rows.height()==14) || rows.width()!=2 {return Err("Manifest incompleto".into());}
     let mut lines=rows.rows();
     let h=lines.next().ok_or("Manifest sin encabezado")?;
     if h[0].get_string()!=Some("clave") || h[1].get_string()!=Some("valor") {return Err("Manifest inválido".into());}
@@ -141,14 +155,30 @@ fn manifest(excel:&mut Xlsx<Cursor<&[u8]>>)->Result<std::collections::HashMap<St
 pub(crate) fn from_xlsx(bytes:&[u8])->Result<AppData,String>{
     if bytes.len()>25_000_000 {return Err("Excel demasiado grande (máximo 25 MB)".into());}
     let mut wb:Xlsx<_> = Xlsx::new(Cursor::new(bytes)).map_err(xlsx_err)?;
-    let required=["Manifest","Clientes","Vehiculos","Trabajos","Configuracion"];
-    let names=wb.sheet_names();
-    if names.len()!=required.len() || required.iter().any(|s|!names.iter().any(|n|n==s)) {return Err("Hojas XLSX incompatibles con respaldo AutoTrace".into());}
     let meta=manifest(&mut wb)?;
-    if meta.get("format").map(String::as_str)!=Some("autotrace-backup-xlsx") || meta.get("schema_version").map(String::as_str)!=Some("1") || meta.get("export_kind").map(String::as_str)!=Some("full") {return Err("Formato o versión de respaldo no admitidos".into());}
+    let ver=meta.get("schema_version").map(String::as_str).ok_or("Versión faltante")?;
+    if meta.get("format").map(String::as_str)!=Some("autotrace-backup-xlsx") || !matches!(ver,"1"|"2") || meta.get("export_kind").map(String::as_str)!=Some("full") {return Err("Formato o versión de respaldo no admitidos".into());}
+    let required=if ver=="2"{vec!["Manifest","Clientes","Vehiculos","Trabajos","DetalleTrabajos","Configuracion"]}else{vec!["Manifest","Clientes","Vehiculos","Trabajos","Configuracion"]};
+    let names=wb.sheet_names();
+    if names.len()!=required.len()||required.iter().any(|s|!names.iter().any(|n|n==s)){return Err("Hojas XLSX incompatibles con respaldo AutoTrace".into());}
     let clients=read_rows(&mut wb,"Clientes",CLIENTS,15_000)?;
     let vehicles=read_rows(&mut wb,"Vehiculos",VEHICLES,30_000)?;
-    let orders=read_rows(&mut wb,"Trabajos",ORDERS,100_000)?;
+    let mut orders=read_rows(&mut wb,"Trabajos",if ver=="2"{ORDERS_V2}else{ORDERS},100_000)?;
+    if ver=="2"{
+        let lines=read_rows(&mut wb,"DetalleTrabajos",LINES,100_000)?;
+        if meta.get("count_lines")!=Some(&lines.len().to_string()){return Err("Cantidad de renglones alterada".into());}
+        let mut grouped=std::collections::HashMap::<String,Vec<Value>>::new();
+        for mut line in lines {
+            let reference=line["orderId"].as_str().ok_or("Renglón sin trabajo")?.to_string();
+            line.as_object_mut().ok_or("Renglón inválido")?.remove("orderId");
+            grouped.entry(reference).or_default().push(line);
+        }
+        for order in &mut orders{
+            let id=order["id"].as_str().ok_or("Trabajo sin ID")?.to_string();
+            if let Some(items)=grouped.remove(&id){order.as_object_mut().ok_or("Trabajo inválido")?.insert("items".into(),Value::Array(items));}
+        }
+        if !grouped.is_empty(){return Err("Renglones vinculados a trabajos inexistentes".into());}
+    }
     let config=read_rows(&mut wb,"Configuracion",SETTINGS,1)?;
     if config.len()!=1 {return Err("La configuración debe tener una fila".into());}
     for (k,len) in [("count_clients",clients.len()),("count_vehicles",vehicles.len()),("count_orders",orders.len())]{if meta.get(k)!=Some(&len.to_string()){return Err(format!("Cantidad de registros alterada: {k}"));}}
@@ -172,6 +202,19 @@ mod tests {
     #[test]
     fn xlsx_roundtrip_client_and_vehicle_with_text_ids(){
         let raw=serde_json::json!({"clients":[{"id":"00001","name":"Mónica Ñ","phone":"001234","email":"","notes":"=1+1","createdAt":"2026-10-21"}],"vehicles":[{"id":"v1","clientId":"00001","plate":"AF012BC","make":"Peugeot","model":"208","year":2023,"mileage":123.5,"vin":"","color":"Azul","nextServiceDate":"","notes":"","createdAt":"2026-10-21"}],"orders":[{"id":"o1","vehicleId":"v1","title":"Servicio","category":"Diagnóstico","status":"done","openedAt":"2026-10-21","completedAt":"","mileage":123.5,"description":"","partsCost":0.29,"laborCost":1.2,"charged":2.5,"paid":1.0,"notes":"privado","createdAt":"2026-10-21"}],"settings":{"garageName":"Taller Central","currency":"ARS","demo":false}});
+        let data:AppData=serde_json::from_value(raw).unwrap();
+        let bytes=to_xlsx(&data).unwrap();
+        let restored=from_xlsx(&bytes).unwrap();
+        assert_eq!(canonical_bytes(&data).unwrap(),canonical_bytes(&restored).unwrap());
+    }
+    #[test]
+    fn document_items_roundtrip_with_provenance(){
+        let raw=serde_json::json!({"clients":[{"id":"c1","name":"Taller prueba","phone":"","email":"","notes":"","createdAt":""}],
+          "vehicles":[{"id":"v1","clientId":"c1","plate":"AF012BC","make":"Toyota","model":"Hilux","year":"","mileage":1234,"vin":"","color":"","nextServiceDate":"","notes":"","createdAt":""}],
+          "orders":[{"id":"o1","vehicleId":"v1","title":"Servicio","category":"Mecánica","status":"done","openedAt":"2026-10-22","completedAt":"","mileage":1234,"description":"","partsCost":0,"laborCost":0,"charged":347000,"paid":0,"notes":"","createdAt":"",
+          "items":[{"id":"l1","kind":"part","description":"FILTRO DE AIRE","quantity":1,"unitPrice":28000},{"id":"l2","kind":"labor","description":"MANO DE OBRA","quantity":1,"unitPrice":90000}],
+          "documentKind":"quote","documentNumber":"0007","sourceFingerprint":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}],
+          "settings":{"garageName":"Taller","currency":"ARS","demo":false}});
         let data:AppData=serde_json::from_value(raw).unwrap();
         let bytes=to_xlsx(&data).unwrap();
         let restored=from_xlsx(&bytes).unwrap();
