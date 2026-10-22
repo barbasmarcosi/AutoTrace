@@ -93,6 +93,7 @@ const desktopInvoke = window.__TAURI__?.core?.invoke ?? null;
 let desktopRevision = 0;
 let lastDesktopBackup = null;
 let desktopBackupBusy = false;
+let pendingLegacyDocument = null;
 let memoryOnly = false;
 let toastTimeout;
 const app = document.querySelector('#app');
@@ -313,7 +314,7 @@ function renderSearch(){
 function renderSettings(){
   return `${sectionHead('Configuración y respaldos','Personalizá AutoTrace y administrá tu información.')}
   ${memoryOnly?'<p class="notice warning">Este navegador no permite almacenar datos. No cargues información real en esta sesión.</p>':''}
-  <div class="settings-grid"><div><div class="card settings-block detail-section"><h3>Preferencias del taller</h3><p>Estos ajustes afectan la visualización, no modifican tus importes.</p><form id="settings-form" class="form-grid"><div class="field span-2"><label for="garageName">Nombre del taller</label><input id="garageName" name="garageName" maxlength="100" value="${esc(db.settings.garageName)}" required /></div><div class="field"><label for="currency">Moneda</label><select id="currency" name="currency">${['ARS','USD','EUR'].map(c=>`<option value="${c}" ${db.settings.currency===c?'selected':''}>${c}</option>`).join('')}</select></div><div class="field" style="justify-content:flex-end"> <button class="btn btn-primary" type="submit">Guardar preferencias</button></div></form></div><div class="card settings-block"><h3>Datos locales</h3><p>Descargá una copia completa de clientes, vehículos, trabajos y preferencias. Importar reemplaza todos los registros actuales.</p><div class="settings-actions">${button(`${icon('download')} Exportar JSON`,'export-json','btn-primary')}${button(`${icon('upload')} Importar JSON`,'import-json','btn-secondary')}${button(`${icon('download')} Exportar CSV`,'export-csv','btn-secondary')}${desktopInvoke?`${button(`${icon('download')} Excel completo`,'export-excel-desktop','btn-primary')}${button(`${icon('upload')} Importar Excel`,'import-excel-desktop','btn-secondary')}${button(`${icon('upload')} Recuperar SQLite`,'restore-sqlite-desktop','btn-secondary')}${button(`${icon('shield')} Crear respaldo ahora`,'backup-desktop-now','btn-secondary')}${button(`${icon('download')} Elegir carpeta de respaldo`,'choose-external-backup','btn-secondary')}${button(`${icon('shield')} Probar recuperación`,'test-backup-recovery','btn-secondary')}`:''}</div><div class="notice" style="margin-top:23px">${icon('shield',17)} ${desktopInvoke?'SQLite local. Las copias automáticas SQLite + Excel se guardan EN ESTA COMPUTADORA. Para protegerte ante pérdida del equipo, exportá una copia a un disco externo. El Excel contiene datos personales y costos internos.':'Los registros se guardan con IndexedDB en este navegador. No se envían a GitHub ni a servidores de AutoTrace. Si borrás datos del sitio o cambiás de dispositivo, necesitarás el respaldo.'}</div></div></div><div><div class="card settings-block detail-section"><h3>Estado de la instalación</h3><p>${desktopInvoke?'AutoTrace Desktop funciona con SQLite local, sin servidor.':'La PWA funciona sin conexión después de abrirla por primera vez.'}</p><div class="info-grid">${descView('Clientes',String(db.clients.length))}${descView('Vehículos',String(db.vehicles.length))}${descView('Trabajos',String(db.orders.length))}${descView('Almacenamiento',desktopInvoke?'SQLite local':memoryOnly?'No disponible':'Local (IndexedDB)')}${desktopInvoke?descView('Carpeta de respaldo adicional',lastDesktopBackup?.externalDirectory||'Sin configurar'):''}${desktopInvoke?descView('Último respaldo local verificado',lastDesktopBackup?.lastBackupUnixMs?new Date(Number(lastDesktopBackup.lastBackupUnixMs)).toLocaleString('es-AR'):'No hay copia válida'):''}${desktopInvoke?descView('Última copia secundaria verificada',lastDesktopBackup?.lastExternalBackupUnixMs?new Date(Number(lastDesktopBackup.lastExternalBackupUnixMs)).toLocaleString('es-AR'):'No configurada / no válida'):''}</div></div><div class="card settings-block"><h3>Zona de mantenimiento</h3><p>Las acciones siguientes eliminan datos. Antes de continuar, exportá un respaldo JSON.</p><div class="settings-actions">${db.settings.demo?button('Eliminar datos de muestra','reset-demo','btn-secondary'):''}${button(`${icon('trash')} Borrar todos los datos`,'clear-all','btn-danger-ghost')}</div></div><div class="notice warning" style="margin-top:19px">${desktopInvoke?'Las copias automáticas locales NO protegen ante robo, fallo total del disco o incendio. Copiá el Excel completo y la copia SQLite a un medio externo. No hay cifrado automático ni backups en la nube.':'Esta versión está pensada para pruebas y uso individual. No incluye cuentas, cifrado, facturación fiscal, copias automáticas ni sincronización entre dispositivos.'}</div></div></div>`;
+  <div class="settings-grid"><div><div class="card settings-block detail-section"><h3>Preferencias del taller</h3><p>Estos ajustes afectan la visualización, no modifican tus importes.</p><form id="settings-form" class="form-grid"><div class="field span-2"><label for="garageName">Nombre del taller</label><input id="garageName" name="garageName" maxlength="100" value="${esc(db.settings.garageName)}" required /></div><div class="field"><label for="currency">Moneda</label><select id="currency" name="currency">${['ARS','USD','EUR'].map(c=>`<option value="${c}" ${db.settings.currency===c?'selected':''}>${c}</option>`).join('')}</select></div><div class="field" style="justify-content:flex-end"> <button class="btn btn-primary" type="submit">Guardar preferencias</button></div></form></div><div class="card settings-block"><h3>Datos locales</h3><p>Descargá una copia completa de clientes, vehículos, trabajos y preferencias. Importar reemplaza todos los registros actuales.</p><div class="settings-actions">${button(`${icon('download')} Exportar JSON`,'export-json','btn-primary')}${button(`${icon('upload')} Importar JSON`,'import-json','btn-secondary')}${button(`${icon('download')} Exportar CSV`,'export-csv','btn-secondary')}${desktopInvoke?`${button(`${icon('download')} Excel completo`,'export-excel-desktop','btn-primary')}${button(`${icon('upload')} Importar Excel`,'import-excel-desktop','btn-secondary')}${button(`${icon('upload')} Importar presupuesto / remito`,'import-legacy-document','btn-secondary')}${button(`${icon('upload')} Recuperar SQLite`,'restore-sqlite-desktop','btn-secondary')}${button(`${icon('shield')} Crear respaldo ahora`,'backup-desktop-now','btn-secondary')}${button(`${icon('download')} Elegir carpeta de respaldo`,'choose-external-backup','btn-secondary')}${button(`${icon('shield')} Probar recuperación`,'test-backup-recovery','btn-secondary')}`:''}</div><div class="notice" style="margin-top:23px">${icon('shield',17)} ${desktopInvoke?'SQLite local. Las copias automáticas SQLite + Excel se guardan EN ESTA COMPUTADORA. Para protegerte ante pérdida del equipo, exportá una copia a un disco externo. El Excel contiene datos personales y costos internos.':'Los registros se guardan con IndexedDB en este navegador. No se envían a GitHub ni a servidores de AutoTrace. Si borrás datos del sitio o cambiás de dispositivo, necesitarás el respaldo.'}</div></div></div><div><div class="card settings-block detail-section"><h3>Estado de la instalación</h3><p>${desktopInvoke?'AutoTrace Desktop funciona con SQLite local, sin servidor.':'La PWA funciona sin conexión después de abrirla por primera vez.'}</p><div class="info-grid">${descView('Clientes',String(db.clients.length))}${descView('Vehículos',String(db.vehicles.length))}${descView('Trabajos',String(db.orders.length))}${descView('Almacenamiento',desktopInvoke?'SQLite local':memoryOnly?'No disponible':'Local (IndexedDB)')}${desktopInvoke?descView('Carpeta de respaldo adicional',lastDesktopBackup?.externalDirectory||'Sin configurar'):''}${desktopInvoke?descView('Último respaldo local verificado',lastDesktopBackup?.lastBackupUnixMs?new Date(Number(lastDesktopBackup.lastBackupUnixMs)).toLocaleString('es-AR'):'No hay copia válida'):''}${desktopInvoke?descView('Última copia secundaria verificada',lastDesktopBackup?.lastExternalBackupUnixMs?new Date(Number(lastDesktopBackup.lastExternalBackupUnixMs)).toLocaleString('es-AR'):'No configurada / no válida'):''}</div></div><div class="card settings-block"><h3>Zona de mantenimiento</h3><p>Las acciones siguientes eliminan datos. Antes de continuar, exportá un respaldo JSON.</p><div class="settings-actions">${db.settings.demo?button('Eliminar datos de muestra','reset-demo','btn-secondary'):''}${button(`${icon('trash')} Borrar todos los datos`,'clear-all','btn-danger-ghost')}</div></div><div class="notice warning" style="margin-top:19px">${desktopInvoke?'Las copias automáticas locales NO protegen ante robo, fallo total del disco o incendio. Copiá el Excel completo y la copia SQLite a un medio externo. No hay cifrado automático ni backups en la nube.':'Esta versión está pensada para pruebas y uso individual. No incluye cuentas, cifrado, facturación fiscal, copias automáticas ni sincronización entre dispositivos.'}</div></div></div>`;
 }
 const input = (label,name,value='',opts={})=>`<div class="field ${opts.full?'span-2':''}"><label for="f-${name}">${esc(label)}${opts.required?' *':''}</label>${opts.textarea?`<textarea id="f-${name}" name="${name}" maxlength="${opts.maxlength||3000}" placeholder="${esc(opts.placeholder||'')}">${esc(value)}</textarea>`:opts.select?`<select id="f-${name}" name="${name}" ${opts.required?'required':''}>${opts.select.map(x=>`<option value="${esc(x.value)}" ${String(x.value)===String(value)?'selected':''}>${esc(x.label)}</option>`).join('')}</select>`:`<input id="f-${name}" type="${opts.type||'text'}" name="${name}" value="${esc(value)}" ${opts.required?'required':''} ${opts.min!==undefined?`min="${opts.min}"`:''} ${opts.max!==undefined?`max="${opts.max}"`:''} ${opts.step!==undefined?`step="${opts.step}"`:''} maxlength="${opts.maxlength||120}" placeholder="${esc(opts.placeholder||'')}" />`}${opts.hint?`<small>${esc(opts.hint)}</small>`:''}</div>`;
 function showModal(title,subtitle,kind,fields,id=''){
@@ -483,7 +484,27 @@ async function saveForm(form){
   const kind=form.dataset.kind,id=form.dataset.id,existing=!!id;
   const baseId=id||uid();
   let next,routeTo,message;
-  if(kind==='client'){
+  if(kind==='legacy'){
+    const doc=pendingLegacyDocument;
+    const vehicle=findVehicle(get('targetVehicle'));
+    if(!doc||!vehicle||get('confirmVehicle')!=='yes'){toast('Seleccioná y confirmá el vehículo del documento.','error');return;}
+    if(doc.plate && normPlate(doc.plate)!==vehicle.plate){toast('La patente del archivo no coincide con la del vehículo elegido.','error');return;}
+    if(db.orders.some(o=>o.sourceFingerprint===doc.sourceFingerprint)){toast('El archivo ya fue importado.','error');return;}
+    const items=doc.items.map(x=>({id:x.id,kind:x.kind,description:x.description,quantity:x.quantity,unitPrice:x.unitPrice}));
+    if(Math.abs(lineAmount(items)-doc.total)>0.011){toast('El total del documento no coincide con el detalle.','error');return;}
+    next={id:baseId,vehicleId:vehicle.id,title:doc.documentKind==='quote'?'Presupuesto importado':'Remito de trabajo importado',
+      category:doc.documentKind==='quote'?'Presupuesto':'Mecánica',
+      status:doc.documentKind==='quote'?'received':'done',
+      openedAt:doc.date,completedAt:doc.documentKind==='work'?doc.date:'',
+      mileage:doc.mileage||vehicle.mileage,
+      description:doc.vehicleObservation&&!doc.mileage?doc.vehicleObservation:'',
+      partsCost:0,laborCost:0,charged:doc.total,paid:0,
+      notes:'',createdAt:isoDate(new Date()),items,
+      documentKind:doc.documentKind,
+      ...(doc.documentNumber?{documentNumber:doc.documentNumber}:{}),
+      sourceFingerprint:doc.sourceFingerprint};
+    routeTo=['trabajo',baseId];message='Documento importado con '+items.length+' renglones.';
+  }else if(kind==='client'){
     next={id:baseId,name:get('name'),phone:get('phone'),email:get('email'),notes:get('notes'),createdAt:findClient(id)?.createdAt||isoDate(new Date())};
     if(!next.name){toast('Ingresá el nombre del cliente.','error');return;}
     routeTo=['cliente',baseId];message=existing?'Cliente actualizado.':'Cliente registrado.';
@@ -522,7 +543,7 @@ async function saveForm(form){
       if(vehicle&&next.mileage>vehicle.mileage)vehicle.mileage=next.mileage;
     }
   },message);
-  if(saved){modalOriginal='';document.querySelector('#form-dialog').close();navigate(...routeTo);}
+  if(saved){pendingLegacyDocument=null;modalOriginal='';document.querySelector('#form-dialog').close();navigate(...routeTo);}
 }
 function confirmAction(title,message,acceptText='Eliminar'){
   return new Promise(resolve=>{
@@ -579,6 +600,27 @@ async function chooseExternalBackup(){
     toast('Destino de respaldo configurado. Se requiere otra unidad; las copias NO están cifradas.');
     await createDesktopBackup();
   }catch(error){console.error(error);toast(error?.message||String(error),'error');}
+}
+async function importLegacyDocumentDesktop(){
+  if(!desktopInvoke)return;
+  if(!db.vehicles.length){toast('Registrá primero al menos un vehículo para asociar el documento.','error');navigate('vehiculos');return;}
+  try{
+    const doc=await desktopInvoke('choose_legacy_document');if(!doc)return;
+    if(db.orders.some(o=>o.sourceFingerprint===doc.sourceFingerprint)){toast('Este archivo ya fue importado. No se crearon registros duplicados.','error');return;}
+    pendingLegacyDocument=doc;
+    const normalized=normPlate(doc.plate);
+    const identified=db.vehicles.find(v=>normalized&&v.plate===normalized);
+    const options=db.vehicles.map(v=>'<option value="'+esc(v.id)+'" '+(identified?.id===v.id?'selected':'')+'>'+esc(v.plate)+' · '+esc(fullVehicle(v))+' · '+esc(vehicleClient(v)?.name||'')+'</option>').join('');
+    const lines='<div class="table-scroll"><table class="data-table"><thead><tr><th>Descripción</th><th>Cant.</th><th>Unitario</th></tr></thead><tbody>'+
+      doc.items.map(item=>'<tr><td style="white-space:pre-wrap">'+esc(item.description)+'</td><td>'+num(item.quantity)+'</td><td>'+money(item.unitPrice)+'</td></tr>').join('')+'</tbody></table></div>';
+    const block='<div class="span-2"><p class="section-intro"><strong>'+esc(doc.documentKind==='quote'?'Presupuesto':'Remito de trabajo')+'</strong> · '+esc(doc.date)+
+      ' · '+esc(doc.customerName)+' · '+esc(doc.make)+' '+esc(doc.model)+(doc.plate?' · '+esc(doc.plate):' · SIN PATENTE EN EL ARCHIVO')+
+      '</p><p class="section-intro">'+doc.items.length+' renglones · Total '+money(doc.total)+'</p>'+lines+'</div>'+
+      '<div class="field span-2"><label for="f-targetVehicle">Vehículo asociado *</label><select name="targetVehicle" id="f-targetVehicle" required>'+
+      '<option value="">Elegir vehículo…</option>'+options+'</select><small>El archivo no crea clientes ni vehículos: confirmá la relación existente. Si falta, registralo antes.</small></div>'+
+      '<label class="span-2"><input type="checkbox" name="confirmVehicle" value="yes" required> Confirmo que elegí el vehículo correcto y que el documento corresponde a su propietario.</label>';
+    showModal('Importar documento del taller','Revisá los datos y confirmá el vehículo antes de registrar el trabajo.','legacy',block);
+  }catch(error){console.error(error);toast('No se pudo leer el documento: '+String(error),'error');}
 }
 async function importExcelDesktop(){
   if(!desktopInvoke)return;
@@ -713,6 +755,7 @@ document.addEventListener('click',async event=>{
     case 'export-excel-desktop':await exportExcelDesktop();break;
     case 'export-client-excel':if(desktopInvoke && id){try{if(await desktopInvoke('export_customer_excel_dialog',{clientId:id}))toast('Informe Excel exportado sin costos internos ni notas privadas.');}catch(error){toast(String(error),'error');}}break;
     case 'import-excel-desktop':await importExcelDesktop();break;
+    case 'import-legacy-document':await importLegacyDocumentDesktop();break;
     case 'restore-sqlite-desktop':await restoreSqliteDesktop();break;
     case 'backup-desktop-now':await createDesktopBackup();break;
     case 'choose-external-backup':await chooseExternalBackup();break;
