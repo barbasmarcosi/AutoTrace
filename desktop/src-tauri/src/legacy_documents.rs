@@ -163,6 +163,9 @@ pub(crate) fn choose_legacy_document()->Result<Option<LegacyDocument>,String>{
 /// Importing a PDF, the spreadsheet header/footer VML logo, and full workbook
 /// formatting are deliberately outside this first compatibility increment.
 pub(crate) fn generate(data:&crate::store::AppData,order_id:&str,kind:&str)->Result<Vec<u8>,String>{
+    generate_with_logo(data,order_id,kind,None)
+}
+fn generate_with_logo(data:&crate::store::AppData,order_id:&str,kind:&str,logo_path:Option<&std::path::Path>)->Result<Vec<u8>,String>{
     crate::store::validate(data)?;
     if !matches!(kind,"quote"|"work"){return Err("Tipo de documento no admitido".into());}
     let v=serde_json::to_value(data).map_err(error)?;
@@ -178,6 +181,12 @@ pub(crate) fn generate(data:&crate::store::AppData,order_id:&str,kind:&str)->Res
     let mut wb=rust_xlsxwriter::Workbook::new();
     let sheet=wb.add_worksheet();
     sheet.set_name("Hoja1").map_err(error)?;
+    if let Some(path)=logo_path {
+        let image=rust_xlsxwriter::Image::new(path).map_err(error)?
+            .set_scale_height(0.4).set_scale_width(0.4);
+        sheet.set_header("&C&[Picture]");
+        sheet.set_header_image(&image,rust_xlsxwriter::HeaderImagePosition::Center).map_err(error)?;
+    }
     let header=rust_xlsxwriter::Format::new().set_bold().set_font_size(17.0);
     let emphasis=rust_xlsxwriter::Format::new().set_bold();
     sheet.set_column_width(0,3).map_err(error)?;
@@ -241,11 +250,50 @@ pub(crate) fn generate(data:&crate::store::AppData,order_id:&str,kind:&str)->Res
     sheet.write_string(total,1,if kind=="quote"{"Presupuesto sujeto a revisión. Validez 15 días."}else{"Detalle de trabajo realizado."}).map_err(error)?;
     wb.save_to_buffer().map_err(error)
 }
+fn logo_folder(app:&tauri::AppHandle)->Result<std::path::PathBuf,String>{
+    use tauri::Manager;
+    let folder=app.path().app_local_data_dir().map_err(error)?.join("branding");
+    fs::create_dir_all(&folder).map_err(error)?;
+    Ok(folder)
+}
+fn existing_logo(app:&tauri::AppHandle)->Result<Option<std::path::PathBuf>,String>{
+    let folder=logo_folder(app)?;
+    for ext in ["png","jpg","jpeg"]{
+        let path=folder.join(format!("workshop-logo.{ext}"));
+        if path.is_file(){return Ok(Some(path));}
+    }
+    Ok(None)
+}
+#[tauri::command]
+pub(crate) fn choose_workshop_logo(app:tauri::AppHandle)->Result<Option<String>,String>{
+    let Some(path)=rfd::FileDialog::new().set_title("Logo del taller")
+        .add_filter("Imagen PNG o JPEG",&["png","jpg","jpeg"]).pick_file() else{return Ok(None)};
+    let ext=path.extension().and_then(|s|s.to_str()).unwrap_or("").to_ascii_lowercase();
+    if !matches!(ext.as_str(),"png"|"jpg"|"jpeg"){return Err("Logo: formato inválido".into());}
+    let size=fs::metadata(&path).map_err(error)?.len();
+    if size>5_000_000||size<16{return Err("Logo demasiado grande o vacío".into());}
+    rust_xlsxwriter::Image::new(&path).map_err(error)?;
+    let folder=logo_folder(&app)?;
+    let target=folder.join(format!("workshop-logo.{ext}"));
+    let temp=folder.join(format!(".new-logo-{}.tmp",uuid::Uuid::new_v4()));
+    fs::copy(&path,&temp).map_err(error)?;
+    let check=fs::metadata(&temp).map_err(error)?.len();
+    if check!=size{let _=fs::remove_file(&temp);return Err("No se pudo copiar todo el logo".into());}
+    // Keep a working old logo in case the new file cannot be published.
+    if target.exists(){fs::remove_file(&target).map_err(error)?;}
+    fs::rename(&temp,&target).map_err(error)?;
+    for other in ["png","jpg","jpeg"]{
+        if other!=ext{let _=fs::remove_file(folder.join(format!("workshop-logo.{other}")));}
+    }
+    Ok(Some("Logo configurado localmente. Se agregará al encabezado impreso.".into()))
+}
+
 #[tauri::command]
 pub(crate) fn export_legacy_document(app:tauri::AppHandle,order_id:String,kind:String)->Result<bool,String>{
     use tauri::Manager;
     let data=crate::store::read(&crate::store::open_app(&app)?)?.data;
-    let bytes=generate(&data,&order_id,&kind)?;
+    let configured=existing_logo(&app)?;
+    let bytes=generate_with_logo(&data,&order_id,&kind,configured.as_deref())?;
     // Self-check: a generated customer document must parse back to identical lines.
     let checked=parse(&bytes)?;
     if checked.document_kind!=kind{return Err("Error al verificar el documento generado".into());}
