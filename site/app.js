@@ -400,7 +400,7 @@ function selectVehicleForOrder(id){
   form.elements.namedItem('title').focus();
 }
 function orderLineRow(item={}){
-  const id=esc(item.id||'');
+  const id=esc(item.id||uid());
   const choices=[['part','Pieza / insumo'],['labor','Mano de obra'],['other','Otro']];
   return '<div class="order-line-row" data-order-line data-item-id="'+id+'">'+
     '<label class="line-description">Descripción<input name="lineDescription" maxlength="1500" value="'+esc(item.description||'')+'" placeholder="Pieza o tarea realizada" required></label>'+

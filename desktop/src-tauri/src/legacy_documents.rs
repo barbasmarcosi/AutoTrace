@@ -197,6 +197,7 @@ fn generate_with_logo(data:&crate::store::AppData,order_id:&str,kind:&str,logo_p
     let title=if kind=="quote"{"PRESUPUESTO - ESTIMACION REPARACION"}else{"REMITO TRABAJO"};
     sheet.merge_range(0,1,1,9,title,&header).map_err(error)?;
     sheet.write_string(3,1,if kind=="quote"{"N° Presupuesto:"}else{"N° Remito:"}).map_err(error)?;
+    if let Some(number)=order["documentNumber"].as_str(){if !number.is_empty(){sheet.write_string(3,3,number).map_err(error)?;}}
     sheet.write_string(3,7,if kind=="quote"{"Fecha Creación:"}else{"Fecha Trabajo:"}).map_err(error)?;
     let day=NaiveDate::parse_from_str(order["openedAt"].as_str().ok_or("Fecha faltante")?,"%Y-%m-%d").map_err(error)?;
     let base=NaiveDate::from_ymd_opt(1899,12,30).ok_or("Fecha base inválida")?;
