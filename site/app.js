@@ -43,6 +43,7 @@ const PATHS = {
  sparkle:'<path d="m12 3 1.6 5.4L19 10l-5.4 1.6L12 17l-1.6-5.4L5 10l5.4-1.6zM19 17l1 2 2 1-2 1-1 2-1-2-2-1 2-1z"/>',
  printer:'<path d="M6 9V3h12v6M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2M6 15h12v6H6z"/>',
  info:'<circle cx="12" cy="12" r="10"/><path d="M12 11v6M12 7h.01"/>',
+ image:'<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8" cy="8" r="1.5"/><path d="m3 16 5-5 4 4 4-5 5 6"/>',
  tag:'<path d="M20 13 13 20a2 2 0 0 1-3 0l-7-7V4h9l8 8a2 2 0 0 1 0 1z"/><circle cx="7.5" cy="8.5" r="1"/>',
  chart:'<path d="M3 3v18h18M7 16v-4m5 4V7m5 9V4"/>'
 };
@@ -539,7 +540,7 @@ async function saveForm(form){
     const key=kind==='client'?'clients':kind==='vehicle'?'vehicles':'orders';
     const index=data[key].findIndex(item=>item.id===baseId);
     if(index>=0)data[key][index]=next;else data[key].push(next);
-    if(kind==='order'){
+    if(kind==='order'||kind==='legacy'){
       const vehicle=data.vehicles.find(v=>v.id===next.vehicleId);
       if(vehicle&&next.mileage>vehicle.mileage)vehicle.mileage=next.mileage;
     }
