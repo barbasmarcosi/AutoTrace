@@ -336,6 +336,9 @@ fn read_sqlite_candidate(path:&Path)->Result<(store::AppData,bool),String>{
         let stem=path.file_stem().and_then(|s|s.to_str()).ok_or("Nombre inválido")?;
         let id=doc["snapshotId"].as_str().ok_or("Falta ID del backup")?;
         if stem!=format!("AutoTrace_{id}") {return Err("ID de respaldo incorrecto".into());}
+        // A matching manifest represents the entire SQLite+Excel pair. A
+        // partial/corrupted XLSX makes it invalid as a verified backup.
+        verify_pair_marker(&marker)?;
         verified=true;
     }
     let conn=Connection::open_with_flags(path,OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(err)?;
@@ -417,6 +420,41 @@ mod tests {
         assert!(corrupt.exists());
         assert!(latest_verified(&tmp).unwrap().is_some());
         fs::remove_dir_all(tmp).unwrap();
+    }
+    #[test]
+    fn clean_room_restore_from_both_sqlite_and_excel_preserves_realistic_records(){
+        let location=std::env::temp_dir().join(format!("autotrace-clean-{}",uuid::Uuid::new_v4()));
+        fs::create_dir_all(&location).unwrap();
+        let payload=serde_json::json!({
+            "clients":[{"id":"c-A","name":"María de Prueba","phone":"01100123","email":"","notes":"Interno","createdAt":"2026-10-20"}],
+            "vehicles":[{"id":"v-A","clientId":"c-A","plate":"AF012BC","make":"Ford","model":"Fiesta","year":2017,"mileage":75123.0,"vin":"","color":"Azul","nextServiceDate":"2026-12-21","notes":"","createdAt":"2026-10-20"}],
+            "orders":[{"id":"o-A","vehicleId":"v-A","title":"Diagnóstico","category":"Electrónica","status":"delivered","openedAt":"2026-10-21","completedAt":"2026-10-22","mileage":75123.0,"description":"Revisar señal","partsCost":750.29,"laborCost":540.11,"charged":3500.5,"paid":2010.1,"notes":"Nota taller","createdAt":"2026-10-21"}],
+            "settings":{"garageName":"Mi taller de prueba","currency":"ARS","demo":false}
+        });
+        let original:store::AppData=serde_json::from_value(payload.clone()).unwrap();
+        store::validate(&original).unwrap();
+        let mut source=Connection::open_in_memory().unwrap();
+        source.execute_batch(include_str!("../migrations/001_init.sql")).unwrap();
+        store::write(&mut source,&original,0).unwrap();
+        let done=backup_pair(&source,&location,"fixture").unwrap();
+        drop(source); // Simula perder por completo la computadora original.
+
+        let (from_sqlite,verified)=read_sqlite_candidate(Path::new(&done.sqlite_path)).unwrap();
+        assert!(verified);
+        let from_excel=excel::from_xlsx(&fs::read(&done.excel_path).unwrap()).unwrap();
+        for candidate in [from_sqlite,from_excel]{
+            let mut new_pc=Connection::open_in_memory().unwrap();
+            new_pc.execute_batch(include_str!("../migrations/001_init.sql")).unwrap();
+            store::write(&mut new_pc,&candidate,0).unwrap();
+            let restored=store::read(&new_pc).unwrap().data;
+            assert_eq!(serde_json::to_value(restored).unwrap(),payload);
+            assert_eq!(new_pc.query_row("SELECT count(*) FROM pragma_foreign_key_check",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+        }
+        // If the XLSX is modified the SQLite candidate cannot claim the
+        // SHA-verified paired backup is fully valid.
+        fs::write(&done.excel_path,b"damaged").unwrap();
+        assert!(read_sqlite_candidate(Path::new(&done.sqlite_path)).is_err());
+        fs::remove_dir_all(location).unwrap();
     }
     #[test]
     fn backup_pair_contains_restorable_sqlite_and_excel() {

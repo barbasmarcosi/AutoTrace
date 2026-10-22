@@ -251,7 +251,7 @@ pub(crate) fn read(conn: &Connection) -> Result<Snapshot, String> {
     Ok(Snapshot { data, revision: current_revision(conn)? })
 }
 
-fn write(conn: &mut Connection, data: &AppData, expected_revision: u64) -> Result<SaveResult, String> {
+pub(crate) fn write(conn: &mut Connection, data: &AppData, expected_revision: u64) -> Result<SaveResult, String> {
     validate(data)?;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(sqlite_error)?;
     let existing = current_revision(&tx)?;
