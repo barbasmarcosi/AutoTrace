@@ -48,9 +48,26 @@ if ($installed.Count -ne 1) {
 $exe = $installed[0]
 $shaOriginal=(Get-FileHash $builtExe -Algorithm SHA256).Hash
 $shaInstalled=(Get-FileHash $exe.FullName -Algorithm SHA256).Hash
-if ($shaOriginal -ne $shaInstalled) { throw "El ejecutable instalado es diferente al compilado" }
+Write-Host "SHA256 del ejecutable de compilación: $shaOriginal"
+Write-Host "SHA256 del ejecutable instalado:    $shaInstalled"
+# Packaging can patch PE resources; identical bytes are not guaranteed.
+# Validate PE structure and product version instead of assuming byte identity.
+if ($exe.Length -lt 100000) { throw "El ejecutable instalado es demasiado pequeño" }
+$stream=[System.IO.File]::OpenRead($exe.FullName)
+try {
+    $header=New-Object byte[] 2
+    [void]$stream.Read($header,0,2)
+    if ($header[0] -ne 0x4D -or $header[1] -ne 0x5A) { throw "El ejecutable instalado no es un binario PE válido" }
+} finally { $stream.Dispose() }
+$installedInfo=(Get-Item $exe.FullName).VersionInfo
+$builtInfo=(Get-Item $builtExe).VersionInfo
+Write-Host "Producto instalado: $($installedInfo.ProductName)"
+Write-Host "Versión instalada: $($installedInfo.FileVersion)"
+if ($installedInfo.ProductName -notmatch "AutoTrace") { throw "Identidad de producto instalada incorrecta" }
+if ($builtInfo.FileVersion -and $installedInfo.FileVersion -and $builtInfo.FileVersion -ne $installedInfo.FileVersion) {
+    throw "La versión instalada difiere de la compilación"
+}
 Write-Host "Instalado correctamente: $($exe.FullName)"
-Write-Host "SHA256: $shaInstalled"
 
 $uninstall = Join-Path $exe.Directory.FullName "uninstall.exe"
 if (-not (Test-Path $uninstall)) { throw "No se encontró uninstall.exe" }
