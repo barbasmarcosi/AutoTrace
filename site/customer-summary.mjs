@@ -48,16 +48,16 @@ export function buildCustomerSummary({order, vehicle, client, garageName = 'Mi t
   @media(max-width:530px){body{padding:24px 18px}.grid{grid-template-columns:1fr}.brand{font-size:19px}h1{font-size:22px}}
   @media print{body{max-width:none;padding:0}header{break-after:avoid}.totals{print-color-adjust:exact;-webkit-print-color-adjust:exact}}
 </style></head><body>
-<header><div><div class="overline">AutoTrace · Servicio automotor</div><div class="brand">${brand}</div></div><div class="overline">Resumen de servicio</div></header>
+<header><div><div class="overline">AutoTrace · Servicio automotor</div><div class="brand">${brand}</div></div><div class="overline">${o.documentKind==='quote'?'Presupuesto':'Resumen de servicio'}</div></header>
 <h1>${escapeHTML(o.title)}</h1>
 <p class="meta">Ingreso: ${escapeHTML(dateFormat(o.openedAt))} · Estado: ${escapeHTML(statusNames[o.status] || o.status || 'Sin estado')}</p>
 <h2>Datos del vehículo y cliente</h2><div class="grid">${lines.map(([label, value]) => `<div class="field"><small>${escapeHTML(label)}</small><strong>${escapeHTML(value)}</strong></div>`).join('')}</div>
 <h2>Servicio y diagnóstico</h2><p class="description">${escapeHTML(o.description || 'Sin detalle adicional.')}</p>
 ${renderItemizedLines(o,currency)}
 <h2>Resumen de importes</h2><div class="totals">
-<div class="total-line"><span>Importe acordado</span><strong>${escapeHTML(currencyFormat(o.charged, currency))}</strong></div>
-${o.documentKind==='quote'?'':'<div class="total-line"><span>Total abonado</span>'}<strong>${escapeHTML(currencyFormat(o.paid, currency))}</strong></div>
-<div class="total-line balance"><span>Saldo pendiente</span><strong>${escapeHTML(currencyFormat(due, currency))}</strong></div>
+<div class="total-line"><span>${o.documentKind==='quote'?'Importe presupuestado':'Importe acordado'}</span><strong>${escapeHTML(currencyFormat(o.charged, currency))}</strong></div>
+${o.documentKind==='quote'?'':('<div class="total-line"><span>Total abonado</span><strong>'+escapeHTML(currencyFormat(o.paid,currency))+'</strong></div>')}
+${o.documentKind==='quote'?'':('<div class="total-line balance"><span>Saldo pendiente</span><strong>'+escapeHTML(currencyFormat(due,currency))+'</strong></div>')}
 </div>
 <footer>Documento informativo del trabajo registrado. No es una factura ni un comprobante fiscal. Los importes son los cargados en AutoTrace al momento de imprimir.</footer>
 </body></html>`;
