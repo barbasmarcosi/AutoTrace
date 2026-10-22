@@ -112,7 +112,13 @@ fn read_rows(excel: &mut Xlsx<Cursor<&[u8]>>, name:&str, cols:&[(&str,&str)], ma
             let cell = cells.get(col).unwrap_or(&Data::Empty);
             let v = match *field {
                 "mileage" | "partsCost" | "laborCost" | "charged" | "paid" => cell_as_number(cell, field)?,
-                "year" => if matches!(cell,Data::Empty) || matches!(cell,Data::String(s) if s.is_empty()) {Value::String(String::new())} else {cell_as_number(cell,field)?},
+                "year" => match cell {
+                    Data::Empty => Value::String(String::new()),
+                    Data::String(s) if s.is_empty() => Value::String(String::new()),
+                    Data::Int(y) if (1900..=2200).contains(y) => Value::from(*y),
+                    Data::Float(y) if y.is_finite() && y.fract()==0.0 && (1900.0..=2200.0).contains(y) => Value::from(*y as i64),
+                    _ => return Err(format!("Año inválido en {name}, fila {}",r+2)),
+                },
                 "demo" => match cell {Data::Bool(v)=>Value::Bool(*v),_=>return Err("La columna datos_demostracion debe contener VERDADERO/FALSO".into())},
                 _=>Value::String(cell_as_string(cell).map_err(|e|format!("{name}, fila {}, columna {}: {e}",r+2,col+1))?),
             };

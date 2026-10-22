@@ -8,7 +8,7 @@ const MAX_RECORDS: (usize, usize, usize) = (15_000, 30_000, 100_000);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Client {
+pub(crate) struct Client {
     id: String,
     name: String,
     phone: String,
@@ -19,7 +19,7 @@ struct Client {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Vehicle {
+pub(crate) struct Vehicle {
     id: String,
     client_id: String,
     plate: String,
@@ -36,7 +36,7 @@ struct Vehicle {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Order {
+pub(crate) struct Order {
     id: String,
     vehicle_id: String,
     title: String,
