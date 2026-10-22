@@ -384,7 +384,7 @@ mod tests {
         // 17 months, 6 consecutive snapshots each month plus a 4-hour cadence
         // on the last day: force daily, weekly and monthly retention to apply.
         for month in 1..=17 {
-            let stamp=chrono::NaiveDate::from_ymd_opt(2025+(month-1)/12, (month-1)%12+1, 15)
+            let stamp=chrono::NaiveDate::from_ymd_opt(2025+((month-1)/12) as i32, (month-1)%12+1, 15)
                 .unwrap().and_hms_opt(12,0,0).unwrap().and_utc().timestamp_millis() as u128;
             for increment in 0..6{times.push(stamp+increment*14_400_000);}
         }
