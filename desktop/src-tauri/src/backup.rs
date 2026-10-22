@@ -313,7 +313,7 @@ mod tests {
         assert_eq!(manifest["kind"],"autotrace-dual-backup");
         assert_eq!(manifest["sqliteSha256"],sha(Path::new(&done.sqlite_path)).unwrap());
         assert_eq!(manifest["excelSha256"],sha(Path::new(&done.excel_path)).unwrap());
-        let restored=excel::from_xlsx(&fs::read(done.excel_path).unwrap()).unwrap();
+        let restored=excel::from_xlsx(&fs::read(&done.excel_path).unwrap()).unwrap();
         assert_eq!(restored.clients_count(),0);
         assert!(backup_pair(&source,&temp,"fixture").is_err());
         assert!(verify_pair_marker(Path::new(&done.manifest_path)).is_ok());
