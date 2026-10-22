@@ -11,6 +11,12 @@ test('Excel commands are desktop-only and wired to visible actions',()=>{
   }
   assert.match(frontend,/if\(desktopInvoke\)/);
 });
+test('The client-facing Excel command is desktop-only and separate from private backup',()=>{
+  assert.match(frontend,/Excel para cliente/);
+  assert.match(frontend,/case 'export-client-excel'/);
+  assert.match(runtime,/client_report::/);
+  assert.match(runtime,/backup::export_customer_excel_dialog/);
+});
 test('Restore and destructive changes take a backup first',()=>{
   assert.match(frontend,/if\(!await createDesktopBackup\(true\)\)throw Error/);
   assert.match(frontend,/if\(desktopInvoke && !await createDesktopBackup\(true\)\)break/);

@@ -117,6 +117,24 @@ pub(crate) fn export_excel_dialog(app:tauri::AppHandle)->Result<bool,String>{
     let _=fs::remove_file(staging);
     result
 }
+#[tauri::command]
+pub(crate) fn export_customer_excel_dialog(app:tauri::AppHandle,client_id:String)->Result<bool,String>{
+    let source=store::read(&store::open_app(&app)?)?;
+    let bytes=crate::client_report::to_customer_xlsx(&source.data,&client_id)?;
+    let Some(path)=rfd::FileDialog::new().set_file_name("AutoTrace_informe_cliente.xlsx")
+        .add_filter("Excel para cliente",&["xlsx"]).save_file() else{return Ok(false)};
+    if path.exists(){return Err("Elegí un archivo nuevo: el informe no sobrescribe archivos existentes".into());}
+    let folder=path.parent().ok_or("Destino inválido")?;
+    let tmp=folder.join(format!(".autotrace-report-{}.tmp",uuid::Uuid::new_v4()));
+    let result=(||{
+        fs::write(&tmp,&bytes).map_err(err)?;
+        if sha(&tmp)?!=format!("{:x}",Sha256::digest(&bytes)){return Err("Verificación del informe fallida".into());}
+        fs::rename(&tmp,&path).map_err(err)?;
+        Ok(true)
+    })();
+    if result.is_err(){let _=fs::remove_file(tmp);}
+    result
+}
 #[derive(Serialize)]
 #[serde(rename_all="camelCase")]
 pub(crate) struct ExcelPreview{pub data:store::AppData,pub filename:String}
