@@ -77,8 +77,14 @@ pub(crate) fn parse(bytes:&[u8])->Result<LegacyDocument,String>{
     if wb.sheet_names().len()!=1{return Err("La plantilla debe contener una sola hoja".into());}
     let sheet_name=wb.sheet_names()[0].clone();
     let formulas=wb.worksheet_formula(&sheet_name).map_err(error)?;
+    // Calamine's used_cells() uses coordinates RELATIVE to Range::start().
+    // Spreadsheet coordinates used by the template are absolute A1-based.
+    let (offset_row,offset_col)=formulas.start().unwrap_or((0,0));
     for (row,col,formula) in formulas.used_cells(){
-        if col!=9 || row<19 || row>48 || formula.to_ascii_lowercase().contains("http") || formula.contains('['){
+        let sheet_row=offset_row+row as u32;
+        let sheet_col=offset_col+col as u32;
+        if sheet_col!=9 || sheet_row<19 || sheet_row>48 ||
+           formula.to_ascii_lowercase().contains("http") || formula.contains('['){
             return Err("La plantilla contiene fórmulas inesperadas".into());
         }
     }
