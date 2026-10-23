@@ -147,3 +147,47 @@ export function writeWorkshopXlsx(data,orderId,kind,lib){
   XLSX.utils.book_append_sheet(book,makeLegacySheet(data,orderId,kind,XLSX),'Hoja1');
   return new Uint8Array(XLSX.write(book,{type:'array',bookType:'xlsx',compression:true}));
 }
+
+/** Customer-facing XLSX, NOT a backup; scoped to exactly one customer.
+ * No internal costs, internal notes, VIN, record ids or data from other customers.
+ * Estimates are not counted as payments or receivables.
+ */
+export function writeCustomerReportXlsx(data,clientId,lib){
+  const XLSX=getLib(lib),state=validateData(data);
+  const client=state.clients.find(c=>c.id===clientId);
+  if(!client)throw Error('Cliente inexistente.');
+  const vehicles=state.vehicles.filter(v=>v.clientId===clientId);
+  const cars=new Map(vehicles.map(v=>[v.id,v]));
+  const orders=state.orders.filter(o=>cars.has(o.vehicleId)).sort((a,b)=>b.openedAt.localeCompare(a.openedAt));
+  const book=XLSX.utils.book_new();
+  const sheet=(name,rows)=>{
+    const ws=XLSX.utils.aoa_to_sheet(rows);
+    XLSX.utils.book_append_sheet(book,ws,name);
+  };
+  sheet('Resumen',[
+    ['Dato','Valor'],['Taller',state.settings.garageName],['Cliente',client.name],
+    ['Teléfono',client.phone],['Correo',client.email],
+    ['Documento informativo. No es una factura ni un respaldo.','']
+  ]);
+  sheet('Vehículos',[
+    ['Patente','Vehículo','Año','Kilometraje','Próximo servicio'],
+    ...vehicles.map(v=>[v.plate,(v.make+' '+v.model).trim(),v.year,v.mileage,v.nextServiceDate])
+  ]);
+  sheet('Servicios',[
+    ['Fecha','Patente','Documento','Trabajo','Estado','Descripción','Importe presupuestado/acordado','Abonado','Saldo'],
+    ...orders.map(o=>{
+      const quote=o.documentKind==='quote';
+      return [o.openedAt,cars.get(o.vehicleId).plate,quote?'Presupuesto':'Trabajo',o.title,o.status,o.description,
+        o.charged,quote?'':o.paid,quote?'':cents(Math.max(0,o.charged-o.paid))];
+    })
+  ]);
+  sheet('Detalle de trabajos',[
+    ['Fecha','Patente','Documento','Trabajo','Tipo de renglón','Descripción','Cantidad','Precio unitario','Subtotal'],
+    ...orders.flatMap(o=>(o.items||[]).map(item=>[
+      o.openedAt,cars.get(o.vehicleId).plate,o.documentKind==='quote'?'Presupuesto':'Trabajo',o.title,
+      item.kind==='part'?'Pieza / insumo':item.kind==='labor'?'Mano de obra':'Otro',
+      item.description,item.quantity,item.unitPrice,cents(item.quantity*item.unitPrice)
+    ]))
+  ]);
+  return new Uint8Array(XLSX.write(book,{type:'array',bookType:'xlsx',compression:true}));
+}
