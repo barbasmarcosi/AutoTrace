@@ -6,8 +6,7 @@ on:
       - '.github/workflows/pwa-browser-smoke.yml'
       - 'site/**'
       - 'scripts/build-pages-preview.py'
-      - 'tests/browser-excel.test.mjs'
-      - 'tests/pwa-browser-smoke.mjs'
+      - 'tests/**'
   workflow_dispatch:
 permissions:
   contents: read
