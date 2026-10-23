@@ -1,4 +1,4 @@
-name: Deploy PWA to GitHub Pages
+name: Deploy stable PWA and independent Excel LAB
 
 on:
   push:
@@ -21,29 +21,31 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout stable main PWA
         uses: actions/checkout@v4
-      - name: Validate static application
+        with:
+          ref: main
+          path: _stable
+      - name: Checkout Excel LAB
+        uses: actions/checkout@v4
+        with:
+          ref: plan/desktop-sqlite-excel-backups-20261021
+          path: _lab
+      - name: Test both applications
         run: |
-          node --check site/app.js
-          node --check site/model.mjs
-          node --check site/search.mjs
-          node --check site/pickers.mjs
-          node --check site/customer-summary.mjs
-          node --test tests/*.test.mjs
-          test -f site/manifest.webmanifest
-          python3 -m json.tool site/manifest.webmanifest >/dev/null
-          test -f site/sw.js
-          test -f site/assets/icon-192.png
-          test -f site/assets/icon-512.png
-      - name: Configure Pages
-        uses: actions/configure-pages@v5
+          node --check _stable/site/app.js
+          node --check _lab/site/app.js
+          node --check _lab/site/browser-excel.mjs
+          node --check _lab/site/browser-backup.mjs
+          node --test _lab/tests/*.test.mjs
+      - name: Build isolated lab and stable root
+        run: python3 _lab/scripts/build-pages-preview.py _stable/site _lab/site dist
+      - uses: actions/configure-pages@v5
         with:
           enablement: true
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v3
         with:
-          path: ./site
+          path: ./dist
       - name: Deploy Pages
         id: deployment
         uses: actions/deploy-pages@v4
