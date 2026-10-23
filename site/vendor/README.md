@@ -1,0 +1,1 @@
+SheetJS Community Edition 0.20.3 (Apache-2.0), minified browser build vendored for offline AutoTrace XLSX import/export. Official source: https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.mini.min.js . Verify periodic security updates; this repo stores only the library code, not any workshop Excel files.
