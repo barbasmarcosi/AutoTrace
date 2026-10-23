@@ -4,6 +4,7 @@ import {buildCustomerSummary} from "./customer-summary.mjs";
 import {suggestVehicles, suggestClients} from "./pickers.mjs";
 import {parseWorkshopXlsx,writeWorkshopXlsx,writeCustomerReportXlsx} from "./browser-excel.mjs";
 import {readBackupXlsx,writeBackupXlsx} from "./browser-backup.mjs";
+import {clientCandidates,vehicleCandidates,suggestedLegacySelection,prepareLegacyImport} from "./legacy-import.mjs";
 /** AutoTrace v1 — sin backend, datos almacenados exclusivamente en este navegador. */
 const DB_NAME = 'autotrace-v1';
 const STORE = 'application';
@@ -498,27 +499,8 @@ async function saveForm(form){
   const kind=form.dataset.kind,id=form.dataset.id,existing=!!id;
   const baseId=id||uid();
   let next,routeTo,message;
-  if(kind==='legacy'){
-    const doc=pendingLegacyDocument;
-    const vehicle=findVehicle(get('targetVehicle'));
-    if(!doc||!vehicle||get('confirmVehicle')!=='yes'){toast('Seleccioná y confirmá el vehículo del documento.','error');return;}
-    if(doc.plate && normPlate(doc.plate)!==vehicle.plate){toast('La patente del archivo no coincide con la del vehículo elegido.','error');return;}
-    if(db.orders.some(o=>o.sourceFingerprint===doc.sourceFingerprint)){toast('El archivo ya fue importado.','error');return;}
-    const items=doc.items.map(x=>({id:x.id,kind:x.kind,description:x.description,quantity:x.quantity,unitPrice:x.unitPrice}));
-    if(Math.abs(lineAmount(items)-doc.total)>0.011){toast('El total del documento no coincide con el detalle.','error');return;}
-    next={id:baseId,vehicleId:vehicle.id,title:doc.documentKind==='quote'?'Presupuesto importado':'Remito de trabajo importado',
-      category:doc.documentKind==='quote'?'Presupuesto':'Mecánica',
-      status:doc.documentKind==='quote'?'received':'done',
-      openedAt:doc.date,completedAt:doc.documentKind==='work'?doc.date:'',
-      mileage:doc.mileage||vehicle.mileage,
-      description:doc.vehicleObservation&&!doc.mileage?doc.vehicleObservation:'',
-      partsCost:0,laborCost:0,charged:doc.total,paid:0,
-      notes:'',createdAt:isoDate(new Date()),items,
-      documentKind:doc.documentKind,
-      ...(doc.documentNumber?{documentNumber:doc.documentNumber}:{}),
-      sourceFingerprint:doc.sourceFingerprint};
-    routeTo=['trabajo',baseId];message='Documento importado con '+items.length+' renglones.';
-  }else if(kind==='client'){
+  if(kind==='legacy'){return saveLegacyWizard(form);
+  else if(kind==='client'){
     next={id:baseId,name:get('name'),phone:get('phone'),email:get('email'),notes:get('notes'),createdAt:findClient(id)?.createdAt||isoDate(new Date())};
     if(!next.name){toast('Ingresá el nombre del cliente.','error');return;}
     routeTo=['cliente',baseId];message=existing?'Cliente actualizado.':'Cliente registrado.';
@@ -615,26 +597,143 @@ async function chooseExternalBackup(){
     await createDesktopBackup();
   }catch(error){console.error(error);toast(error?.message||String(error),'error');}
 }
+
+function legacyClientOptions(doc,search='',chosen=''){
+  let matches=clientCandidates(doc,db.clients,search);
+  const picked=db.clients.find(x=>x.id===chosen);
+  if(picked&&!matches.some(x=>x.client.id===chosen))matches=[{client:picked,label:'selección actual'},...matches].slice(0,10);
+  return '<option value="new">+ Crear cliente nuevo</option>'+matches.map(match=>
+    '<option value="'+esc(match.client.id)+'">'+esc(match.client.name)+
+    (match.client.phone?' · '+esc(match.client.phone):'')+' — '+esc(match.label)+'</option>').join('');
+}
+function legacyVehicleOptions(doc,clientId,search='',chosen=''){
+  let matches=vehicleCandidates(doc,db.vehicles,clientId==='new'?'':clientId,search)
+    .filter(match=>clientId!=='new'&&match.vehicle.clientId===clientId);
+  const picked=db.vehicles.find(x=>x.id===chosen&&x.clientId===clientId);
+  if(picked&&!matches.some(x=>x.vehicle.id===chosen))matches=[{vehicle:picked,reason:'selección actual'},...matches].slice(0,10);
+  return '<option value="new">+ Crear vehículo nuevo</option>'+matches.map(({vehicle,reason})=>
+    '<option value="'+esc(vehicle.id)+'">'+esc(vehicle.plate)+' · '+esc(vehicle.make+' '+vehicle.model)+
+    ' — '+esc(reason)+'</option>').join('');
+}
+function legacyWizardFields(doc){
+  const hint=suggestedLegacySelection(doc,db);
+  const client=hint.clientId||'new',vehicle=hint.vehicleId&&client!=='new'?hint.vehicleId:'new';
+  const clientHint=client==='new'?(hint.clients.length?'Encontramos coincidencias posibles; revisalas antes de crear un duplicado.':'No encontramos una coincidencia clara. Podés crear el cliente aquí.'):'Cliente existente identificado; verificá que sea correcto.';
+  const existingCar=vehicleCandidates(doc,db.vehicles).find(c=>c.exact&&c.vehicle.clientId!==client);
+  const warning=existingCar?'<p class="legacy-alert">Atención: '+esc(existingCar.vehicle.plate)+' ya está asignado a otro cliente ('+
+    esc(db.clients.find(c=>c.id===existingCar.vehicle.clientId)?.name||'Sin nombre')+
+    '). No crees una patente duplicada. Revisá a quién corresponde antes de importar.</p>':'';
+  const newClient='<div id="legacy-new-client" class="legacy-fields">'+
+    '<label>Nombre del cliente *<input name="legacyName" maxlength="120" value="'+esc(doc.customerName)+'" required placeholder="Nombre completo"></label>'+
+    '<label>Teléfono<input name="legacyPhone" maxlength="120" type="tel" value="'+esc(doc.customerPhone)+'"></label>'+
+    '<label>Correo<input name="legacyEmail" maxlength="120" type="email" value="'+esc(doc.customerEmail)+'"></label></div>';
+  const newVehicle='<div id="legacy-new-vehicle" class="legacy-fields">'+
+    '<label>Patente *<input name="legacyPlate" maxlength="12" value="'+esc(doc.plate)+'" required placeholder="Ej. AF 123 BC"></label>'+
+    '<label>Marca *<input name="legacyMake" maxlength="120" value="'+esc(doc.make)+'" required></label>'+
+    '<label>Modelo *<input name="legacyModel" maxlength="120" value="'+esc(doc.model)+'" required></label></div>';
+  const rows='<div class="legacy-lines table-scroll"><table class="data-table"><thead><tr><th>Descripción</th><th>Cantidad</th><th>Unitario</th><th>Subtotal</th></tr></thead><tbody>'+
+    doc.items.map(item=>'<tr><td style="white-space:pre-wrap">'+esc(item.description)+'</td><td>'+num(item.quantity)+'</td><td>'+money(item.unitPrice)+'</td><td>'+money(item.quantity*item.unitPrice)+'</td></tr>').join('')+'</tbody></table></div>';
+  return '<section class="legacy-panel span-2"><h3>1. Identificar al cliente</h3>'+
+    '<p class="form-hint">Del archivo: <strong>'+esc(doc.customerName||'Sin nombre')+'</strong>'+
+    (doc.customerPhone?' · '+esc(doc.customerPhone):'')+'</p>'+
+    '<label class="legacy-block-label">Buscar entre clientes registrados<input type="search" id="legacy-client-query" autocomplete="off" placeholder="Nombre, teléfono o correo"></label>'+
+    '<label class="legacy-block-label">Cliente a utilizar *<select name="legacyClient" id="legacy-client-select">'+legacyClientOptions(doc,'',client)+'</select></label>'+
+    '<p class="form-hint" id="legacy-client-message">'+esc(clientHint)+'</p>'+newClient+'</section>'+
+    '<section class="legacy-panel span-2"><h3>2. Identificar al vehículo</h3>'+
+    '<p class="form-hint">Del archivo: '+esc([doc.make,doc.model,doc.plate||'Sin patente'].filter(Boolean).join(' · '))+'</p>'+
+    warning+
+    '<label class="legacy-block-label">Buscar vehículo existente<input type="search" id="legacy-vehicle-query" autocomplete="off" placeholder="Patente, marca o modelo"></label>'+
+    '<label class="legacy-block-label">Vehículo a utilizar *<select name="legacyVehicle" id="legacy-vehicle-select">'+legacyVehicleOptions(doc,client,'',vehicle)+'</select></label>'+
+    '<p class="form-hint">La patente exacta permite reconocerlo; marca/modelo sin patente solo son una sugerencia para revisar.</p>'+newVehicle+'</section>'+
+    '<section class="legacy-panel span-2"><h3>3. Revisar el documento</h3>'+
+    '<p class="form-hint"><strong>'+esc(doc.documentKind==='quote'?'Presupuesto':'Remito')+'</strong> · '+esc(doc.date)+
+      ' · '+doc.items.length+' renglones · <strong>'+money(doc.total)+'</strong></p>'+rows+
+    '<label class="legacy-confirm"><input type="checkbox" name="confirmLegacy" value="yes" required>'+
+      ' Revisé el cliente y vehículo. Confirmo que son los correctos.</label>'+
+    '<label class="legacy-confirm legacy-duplicate"><input type="checkbox" name="confirmSimilar" value="yes">'+
+      ' Solo si ya existe un trabajo muy similar: confirmo que es otra intervención y deseo registrarla.</label></section>';
+}
+function refreshLegacyWizard(form,ownerChanged=false){
+  if(!form||form.dataset.kind!=='legacy')return;
+  const doc=pendingLegacyDocument;if(!doc)return;
+  const clientSelect=form.querySelector('#legacy-client-select'),vehicleSelect=form.querySelector('#legacy-vehicle-select');
+  const client=clientSelect.value;
+  const newClient=client==='new';
+  const clientArea=form.querySelector('#legacy-new-client'),vehicleArea=form.querySelector('#legacy-new-vehicle');
+  clientArea.hidden=!newClient;
+  clientArea.querySelector('[name="legacyName"]').required=newClient;
+  for(const field of clientArea.querySelectorAll('input'))field.disabled=!newClient;
+  if(ownerChanged){
+    const candidates=vehicleCandidates(doc,db.vehicles,client).filter(x=>client!=='new'&&x.vehicle.clientId===client);
+    const exact=candidates.filter(x=>x.exact);
+    const selected=exact.length===1?exact[0].vehicle.id:'new';
+    vehicleSelect.innerHTML=legacyVehicleOptions(doc,client,form.querySelector('#legacy-vehicle-query').value,selected);
+    vehicleSelect.value=vehicleSelect.querySelector('option[value="'+CSS.escape(selected)+'"]')?selected:'new';
+  }
+  const newVehicle=vehicleSelect.value==='new';
+  vehicleArea.hidden=!newVehicle;
+  for(const field of vehicleArea.querySelectorAll('input')){
+    field.disabled=!newVehicle;
+    if(['legacyPlate','legacyMake','legacyModel'].includes(field.name))field.required=newVehicle;
+  }
+}
+function refreshLegacyClientSearch(form){
+  const select=form.querySelector('#legacy-client-select'),old=select.value;
+  select.innerHTML=legacyClientOptions(pendingLegacyDocument,form.querySelector('#legacy-client-query').value,old);
+  select.value=[...select.options].some(o=>o.value===old)?old:'new';
+  refreshLegacyWizard(form,true);
+}
+function refreshLegacyVehicleSearch(form){
+  const select=form.querySelector('#legacy-vehicle-select'),old=select.value;
+  select.innerHTML=legacyVehicleOptions(pendingLegacyDocument,form.querySelector('#legacy-client-select').value,
+    form.querySelector('#legacy-vehicle-query').value,old);
+  select.value=[...select.options].some(o=>o.value===old)?old:'new';
+  refreshLegacyWizard(form);
+}
+async function saveLegacyWizard(form){
+  if(form.dataset.saving==='yes')return;
+  if(!form.reportValidity())return;
+  const fd=new FormData(form),val=k=>String(fd.get(k)||'').trim();
+  const doc=pendingLegacyDocument;
+  if(!doc){toast('Volvé a seleccionar el Excel para importar.','error');return;}
+  const choice={clientId:val('legacyClient'),vehicleId:val('legacyVehicle'),
+    name:val('legacyName'),phone:val('legacyPhone'),email:val('legacyEmail'),
+    plate:val('legacyPlate'),make:val('legacyMake'),model:val('legacyModel'),
+    confirmed:val('confirmLegacy')==='yes',confirmSimilar:val('confirmSimilar')==='yes'};
+  let preview;
+  try{preview=prepareLegacyImport(doc,db,choice,uid,isoDate(new Date()));}
+  catch(error){toast(error.message,'error');return;}
+  form.dataset.saving='yes';const submit=form.querySelector('[type="submit"]');if(submit)submit.disabled=true;
+  try{
+    await saveData(preview.data);
+    modalOriginal='';pendingLegacyDocument=null;
+    document.querySelector('#form-dialog').close();
+    render();navigate('trabajo',preview.orderId);
+    toast((preview.createdClient?'Cliente creado. ':'Cliente reconocido. ')+
+      (preview.createdVehicle?'Vehículo creado. ':'Vehículo reconocido. ')+
+      'Trabajo importado con '+preview.count+' renglones.');
+  }catch(error){
+    console.error(error);toast('No se pudo importar el documento: '+String(error),'error');
+  }finally{form.dataset.saving='';if(submit?.isConnected)submit.disabled=false;}
+}
+
 async function importLegacyDocumentDesktop(file=null){
-  if(!db.vehicles.length){toast('Registrá primero al menos un vehículo para asociar el documento.','error');navigate('vehiculos');return;}
   try{
     const doc=desktopInvoke?await desktopInvoke('choose_legacy_document'):
       file?await parseWorkshopXlsx(await file.arrayBuffer(),window.XLSX):null;
     if(!doc)return;
-    if(db.orders.some(o=>o.sourceFingerprint===doc.sourceFingerprint)){toast('Este archivo ya fue importado. No se crearon registros duplicados.','error');return;}
+    if(db.orders.some(o=>o.sourceFingerprint===doc.sourceFingerprint)){
+      toast('Este archivo ya fue importado. No se crearon registros duplicados.','error');return;
+    }
     pendingLegacyDocument=doc;
-    const normalized=normPlate(doc.plate);
-    const identified=db.vehicles.find(v=>normalized&&v.plate===normalized);
-    const options=db.vehicles.map(v=>'<option value="'+esc(v.id)+'" '+(identified?.id===v.id?'selected':'')+'>'+esc(v.plate)+' · '+esc(fullVehicle(v))+' · '+esc(vehicleClient(v)?.name||'')+'</option>').join('');
-    const lines='<div class="table-scroll"><table class="data-table"><thead><tr><th>Descripción</th><th>Cant.</th><th>Unitario</th></tr></thead><tbody>'+
-      doc.items.map(item=>'<tr><td style="white-space:pre-wrap">'+esc(item.description)+'</td><td>'+num(item.quantity)+'</td><td>'+money(item.unitPrice)+'</td></tr>').join('')+'</tbody></table></div>';
-    const block='<div class="span-2"><p class="section-intro"><strong>'+esc(doc.documentKind==='quote'?'Presupuesto':'Remito de trabajo')+'</strong> · '+esc(doc.date)+
-      ' · '+esc(doc.customerName)+' · '+esc(doc.make)+' '+esc(doc.model)+(doc.plate?' · '+esc(doc.plate):' · SIN PATENTE EN EL ARCHIVO')+
-      '</p><p class="section-intro">'+doc.items.length+' renglones · Total '+money(doc.total)+'</p>'+lines+'</div>'+
-      '<div class="field span-2"><label for="f-targetVehicle">Vehículo asociado *</label><select name="targetVehicle" id="f-targetVehicle" required>'+
-      '<option value="">Elegir vehículo…</option>'+options+'</select><small>El archivo no crea clientes ni vehículos: confirmá la relación existente. Si falta, registralo antes.</small></div>'+
-      '<label class="span-2"><input type="checkbox" name="confirmVehicle" value="yes" required> Confirmo que elegí el vehículo correcto y que el documento corresponde a su propietario.</label>';
-    showModal('Importar documento del taller','Revisá los datos y confirmá el vehículo antes de registrar el trabajo.','legacy',block);
+    showModal('Importar documento del taller',
+      'Reconocé el cliente y el vehículo o dalos de alta sin salir de aquí. Revisá las sugerencias.',
+      'legacy',legacyWizardFields(doc));
+    const hint=suggestedLegacySelection(doc,db);
+    const form=document.querySelector('#entity-form');
+    form.querySelector('#legacy-client-select').value=hint.clientId||'new';
+    form.querySelector('#legacy-vehicle-select').value=hint.vehicleId||'new';
+    refreshLegacyWizard(form,true);
   }catch(error){console.error(error);toast('No se pudo leer el documento: '+String(error),'error');}
 }
 async function importExcelDesktop(file=null){
@@ -838,6 +937,8 @@ document.addEventListener('submit',async event=>{
   }
 });
 document.addEventListener('change',async event=>{
+  if(event.target.id==='legacy-client-select'){refreshLegacyWizard(event.target.form,true);return;}
+  if(event.target.id==='legacy-vehicle-select'){refreshLegacyWizard(event.target.form);return;}
   if(event.target.id==='import-file')await importJSON(event.target.files?.[0]);
   if(event.target.id==='import-workshop-xlsx'){
     const file=event.target.files?.[0];try{if(file)await importLegacyDocumentDesktop(file);}finally{event.target.value='';}
@@ -852,6 +953,8 @@ document.addEventListener('change',async event=>{
   }
 });
 document.addEventListener('input',event=>{
+  if(event.target.id==='legacy-client-query'){refreshLegacyClientSearch(event.target.form);return;}
+  if(event.target.id==='legacy-vehicle-query'){refreshLegacyVehicleSearch(event.target.form);return;}
   if(event.target.closest('[data-order-line]')&&['lineQuantity','lineUnitPrice'].includes(event.target.name))refreshOrderLineTotal(document.querySelector('#entity-form'));
   if(event.target.id==='global-search'){activeQuery=event.target.value;refreshPage();}
   if(event.target.id==='client-lookup'){const results=document.querySelector('#client-suggestions');if(results)results.innerHTML=clientPickerResults(event.target.value);}
