@@ -45,6 +45,24 @@ pub(crate) struct OrderItem {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct Payment {
+    id: String,
+    date: String,
+    amount: f64,
+    method: String,
+    account_id: String,
+    reference: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PaymentAccount {
+    id: String,
+    name: String,
+    kind: String,
+    alias: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct Order {
     id: String,
     vehicle_id: String,
@@ -69,6 +87,8 @@ pub(crate) struct Order {
     document_number: String,
     #[serde(default,skip_serializing_if="String::is_empty")]
     source_fingerprint: String,
+    #[serde(default,skip_serializing_if="Vec::is_empty")]
+    payments: Vec<Payment>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -77,10 +97,12 @@ struct Settings {
     garage_name: String,
     currency: String,
     demo: bool,
+    #[serde(default,skip_serializing_if="Vec::is_empty")]
+    accounts: Vec<PaymentAccount>,
 }
 impl Default for Settings {
     fn default() -> Self {
-        Self { garage_name: "Mi taller".into(), currency: "ARS".into(), demo: false }
+        Self { garage_name: "Mi taller".into(), currency: "ARS".into(), demo: false, accounts: vec![] }
     }
 }
 
@@ -182,6 +204,16 @@ pub(crate) fn validate(data: &AppData) -> Result<(), String> {
     if !matches!(data.settings.currency.as_str(), "ARS" | "USD" | "EUR") {
         return Err("Moneda inválida".into());
     }
+    if data.settings.accounts.len()>100 {return Err("Demasiadas cuentas receptoras".into());}
+    let mut account_ids=HashSet::new();
+    for a in &data.settings.accounts {
+        valid_text(&a.id,100,"cuenta.id",true)?;
+        valid_text(&a.name,120,"cuenta.nombre",true)?;
+        valid_text(&a.alias,120,"cuenta.alias",false)?;
+        if !matches!(a.kind.as_str(),"bank"|"wallet"|"other") || !account_ids.insert(a.id.as_str()) {
+            return Err("Cuenta receptora inválida o duplicada".into());
+        }
+    }
     let mut clients = HashSet::new();
     for c in &data.clients {
         valid_text(&c.id, 100, "cliente.id", true)?;
@@ -241,6 +273,26 @@ pub(crate) fn validate(data: &AppData) -> Result<(), String> {
            || !o.source_fingerprint.chars().all(|c|c.is_ascii_hexdigit() && !c.is_ascii_uppercase())){
             return Err("Huella digital del archivo inválida".into());
         }
+        if o.payments.len()>200 {return Err("Demasiados cobros para un trabajo".into());}
+        let mut payment_ids=HashSet::new();
+        let mut detailed_cents=0_i64;
+        for p in &o.payments {
+            valid_text(&p.id,100,"cobro.id",true)?;
+            if !payment_ids.insert(p.id.as_str()) {return Err("Cobro duplicado".into());}
+            if p.date.is_empty(){return Err("El cobro requiere fecha".into());}
+            check_date(&p.date,"cobro.fecha")?;
+            valid_text(&p.reference,160,"cobro.referencia",false)?;
+            if !matches!(p.method.as_str(),"cash"|"transfer"|"debit"|"credit"|"qr"|"other"){return Err("Medio de pago inválido".into());}
+            let electronic=matches!(p.method.as_str(),"transfer"|"debit"|"credit"|"qr");
+            if (electronic&&!account_ids.contains(p.account_id.as_str()))||(!electronic&&!p.account_id.is_empty()){
+                return Err("Cuenta receptora incompatible con el medio de pago".into());
+            }
+            let value=cents(p.amount,"cobro.importe")?;
+            if value<=0 {return Err("Un cobro debe ser positivo".into());}
+            detailed_cents=detailed_cents.checked_add(value).ok_or("Acumulado de cobros excesivo")?;
+        }
+        if detailed_cents>cents(o.paid,"trabajo.pagado")? {return Err("El detalle de cobros supera el total recibido".into());}
+        if o.document_kind=="quote" && (o.paid>0.0||!o.payments.is_empty()){return Err("Los presupuestos no tienen cobros".into());}
         if o.items.len()>100{return Err("Demasiados renglones".into());}
         let mut lines=HashSet::new();
         for line in &o.items {
