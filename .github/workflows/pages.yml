@@ -2,7 +2,7 @@ name: Deploy stable PWA and independent Excel LAB
 
 on:
   push:
-    branches: [main, plan/desktop-sqlite-excel-backups-20261021]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
