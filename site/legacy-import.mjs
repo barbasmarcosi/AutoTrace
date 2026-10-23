@@ -20,12 +20,18 @@ export function clientCandidates(doc,clients,query=''){
     const docPhone=phone(doc.customerPhone),clientPhone=phone(client.phone);
     const samePhone=docPhone.length>=7&&docPhone===clientPhone;
     const sameName=docName.length>=3&&docName===name;
+    const conflictingEmail=!!email(doc.customerEmail)&&!!email(client.email)&&email(doc.customerEmail)!==email(client.email);
+    const conflictingPhone=docPhone.length>=7&&clientPhone.length>=7&&docPhone!==clientPhone;
     const similarName=docName.length>=5&&tokensIn(name,docName);
     let score=0,reasons=[];
     if(sameEmail){score+=110;reasons.push('correo');}
     if(samePhone){score+=95;reasons.push('teléfono');}
     if(sameName){score+=70;reasons.push('nombre exacto');}
     else if(similarName){score+=25;reasons.push('nombre parecido');}
+    if(conflictingEmail||conflictingPhone){
+      score=Math.max(score-60,0);
+      reasons.push('datos de contacto diferentes; revisar');
+    }
     if(q&&!clean([client.name,client.phone,client.email].join(' ')).includes(q))return null;
     if(!q&&score===0)return null;
     return {client,score,reasons,label:reasons.join(' y ')||'búsqueda manual'};
@@ -54,8 +60,15 @@ export function suggestedLegacySelection(doc,state){
   const people=clientCandidates(doc,state.clients);
   const winner=people[0];
   // Only auto-select if uniquely identified by exact name, phone or email.
-  const clearClient=winner?.score>=70&&(!people[1]||people[1].score<winner.score);
-  const clientId=clearClient?winner.client.id:'';
+  const clearClient=winner?.score>=70&&!winner.reasons.some(x=>x.includes('diferentes'))&&
+    (!people[1]||people[1].score<winner.score);
+  let clientId=clearClient?winner.client.id:'';
+  // If the customer identity is missing, a uniquely recognized vehicle may
+  // identify its registered owner. Never override a supplied conflicting name.
+  if(!clientId&&!clean(doc.customerName)&&!email(doc.customerEmail)&&!phone(doc.customerPhone)){
+    const exactCars=vehicleCandidates(doc,state.vehicles).filter(x=>x.exact);
+    if(exactCars.length===1)clientId=exactCars[0].vehicle.clientId;
+  }
   const cars=vehicleCandidates(doc,state.vehicles,clientId);
   const exact=cars.filter(x=>x.exact&&(!clientId||x.vehicle.clientId===clientId));
   // Auto-select only unique exact plate/VIN, never just same make/model.
@@ -76,7 +89,10 @@ export function prepareLegacyImport(doc,state,choice,createId=()=>crypto.randomU
     const mail=text(choice.email),telephone=text(choice.phone);
     if(mail&&!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(mail))throw Error('El correo del cliente no es válido.');
     const collisions=clientCandidates({customerName:name,customerPhone:telephone,customerEmail:mail},result.clients);
-    if(collisions.some(x=>x.score>=70))throw Error('Existe un cliente con estos datos. Seleccionalo para evitar duplicarlo.');
+    if(collisions.some(x=>x.reasons.includes('correo')||x.reasons.includes('teléfono')))
+      throw Error('Existe un cliente con ese correo o teléfono. Seleccionalo para evitar duplicarlo.');
+    if(collisions.some(x=>x.reasons.includes('nombre exacto'))&&!choice.confirmSameName)
+      throw Error('Ya existe un cliente con el mismo nombre. Si es otra persona, confirmalo explícitamente.');
     client={id:createId(),name,phone:telephone,email:mail,notes:'',createdAt:today};
     result.clients.push(client);
   }else{
