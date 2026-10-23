@@ -26,7 +26,7 @@ def build(stable, lab, destination):
     f=copy/"sw.js"
     code=f.read_text(encoding="utf-8")
     code=replace_one(code,"const PREFIX = 'autotrace-shell-';","const PREFIX = 'autotrace-lab-shell-';")
-    code=replace_one(code,"const CACHE = 'autotrace-shell-v8';","const CACHE = 'autotrace-lab-shell-v8';")
+    code=replace_one(code,"const CACHE = 'autotrace-shell-v9';","const CACHE = 'autotrace-lab-shell-v8';")
     f.write_text(code,encoding="utf-8")
     f=copy/"index.html"
     code=f.read_text(encoding="utf-8")
