@@ -77,7 +77,7 @@ test('browser full-backup XLSX v2 roundtrips all IDs, amounts and lines',async()
 test('tampered workbook is rejected before import',async()=>{
   const bytes=await writeBackupXlsx(fixture(),XLSX);
   const wb=XLSX.read(bytes,{type:'array'});
-  wb.Sheets.Trabajos['L2'].v=1;
+  wb.Sheets.Trabajos['D2'].v='Texto alterado';
   const altered=new Uint8Array(XLSX.write(wb,{type:'array',bookType:'xlsx'}));
   await assert.rejects(()=>readBackupXlsx(altered,XLSX),/checksum|inválido|repetido|alterado/i);
 });
