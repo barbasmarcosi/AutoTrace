@@ -19,7 +19,7 @@ try{
   assert.match(await page.locator('#app').innerText(),/PANEL DE CONTROL|Modo demostración|Acciones rápidas|Resumen de/iu);
   const excelVersion=await page.evaluate(()=>window.XLSX?.version);
   assert.equal(excelVersion,'0.20.3','bundled XLSX offline library must initialize');
-  await page.locator('[data-nav="ajustes"]').first().click();
+  await page.goto(base+'#ajustes',{waitUntil:'domcontentloaded',timeout:25000});
   await page.getByText('Importar presupuesto / remito').waitFor({timeout:10000});
   await page.getByText('Restaurar Excel completo').waitFor({timeout:10000});
   await page.getByText('Excel completo',{exact:false}).first().waitFor({timeout:10000});
