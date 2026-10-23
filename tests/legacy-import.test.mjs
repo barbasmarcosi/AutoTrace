@@ -61,7 +61,7 @@ make:'Toyota',model:'Corolla'}),uid,today),/Existe un cliente/);
 test('two names alike are ambiguous without an independent identifier',()=>{
 const data=state();data.clients.push({...data.clients[0],id:'c3',phone:'00000111',email:'otro@test.invalid'});
 const result=suggestedLegacySelection(document({customerPhone:'',customerEmail:''}),data);
-assert.equal(result.clientId,'');assert.equal(clientCandidates(document({customerPhone:'',customerEmail:''}),data).length,2);
+assert.equal(result.clientId,'');assert.equal(clientCandidates(document({customerPhone:'',customerEmail:''}),data.clients).length,2);
 });
 test('same original file cannot be imported twice',()=>{
 const res=prepareLegacyImport(document(),state(),choice(),uid,today);
@@ -70,7 +70,7 @@ assert.throws(()=>prepareLegacyImport(document(),res.data,choice(),uid,today),/y
 test('same document with different file fingerprint requires explicit duplicate approval',()=>{
 const first=prepareLegacyImport(document(),state(),choice(),uid,today);
 const next=document({sourceFingerprint:'d'.repeat(64)});
-assert.throws(()=>prepareLegacyImport(next,first.data,choice(),uid,today),/muy similar/);
+assert.throws(()=>prepareLegacyImport(next,first.data,choice(),uid,today),/parece ya registrado/);
 assert.equal(prepareLegacyImport(next,first.data,choice({confirmSimilar:true}),uid,today).data.orders.length,2);
 });
 test('validation errors keep original data untouched',()=>{
