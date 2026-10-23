@@ -2,7 +2,7 @@ import {validateData, csvCell, pendingAmount, margin} from "./model.mjs";
 import {matchesClient, matchesVehicle, matchesOrder, paginate, filterVehicleHistory} from "./search.mjs";
 import {buildCustomerSummary} from "./customer-summary.mjs";
 import {suggestVehicles, suggestClients} from "./pickers.mjs";
-import {parseWorkshopXlsx,writeWorkshopXlsx} from "./browser-excel.mjs";
+import {parseWorkshopXlsx,writeWorkshopXlsx,writeCustomerReportXlsx} from "./browser-excel.mjs";
 import {readBackupXlsx,writeBackupXlsx} from "./browser-backup.mjs";
 /** AutoTrace v1 — sin backend, datos almacenados exclusivamente en este navegador. */
 const DB_NAME = 'autotrace-v1';
@@ -796,7 +796,18 @@ document.addEventListener('click',async event=>{
     case 'clear-list-filters':{if(route().page==='finanzas'){financeQuery='';financePage=1;financeFilter='all';const field=document.querySelector('#finance-search');if(field){field.value='';field.focus();}refreshFinanceResults();break;}const section=route().page;if(!Object.hasOwn(listQueries,section))break;listQueries[section]='';listPages[section]=1;if(section==='clientes')clientFilter='all';if(section==='vehiculos')vehicleFilter='all';if(section==='trabajos')activeFilter='all';const input=document.querySelector('#list-search');if(input){input.value='';input.focus();}refreshListResults();break;}
     case 'export-json':exportJSON();break;
     case 'export-excel-desktop':await exportExcelDesktop();break;
-    case 'export-client-excel':if(desktopInvoke && id){try{if(await desktopInvoke('export_customer_excel_dialog',{clientId:id}))toast('Informe Excel exportado sin costos internos ni notas privadas.');}catch(error){toast(String(error),'error');}}break;
+    case 'export-client-excel':if(id){
+      try{
+        if(desktopInvoke){
+          if(await desktopInvoke('export_customer_excel_dialog',{clientId:id}))toast('Informe Excel del cliente exportado.');
+        }else{
+          const customer=findClient(id);if(!customer)throw Error('Cliente inexistente.');
+          const bytes=writeCustomerReportXlsx(db,id,window.XLSX);
+          saveAsFile(bytes,'autotrace-cliente-'+isoDate(new Date())+'.xlsx','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+          toast('Informe Excel exportado sin costos internos ni notas privadas.');
+        }
+      }catch(error){console.error(error);toast(error?.message||String(error),'error');}
+    }break;
     case 'import-excel-desktop':if(desktopInvoke)await importExcelDesktop();else document.querySelector('#import-backup-xlsx').click();break;
     case 'import-legacy-document':if(desktopInvoke)await importLegacyDocumentDesktop();else document.querySelector('#import-workshop-xlsx').click();break;
     case 'choose-workshop-logo':await chooseWorkshopLogo();break;
