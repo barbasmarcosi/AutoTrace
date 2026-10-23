@@ -42,6 +42,12 @@ test('Legacy workbook import and client document export are connected only on de
   assert.match(runtime,/legacy_documents::choose_legacy_document/);
   assert.match(runtime,/legacy_documents::export_legacy_document/);
 });
+test('Quotes are excluded from financial listings and CSV exports, with separate quote box',()=>{
+  assert.match(frontend,/let orders=db\.orders\.filter\(o=>o\.documentKind!=='quote'\)/);
+  assert.match(frontend,/const rows=db\.orders\.filter\(o=>o\.documentKind!=='quote'\)/);
+  assert.match(frontend,/if\(o\.documentKind==='quote'\)/);
+  assert.match(frontend,/Estimación informativa: no es una cuenta por cobrar/);
+});
 test('Restore and destructive changes take a backup first',()=>{
   assert.match(frontend,/if\(!await createDesktopBackup\(true\)\)throw Error/);
   assert.match(frontend,/if\(desktopInvoke && !await createDesktopBackup\(true\)\)break/);
