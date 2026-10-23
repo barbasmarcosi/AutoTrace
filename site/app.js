@@ -125,9 +125,10 @@ async function loadData(){
   } catch(err){ console.error('AutoTrace storage unavailable:',err); memoryOnly=true;db=seedDemo(); }
 }
 async function saveData(next){
+  const validated=validateData(next);
   if(desktopInvoke){
     // La revisión SQL protege contra una segunda ventana con datos desactualizados.
-    const canonical=validateData(next);
+    const canonical=validated;
     const result=await desktopInvoke('save_state',{data:canonical,expectedRevision:desktopRevision});
     desktopRevision=result.revision;
     db=canonical;
@@ -135,9 +136,9 @@ async function saveData(next){
   }
   if(memoryOnly)throw Error('El almacenamiento local no está disponible. No se guardaron los cambios.');
   await new Promise((resolve,reject)=>{
-    const tx=dbConnection.transaction(STORE,'readwrite');tx.objectStore(STORE).put(next,KEY);tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);tx.onabort=()=>reject(tx.error);
+    const tx=dbConnection.transaction(STORE,'readwrite');tx.objectStore(STORE).put(validated,KEY);tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);tx.onabort=()=>reject(tx.error);
   });
-  db=next;
+  db=validated;
 }
 async function updateData(mutator, message){
   try {
