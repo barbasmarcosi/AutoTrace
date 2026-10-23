@@ -500,7 +500,7 @@ async function saveForm(form){
   const baseId=id||uid();
   let next,routeTo,message;
   if(kind==='legacy'){return saveLegacyWizard(form);
-  else if(kind==='client'){
+  }else if(kind==='client'){
     next={id:baseId,name:get('name'),phone:get('phone'),email:get('email'),notes:get('notes'),createdAt:findClient(id)?.createdAt||isoDate(new Date())};
     if(!next.name){toast('Ingresá el nombre del cliente.','error');return;}
     routeTo=['cliente',baseId];message=existing?'Cliente actualizado.':'Cliente registrado.';
