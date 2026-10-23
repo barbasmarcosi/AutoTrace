@@ -261,6 +261,27 @@ mod tests {
         assert_eq!(canonical_bytes(&data).unwrap(),canonical_bytes(&restored).unwrap());
     }
     #[test]
+    fn v3_roundtrip_accounts_payments_preserves_history_and_destinations(){
+        let value=serde_json::json!({
+            "clients":[{"id":"c1","name":"Cliente prueba","phone":"","email":"","notes":"","createdAt":""}],
+            "vehicles":[{"id":"v1","clientId":"c1","plate":"AF012BC","make":"Toyota","model":"Hilux","year":"","mileage":200,"vin":"","color":"","nextServiceDate":"","notes":"","createdAt":""}],
+            "orders":[{"id":"o1","vehicleId":"v1","title":"Service","category":"Mecánica","status":"done","openedAt":"2026-10-23","completedAt":"2026-10-23",
+                       "mileage":200,"description":"","partsCost":500.0,"laborCost":200.0,"charged":3000.0,"paid":1500.0,"notes":"","createdAt":"2026-10-23",
+                       "payments":[{"id":"p1","date":"2026-10-23","amount":1000.0,"method":"transfer","accountId":"bank-1","reference":"AB123"}]}],
+            "settings":{"garageName":"Taller","currency":"ARS","demo":false,
+                        "accounts":[{"id":"bank-1","name":"Banco principal","kind":"bank","alias":"taller.test"}]}
+        });
+        let data:AppData=serde_json::from_value(value).unwrap();
+        validate(&data).unwrap();
+        let bytes=to_xlsx(&data).unwrap();
+        let restored=from_xlsx(&bytes).unwrap();
+        assert_eq!(canonical_bytes(&data).unwrap(),canonical_bytes(&restored).unwrap());
+        let mut invalid=serde_json::to_value(restored).unwrap();
+        invalid["settings"]["accounts"]=serde_json::json!([]);
+        let invalid:AppData=serde_json::from_value(invalid).unwrap();
+        assert!(validate(&invalid).is_err());
+    }
+    #[test]
     fn rejects_unknown_workbook_and_corruption(){
         assert!(from_xlsx(b"invalid").is_err());
         let bytes=to_xlsx(&AppData::default()).unwrap();
