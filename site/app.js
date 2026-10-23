@@ -613,10 +613,10 @@ async function saveForm(form){
     routeTo=['vehiculo',baseId];message=existing?'Vehículo actualizado.':'Vehículo agregado.';
   }else if(kind==='order'){
     if(!get('vehicleId')||!findVehicle(get('vehicleId'))){toast('Primero buscá y seleccioná un vehículo de la lista.','error');form.querySelector('#vehicle-lookup')?.focus();return;}
-    const price=amount(get('charged')),paid=amount(get('paid'));
-    if(paid>price){toast('El total pagado no puede superar el importe acordado.','error');return;}
-    if(!get('openedAt')){toast('Ingresá la fecha del trabajo.','error');return;}
+    const price=amount(get('charged'));
     const previous=findOrder(id);
+    if((previous?.paid??0)>price){toast('El importe acordado no puede ser menor a lo ya cobrado.','error');return;}
+    if(!get('openedAt')){toast('Ingresá la fecha del trabajo.','error');return;}
     let items;try{items=formOrderLines(form);}catch(error){toast(error.message,'error');return;}
     if(items.length&&Math.abs(lineAmount(items)-price)>0.011){
       toast('El importe acordado debe coincidir con los renglones.','error');return;
