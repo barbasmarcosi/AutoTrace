@@ -2,6 +2,8 @@ import {validateData, csvCell, pendingAmount, margin} from "./model.mjs";
 import {matchesClient, matchesVehicle, matchesOrder, paginate, filterVehicleHistory} from "./search.mjs";
 import {buildCustomerSummary} from "./customer-summary.mjs";
 import {suggestVehicles, suggestClients} from "./pickers.mjs";
+import {parseWorkshopXlsx,writeWorkshopXlsx,writeCustomerReportXlsx} from "./browser-excel.mjs";
+import {readBackupXlsx,writeBackupXlsx} from "./browser-backup.mjs";
 /** AutoTrace v1 — sin backend, datos almacenados exclusivamente en este navegador. */
 const DB_NAME = 'autotrace-v1';
 const STORE = 'application';
@@ -43,6 +45,7 @@ const PATHS = {
  sparkle:'<path d="m12 3 1.6 5.4L19 10l-5.4 1.6L12 17l-1.6-5.4L5 10l5.4-1.6zM19 17l1 2 2 1-2 1-1 2-1-2-2-1 2-1z"/>',
  printer:'<path d="M6 9V3h12v6M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2M6 15h12v6H6z"/>',
  info:'<circle cx="12" cy="12" r="10"/><path d="M12 11v6M12 7h.01"/>',
+ image:'<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8" cy="8" r="1.5"/><path d="m3 16 5-5 4 4 4-5 5 6"/>',
  tag:'<path d="M20 13 13 20a2 2 0 0 1-3 0l-7-7V4h9l8 8a2 2 0 0 1 0 1z"/><circle cx="7.5" cy="8.5" r="1"/>',
  chart:'<path d="M3 3v18h18M7 16v-4m5 4V7m5 9V4"/>'
 };
@@ -89,6 +92,11 @@ let historyQuery = '';
 let historyStatus = 'all';
 let historyPage = 1;
 let dbConnection = null;
+const desktopInvoke = window.__TAURI__?.core?.invoke ?? null;
+let desktopRevision = 0;
+let lastDesktopBackup = null;
+let desktopBackupBusy = false;
+let pendingLegacyDocument = null;
 let memoryOnly = false;
 let toastTimeout;
 const app = document.querySelector('#app');
@@ -100,6 +108,14 @@ function openDatabase(){
   });
 }
 async function loadData(){
+  if(desktopInvoke){
+    // El escritorio nunca siembra registros ficticios ni reutiliza IndexedDB por error.
+    // Fallar cerrado ante daños o incompatibilidades: no permitir ediciones en memoria.
+    const snapshot=await desktopInvoke('load_state');
+    db=validateData(snapshot.data);
+    desktopRevision=snapshot.revision;
+    return;
+  }
   try {
     dbConnection=await openDatabase();
     const saved=await new Promise((resolve,reject)=>{const tx=dbConnection.transaction(STORE,'readonly');const req=tx.objectStore(STORE).get(KEY);req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error);});
@@ -108,6 +124,14 @@ async function loadData(){
   } catch(err){ console.error('AutoTrace storage unavailable:',err); memoryOnly=true;db=seedDemo(); }
 }
 async function saveData(next){
+  if(desktopInvoke){
+    // La revisión SQL protege contra una segunda ventana con datos desactualizados.
+    const canonical=validateData(next);
+    const result=await desktopInvoke('save_state',{data:canonical,expectedRevision:desktopRevision});
+    desktopRevision=result.revision;
+    db=canonical;
+    return;
+  }
   if(memoryOnly)throw Error('El almacenamiento local no está disponible. No se guardaron los cambios.');
   await new Promise((resolve,reject)=>{
     const tx=dbConnection.transaction(STORE,'readwrite');tx.objectStore(STORE).put(next,KEY);tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);tx.onabort=()=>reject(tx.error);
@@ -128,7 +152,7 @@ const findVehicle=id=>db.vehicles.find(v=>v.id===id);
 const findOrder=id=>db.orders.find(o=>o.id===id);
 const fullVehicle=v=>v?`${v.make} ${v.model}`:'Vehículo eliminado';
 const vehicleClient=v=>v?findClient(v.clientId):null;
-const activeOrders=()=>db.orders.filter(o=>['received','progress','waiting'].includes(o.status));
+const activeOrders=()=>db.orders.filter(o=>o.documentKind!=='quote'&&['received','progress','waiting'].includes(o.status));
 const route=()=>{const h=decodeURIComponent(location.hash.replace(/^#\/?/,''));const [page,id]=h.split('/');return {page:page||'inicio',id:id||''};};
 function navigate(page,id='') {activeQuery='';mobileSearchOpen=false;location.hash=`#${page}${id?`/${encodeURIComponent(id)}`:''}`;if(route().page===page)render();window.scrollTo({top:0,behavior:'instant'});}
 const navActive = page => ({cliente:'clientes',vehiculo:'vehiculos',trabajo:'trabajos',buscar:'inicio'}[page]||page);
@@ -153,7 +177,7 @@ function renderDashboard(){
   const recent=[...db.orders].sort((a,b)=>b.openedAt.localeCompare(a.openedAt)).slice(0,5);
   const open=activeOrders();
   const thisMonth=isoDate(new Date()).slice(0,7);
-  const monthly=db.orders.filter(x=>x.openedAt.startsWith(thisMonth));
+  const monthly=db.orders.filter(x=>x.documentKind!=='quote'&&x.openedAt.startsWith(thisMonth));
   const due=db.vehicles.filter(v=>v.nextServiceDate&&daysUntil(v.nextServiceDate)<=30).sort((a,b)=>a.nextServiceDate.localeCompare(b.nextServiceDate)).slice(0,5);
   const pending=sum(db.orders,pendingAmount);
   return `${demoBanner()}<div class="heading"><div><p class="eyebrow">PANEL DE CONTROL</p><h1>${db.settings.garageName==='Mi taller'?'Tu taller, hoy':`Resumen de ${esc(db.settings.garageName)}`}</h1><p>Todo lo que necesitás resolver, en un solo lugar.</p></div><span class="badge-local">${icon('shield',15)} Privado y local</span></div>
@@ -163,11 +187,11 @@ function renderDashboard(){
   ${db.clients.length===0?`<section class="welcome-guide" aria-label="Primeros pasos"><div class="guide-head"><span class="guide-kicker">EMPEZÁ ACÁ</span><h2>Tu primer trabajo, en tres pasos</h2><p>Armá el historial del taller desde la primera visita.</p></div><div class="guide-steps"><div><span>01</span><strong>Registrá a tu cliente</strong><small>Guardá su nombre y contacto.</small></div><div><span>02</span><strong>Sumá su vehículo</strong><small>Identificalo por patente y modelo.</small></div><div><span>03</span><strong>Cargá el servicio</strong><small>Anotá diagnóstico, costos y cobros.</small></div></div>${button(`${icon('plus')} Crear primer cliente`,'new-client','btn-primary')}</section>`:''}
   <div class="dashboard-grid"><div class="card"><div class="card-heading"><div><h3>Últimos trabajos</h3><p>Actividad reciente de tu taller</p></div><button class="link-btn" data-nav="trabajos">Ver todos ${icon('arrow',13)}</button></div>${recent.length?`<div class="table-scroll">${renderOrderTable(recent,true)}</div>`:empty('Todavía no hay trabajos','Registrá el primero para construir el historial de cada vehículo.',button('Nuevo trabajo','new-order','btn-primary'))}</div>
   <div class="card"><div class="card-heading"><div><h3>Próximos servicios</h3><p>Vencidos o dentro de los próximos 30 días</p></div>${icon('calendar',19)}</div>${due.length?`<div class="detail-list">${due.map(v=>{const d=daysUntil(v.nextServiceDate);return `<button class="detail-row table-link" data-nav="vehiculo" data-id="${esc(v.id)}"><div class="detail-icon">${icon('car')}</div><div class="detail-content"><strong>${esc(fullVehicle(v))}</strong><small>${esc(v.plate)} · ${formatDate(v.nextServiceDate)}</small></div><span class="pill pill-${d<0?'overdue':d<=7?'soon':'normal'}">${d<0?'Vencido':d===0?'Hoy':`En ${d} días`}</span></button>`;}).join('')}</div>`:empty('Todo al día','No hay servicios programados para los próximos 30 días.','','calendar')}</div></div>
-  <div class="dashboard-grid" style="margin-top:21px"><div class="card card-pad"><div class="card-heading" style="padding:0 0 15px"><div><h3>Movimiento de los últimos 6 meses</h3><p>Importes cargados y costos estimados</p></div>${icon('chart',19)}</div>${renderChart()}</div><div class="card card-pad"><h3 style="font-size:15px;margin-bottom:15px">Accesos rápidos</h3><div style="display:grid;gap:10px">${button(`${icon('car')} Agregar vehículo`,'new-vehicle','btn-secondary')}${button(`${icon('users')} Agregar cliente`,'new-client','btn-secondary')}${button(`${icon('download')} Descargar respaldo`,'export-json','btn-secondary')}</div><p class="muted-sm" style="line-height:1.65;margin-top:17px;margin-bottom:0">Los datos viven solo en este navegador. Descargá un respaldo después de cargar trabajos importantes.</p></div></div>`;
+  <div class="dashboard-grid" style="margin-top:21px"><div class="card card-pad"><div class="card-heading" style="padding:0 0 15px"><div><h3>Movimiento de los últimos 6 meses</h3><p>Importes cargados y costos estimados</p></div>${icon('chart',19)}</div>${renderChart()}</div><div class="card card-pad"><h3 style="font-size:15px;margin-bottom:15px">Accesos rápidos</h3><div style="display:grid;gap:10px">${button(`${icon('car')} Agregar vehículo`,'new-vehicle','btn-secondary')}${button(`${icon('users')} Agregar cliente`,'new-client','btn-secondary')}${button(`${icon('download')} Descargar respaldo`,'export-json','btn-secondary')}</div><p class="muted-sm" style="line-height:1.65;margin-top:17px;margin-bottom:0">${desktopInvoke?'Los datos se guardan en SQLite en este equipo. Configurá copias fuera de la PC para protegerlos ante una falla total.':'Los datos viven solo en este navegador. Descargá un respaldo después de cargar trabajos importantes.'}</p></div></div>`;
 }
 function stat(label,value,foot,symbol){return `<article class="stat-card"><div class="stat-label">${esc(label)}<span class="stat-icon">${icon(symbol,17)}</span></div><div class="stat-value">${esc(value)}</div><div class="stat-foot">${esc(foot)}</div></article>`;}
 function renderChart(){
-  const months=Array.from({length:6},(_,i)=>{const d=new Date();d.setDate(1);d.setMonth(d.getMonth()-(5-i));const key=isoDate(d).slice(0,7);const orders=db.orders.filter(o=>o.openedAt.startsWith(key));return {label:d.toLocaleDateString('es-AR',{month:'short'}).replace('.',''),revenue:sum(orders,x=>x.charged),cost:sum(orders,x=>amount(x.partsCost)+amount(x.laborCost))};});
+  const months=Array.from({length:6},(_,i)=>{const d=new Date();d.setDate(1);d.setMonth(d.getMonth()-(5-i));const key=isoDate(d).slice(0,7);const orders=db.orders.filter(o=>o.documentKind!=='quote'&&o.openedAt.startsWith(key));return {label:d.toLocaleDateString('es-AR',{month:'short'}).replace('.',''),revenue:sum(orders,x=>x.charged),cost:sum(orders,x=>amount(x.partsCost)+amount(x.laborCost))};});
   const max=Math.max(1,...months.flatMap(m=>[m.revenue,m.cost]));
   return `<div class="bar-chart" role="img" aria-label="Gráfico comparativo de importes acordados y costos de los últimos seis meses">${months.map(m=>`<div class="bar-group"><div class="bar-wrap"><span class="bar" style="--h:${Math.max(2,m.revenue/max*100)}%" title="Acordado: ${esc(money(m.revenue))}"></span><span class="bar cost" style="--h:${Math.max(2,m.cost/max*100)}%" title="Costos: ${esc(money(m.cost))}"></span></div><label>${esc(m.label)}</label></div>`).join('')}</div><div class="chart-legend"><span><i class="legend-dot"></i> Acordado</span><span><i class="legend-dot dark"></i> Costos</span></div>`;
 }
@@ -229,7 +253,8 @@ function renderOrders(){
   return `${demoBanner()}${sectionHead('Trabajos y servicios',`${db.orders.length} registros en el historial. Registrá desde un diagnóstico hasta una reparación completa.`,button(`${icon('plus')} Nuevo trabajo`,'new-order','btn-primary'))}${listToolbar('trabajos','Trabajo, patente o cliente…',[['all','Todos'],['active','Activos'],['closed','Terminados'],['unpaid','Con saldo']])}<div id="list-results">${renderListResults('trabajos')}</div>`;
 }
 function renderFinance(){
-  const charged=sum(db.orders,o=>o.charged),paid=sum(db.orders,o=>o.paid),cost=sum(db.orders,o=>amount(o.partsCost)+amount(o.laborCost)),pending=sum(db.orders,pendingAmount);
+  const billable=db.orders.filter(o=>o.documentKind!=='quote');
+  const charged=sum(billable,o=>o.charged),paid=sum(billable,o=>o.paid),cost=sum(billable,o=>amount(o.partsCost)+amount(o.laborCost)),pending=sum(billable,pendingAmount);
   return `${demoBanner()}${sectionHead('Resumen económico','Un panorama simple de ingresos, costos y saldos. No reemplaza un sistema contable.',button(`${icon('download')} Exportar CSV`,'export-csv','btn-secondary'))}
   <div class="stats-grid">${stat('Importes acordados',money(charged),'Total cargado en los trabajos','wallet')}${stat('Pagos recibidos',money(paid),'Monto efectivamente abonado','trending')}${stat('Costos registrados',money(cost),'Repuestos y mano de obra','wrench')}${stat('Saldo pendiente',money(pending),'Pendiente de cobrar','clock')}</div>
   <div class="dashboard-grid"><div class="card card-pad"><h3 style="font-size:15px">Evolución mensual</h3><p class="section-intro">Importes acordados frente a costos registrados</p>${renderChart()}</div><div class="card card-pad"><h3 style="font-size:15px">Margen estimado</h3><div class="money-box highlight" style="margin:17px 0"><small>Importes cargados − costos</small><strong class="${charged-cost<0?'text-negative':'text-positive'}">${money(charged-cost)}</strong></div><p class="muted-sm" style="line-height:1.8">Es una aproximación, no una utilidad neta: no contempla alquiler, impuestos, herramientas, gastos generales ni el criterio de reconocimiento contable. La mano de obra aquí se considera un costo interno.</p></div></div>
@@ -237,10 +262,10 @@ function renderFinance(){
   <div class="finance-toolbar"><div class="list-search-field">${icon('search',18)}<label class="sr-only" for="finance-search">Buscar en movimientos</label><input id="finance-search" type="search" placeholder="Buscar trabajo, patente o cliente…" value="${esc(financeQuery)}" autocomplete="off" /></div><div class="finance-tabs" role="group" aria-label="Filtrar movimientos">${[['all','Todos'],['unpaid','Con saldo'],['negative','Margen negativo']].map(([v,t])=>`<button type="button" data-finance-filter="${v}" aria-pressed="${financeFilter===v}" class="filter-tab ${financeFilter===v?'active':''}">${t}</button>`).join('')}</div></div><div id="finance-results">${renderFinanceResults()}</div></div>`;
 }
 function renderFinanceResults(){
-  let orders=[...db.orders].sort((a,b)=>b.openedAt.localeCompare(a.openedAt));
+  let orders=db.orders.filter(o=>o.documentKind!=='quote').sort((a,b)=>b.openedAt.localeCompare(a.openedAt));
   orders=orders.filter(o=>{const v=findVehicle(o.vehicleId);return matchesOrder(o,v,vehicleClient(v),financeQuery)&&(financeFilter==='all'||financeFilter==='unpaid'&&pendingAmount(o)>0||financeFilter==='negative'&&margin(o)<0);});
   const page=paginate(orders,financePage,15);financePage=page.page;
-  return `${listFooter(page,'finanzas')}${page.total?`<div class="table-scroll finance-table-wrap"><table class="data-table"><thead><tr><th>Trabajo</th><th>Costo</th><th>Acordado</th><th>Pagado</th><th>Saldo</th><th>Margen estimado</th></tr></thead><tbody>${page.items.map(o=>`<tr><td><button class="table-link" data-nav="trabajo" data-id="${esc(o.id)}"><span class="main-cell">${esc(o.title)}</span><span class="sub-cell">${esc(findVehicle(o.vehicleId)?.plate||'')} · ${formatDate(o.openedAt)}</span></button></td><td>${money(amount(o.partsCost)+amount(o.laborCost))}</td><td>${money(o.charged)}</td><td>${money(o.paid)}</td><td>${money(pendingAmount(o))}</td><td class="${margin(o)<0?'text-negative':'text-positive'}">${money(margin(o))}</td></tr>`).join('')}</tbody></table></div><div class="finance-mobile-list">${page.items.map(o=>{const v=findVehicle(o.vehicleId);return `<button class="finance-mobile-card" data-nav="trabajo" data-id="${esc(o.id)}"><span class="order-mobile-top"><strong>${esc(o.title)}</strong>${icon('chevron',17)}</span><span class="order-mobile-vehicle">${esc(v?.plate||'')} · ${formatDate(o.openedAt)}</span><span class="finance-mobile-metrics"><span><small>Acordado</small><strong>${money(o.charged)}</strong></span><span><small>Pagado</small><strong>${money(o.paid)}</strong></span><span><small>Saldo</small><strong class="${pendingAmount(o)>0?'text-negative':'text-positive'}">${money(pendingAmount(o))}</strong></span></span></button>`;}).join('')}</div>`:db.orders.length?listNoMatch('finanzas'):empty('Sin movimientos todavía','Los importes que cargues en tus trabajos aparecerán acá.','','wallet')}`;
+  return `${listFooter(page,'finanzas')}${page.total?`<div class="table-scroll finance-table-wrap"><table class="data-table"><thead><tr><th>Trabajo</th><th>Costo</th><th>Acordado</th><th>Pagado</th><th>Saldo</th><th>Margen estimado</th></tr></thead><tbody>${page.items.map(o=>`<tr><td><button class="table-link" data-nav="trabajo" data-id="${esc(o.id)}"><span class="main-cell">${esc(o.title)}</span><span class="sub-cell">${esc(findVehicle(o.vehicleId)?.plate||'')} · ${formatDate(o.openedAt)}</span></button></td><td>${money(amount(o.partsCost)+amount(o.laborCost))}</td><td>${money(o.charged)}</td><td>${money(o.paid)}</td><td>${money(pendingAmount(o))}</td><td class="${margin(o)<0?'text-negative':'text-positive'}">${money(margin(o))}</td></tr>`).join('')}</tbody></table></div><div class="finance-mobile-list">${page.items.map(o=>{const v=findVehicle(o.vehicleId);return `<button class="finance-mobile-card" data-nav="trabajo" data-id="${esc(o.id)}"><span class="order-mobile-top"><strong>${esc(o.title)}</strong>${icon('chevron',17)}</span><span class="order-mobile-vehicle">${esc(v?.plate||'')} · ${formatDate(o.openedAt)}</span><span class="finance-mobile-metrics"><span><small>Acordado</small><strong>${money(o.charged)}</strong></span><span><small>Pagado</small><strong>${money(o.paid)}</strong></span><span><small>Saldo</small><strong class="${pendingAmount(o)>0?'text-negative':'text-positive'}">${money(pendingAmount(o))}</strong></span></span></button>`;}).join('')}</div>`:db.orders.some(o=>o.documentKind!=='quote')?listNoMatch('finanzas'):empty('Sin movimientos todavía','Los importes que cargues en tus trabajos aparecerán acá.','','wallet')}`;
 }
 function refreshFinanceResults(){const node=document.querySelector('#finance-results');if(node)node.innerHTML=renderFinanceResults();document.querySelectorAll('[data-finance-filter]').forEach(el=>{const active=el.dataset.financeFilter===financeFilter;el.classList.toggle('active',active);el.setAttribute('aria-pressed',String(active));});}
 
@@ -248,7 +273,7 @@ function renderClientDetail(id){
   const c=findClient(id); if(!c)return notFound('cliente','clientes');
   const vehicles=db.vehicles.filter(v=>v.clientId===id);
   const orders=db.orders.filter(o=>vehicles.some(v=>v.id===o.vehicleId)).sort((a,b)=>b.openedAt.localeCompare(a.openedAt));
-  return `${back('clientes','Clientes')}${sectionHead(c.name,`${vehicles.length} vehículo${vehicles.length===1?'':'s'} · ${orders.length} trabajo${orders.length===1?'':'s'}`,`${button(`${icon('pencil')} Editar`,'edit-client','btn-secondary',`data-id="${esc(id)}"`)} ${button(`${icon('plus')} Agregar vehículo`,'new-vehicle','btn-primary',`data-client="${esc(id)}"`)}`)}<div class="detail-layout"><div><div class="card card-pad detail-section"><h3>Información de contacto</h3><div class="info-grid">${descView('Teléfono',phoneLink(c.phone))}${descView('Correo',c.email?`<a href="mailto:${encodeURIComponent(c.email)}">${esc(c.email)}</a>`:'—')}${descView('Registrado',formatDate(c.createdAt))}${descView('Vehículos',String(vehicles.length))}</div>${c.notes?`<div class="divider"></div><p class="section-intro">${esc(c.notes)}</p>`:''}</div><div class="card detail-section"><div class="card-heading"><h3>Vehículos asociados</h3></div>${vehicles.length?`<div class="detail-list">${vehicles.map(v=>`<button class="detail-row table-link" data-nav="vehiculo" data-id="${esc(v.id)}"><span class="detail-icon">${icon('car')}</span><div class="detail-content"><strong>${esc(fullVehicle(v))}</strong><small>${esc(v.plate)} · ${num(v.mileage)} km</small></div>${icon('chevron',17)}</button>`).join('')}</div>`:empty('Sin vehículos','Agregá el primer automóvil del cliente.')}</div></div><div><div class="card detail-section"><div class="card-heading"><h3>Últimos trabajos</h3></div>${orders.length?`<div class="detail-list">${orders.slice(0,8).map(o=>`<button class="detail-row table-link" data-nav="trabajo" data-id="${esc(o.id)}"><div class="detail-content"><strong>${esc(o.title)}</strong><small>${formatDate(o.openedAt)} · ${esc(findVehicle(o.vehicleId)?.plate||'')}</small></div>${icon('chevron',16)}</button>`).join('')}</div>`:empty('Sin trabajos','El historial aparecerá al cargar el primer servicio.')}</div><div class="card card-pad"><h3>Administración</h3><p class="muted-sm">Solo podés eliminar un cliente cuando no tenga vehículos asociados.</p>${button(`${icon('trash')} Eliminar cliente`,'delete-client','btn-danger-ghost btn-sm',`data-id="${esc(id)}"`)}</div></div></div>`;
+  return `${back('clientes','Clientes')}${sectionHead(c.name,`${vehicles.length} vehículo${vehicles.length===1?'':'s'} · ${orders.length} trabajo${orders.length===1?'':'s'}`,`${button(`${icon('pencil')} Editar`,'edit-client','btn-secondary',`data-id="${esc(id)}"`)} ${button(`${icon('download')} Excel para cliente`,'export-client-excel','btn-secondary',`data-id="${esc(id)}"`)} ${button(`${icon('plus')} Agregar vehículo`,'new-vehicle','btn-primary',`data-client="${esc(id)}"`)}`)}<div class="detail-layout"><div><div class="card card-pad detail-section"><h3>Información de contacto</h3><div class="info-grid">${descView('Teléfono',phoneLink(c.phone))}${descView('Correo',c.email?`<a href="mailto:${encodeURIComponent(c.email)}">${esc(c.email)}</a>`:'—')}${descView('Registrado',formatDate(c.createdAt))}${descView('Vehículos',String(vehicles.length))}</div>${c.notes?`<div class="divider"></div><p class="section-intro">${esc(c.notes)}</p>`:''}</div><div class="card detail-section"><div class="card-heading"><h3>Vehículos asociados</h3></div>${vehicles.length?`<div class="detail-list">${vehicles.map(v=>`<button class="detail-row table-link" data-nav="vehiculo" data-id="${esc(v.id)}"><span class="detail-icon">${icon('car')}</span><div class="detail-content"><strong>${esc(fullVehicle(v))}</strong><small>${esc(v.plate)} · ${num(v.mileage)} km</small></div>${icon('chevron',17)}</button>`).join('')}</div>`:empty('Sin vehículos','Agregá el primer automóvil del cliente.')}</div></div><div><div class="card detail-section"><div class="card-heading"><h3>Últimos trabajos</h3></div>${orders.length?`<div class="detail-list">${orders.slice(0,8).map(o=>`<button class="detail-row table-link" data-nav="trabajo" data-id="${esc(o.id)}"><div class="detail-content"><strong>${esc(o.title)}</strong><small>${formatDate(o.openedAt)} · ${esc(findVehicle(o.vehicleId)?.plate||'')}</small></div>${icon('chevron',16)}</button>`).join('')}</div>`:empty('Sin trabajos','El historial aparecerá al cargar el primer servicio.')}</div><div class="card card-pad"><h3>Administración</h3><p class="muted-sm">Solo podés eliminar un cliente cuando no tenga vehículos asociados.</p>${button(`${icon('trash')} Eliminar cliente`,'delete-client','btn-danger-ghost btn-sm',`data-id="${esc(id)}"`)}</div></div></div>`;
 }
 function renderHistoryToolbar(){
   return `<div class="history-toolbar" aria-label="Buscar en el historial del vehículo"><div class="history-search">${icon('search',17)}<label class="sr-only" for="history-search">Buscar intervenciones de este vehículo</label><input id="history-search" type="search" autocomplete="off" placeholder="Buscar servicio, diagnóstico, fecha…" value="${esc(historyQuery)}" /></div><div class="history-filters" role="group" aria-label="Filtrar servicios">${[['all','Todos'],['active','En curso'],['closed','Finalizados']].map(([key,label])=>`<button type="button" data-history-filter="${key}" class="filter-tab ${historyStatus===key?'active':''}" aria-pressed="${historyStatus===key}">${label}</button>`).join('')}</div></div>`;
@@ -277,10 +302,20 @@ function renderVehicleDetail(id){
   <section class="card card-pad detail-section"><div class="card-heading history-heading"><div><h3>Historial de servicios</h3><p>Todo lo que se hizo en este vehículo, organizado por fecha.</p></div><span class="tag">${works.length} registros</span></div>${works.length?`${renderHistoryToolbar()}<div id="vehicle-history-results">${renderVehicleHistory(id)}</div>`:empty('Sin historial','Agregá el primer trabajo para construir el historial del vehículo.',button('Registrar primer trabajo','new-order','btn-primary',`data-vehicle="${esc(id)}"`))}</section></div>
   <div><div class="card card-pad detail-section"><h3>Propietario</h3><div class="card-top"><div class="avatar">${esc(initials(c?.name))}</div><div class="person-info"><h3>${esc(c?.name||'Sin propietario')}</h3><p>${esc(c?.phone||'Sin teléfono')}</p></div></div><div class="vehicle-owner-actions">${button('Abrir ficha del cliente','view-client','btn-secondary',`data-id="${esc(c?.id||'')}"`)}${c?.phone?phoneLink(c.phone):''}</div></div><div class="card card-pad"><h3>Administración</h3><p class="muted-sm">Solo podés eliminar un vehículo sin trabajos asociados.</p>${button(`${icon('trash')} Eliminar vehículo`,'delete-vehicle','btn-danger-ghost btn-sm',`data-id="${esc(id)}"`)}</div></div></div>`;
 }
+function renderFinancialBox(order,id,cost){
+  const o=order;
+  if(o.documentKind==='quote'){
+    return '<div class="card card-pad detail-section"><h3>Presupuesto</h3>'+
+      '<p class="section-intro">Estimación informativa: no es una cuenta por cobrar ni un trabajo facturado. Podés editar sus renglones y exportarlo en Excel.</p>'+
+      '<div class="money-box highlight"><small>Importe presupuestado</small><strong>'+money(o.charged)+'</strong></div></div>';
+  }
+  return `<div class="card card-pad detail-section"><h3>Balance del trabajo</h3><div class="money-grid" style="margin-top:18px"><div class="money-box"><small>Costo de repuestos</small><strong>${money(o.partsCost)}</strong></div><div class="money-box"><small>Costo de mano de obra</small><strong>${money(o.laborCost)}</strong></div><div class="money-box"><small>Costo total</small><strong>${money(cost)}</strong></div><div class="money-box"><small>Importe acordado</small><strong>${money(o.charged)}</strong></div><div class="money-box highlight"><small>Pagado</small><strong>${money(o.paid)}</strong></div><div class="money-box ${pendingAmount(o)?'due':''}"><small>Saldo pendiente</small><strong>${money(pendingAmount(o))}</strong></div></div><div class="divider"></div><div class="info-item"><small>Margen bruto estimado</small><strong class="${margin(o)<0?'text-negative':'text-positive'}" style="font-size:22px">${money(margin(o))}</strong></div><div style="margin-top:20px">${button(`${icon('plus')} Registrar cobro`,'add-payment',pendingAmount(o)>0?'btn-primary':'btn-secondary',`data-id="${esc(id)}" ${pendingAmount(o)===0?'disabled':''}`)}</div></div>`;
+}
+
 function renderOrderDetail(id){
   const o=findOrder(id);if(!o)return notFound('trabajo','trabajos');const v=findVehicle(o.vehicleId);const c=vehicleClient(v);
   const cost=amount(o.partsCost)+amount(o.laborCost);
-  return `${back('trabajos','Trabajos')}${sectionHead(o.title,`${fullVehicle(v)} · ${v?.plate||''} · ${formatDate(o.openedAt)}`,`${button(`${icon('pencil')} Editar trabajo`,'edit-order','btn-secondary',`data-id="${esc(id)}"`)} ${button(`${icon('printer')} Resumen para cliente`,'print-order','btn-secondary',`data-id="${esc(id)}"`)}`)}<div class="detail-layout"><div><div class="card card-pad detail-section"><div style="display:flex;align-items:center;justify-content:space-between;gap:10px"><h3 style="margin:0">Detalle de la intervención</h3>${pill(o.status)}</div><div class="divider"></div><div class="info-grid">${descView('Categoría',esc(o.category))}${descView('Fecha de ingreso',formatDate(o.openedAt))}${descView('Kilometraje registrado',`${num(o.mileage)} km`)}${descView('Fecha de cierre',formatDate(o.completedAt))}</div><div class="divider"></div><h3 style="font-size:13px">Diagnóstico / Descripción</h3><p class="section-intro" style="white-space:pre-wrap">${esc(o.description||'Sin descripción adicional.')}</p>${o.notes?`<h3 style="font-size:13px">Notas</h3><p class="section-intro" style="white-space:pre-wrap">${esc(o.notes)}</p>`:''}</div><div class="card card-pad detail-section"><h3>Seguimiento</h3><p class="section-intro">Actualizá el estado del trabajo sin tener que abrir el formulario completo.</p><div class="field"><label for="status-quick">Estado actual</label><select id="status-quick" data-status-order="${esc(id)}">${Object.entries(STATUSES).map(([k,label])=>`<option value="${k}" ${k===o.status?'selected':''}>${label}</option>`).join('')}</select></div></div></div><div><div class="card card-pad detail-section"><h3>Balance del trabajo</h3><div class="money-grid" style="margin-top:18px"><div class="money-box"><small>Costo de repuestos</small><strong>${money(o.partsCost)}</strong></div><div class="money-box"><small>Costo de mano de obra</small><strong>${money(o.laborCost)}</strong></div><div class="money-box"><small>Costo total</small><strong>${money(cost)}</strong></div><div class="money-box"><small>Importe acordado</small><strong>${money(o.charged)}</strong></div><div class="money-box highlight"><small>Pagado</small><strong>${money(o.paid)}</strong></div><div class="money-box ${pendingAmount(o)?'due':''}"><small>Saldo pendiente</small><strong>${money(pendingAmount(o))}</strong></div></div><div class="divider"></div><div class="info-item"><small>Margen bruto estimado</small><strong class="${margin(o)<0?'text-negative':'text-positive'}" style="font-size:22px">${money(margin(o))}</strong></div><div style="margin-top:20px">${button(`${icon('plus')} Registrar cobro`,'add-payment',pendingAmount(o)>0?'btn-primary':'btn-secondary',`data-id="${esc(id)}" ${pendingAmount(o)===0?'disabled':''}`)}</div></div><div class="card card-pad detail-section"><h3>Vehículo y cliente</h3><div class="info-grid">${descView('Vehículo',esc(fullVehicle(v)))}${descView('Patente',esc(v?.plate||''))}${descView('Cliente',esc(c?.name||''))}${descView('Contacto',phoneLink(c?.phone))}</div><div style="margin-top:20px">${button('Ver vehículo','view-vehicle','btn-secondary btn-sm',`data-id="${esc(v?.id||'')}"`)}</div></div><div class="card card-pad">${button(`${icon('trash')} Eliminar trabajo`,'delete-order','btn-danger-ghost btn-sm',`data-id="${esc(id)}"`)}</div></div></div>`;
+  return `${back('trabajos','Trabajos')}${sectionHead(o.title,`${fullVehicle(v)} · ${v?.plate||''} · ${formatDate(o.openedAt)}`,`${button(`${icon('pencil')} Editar trabajo`,'edit-order','btn-secondary',`data-id="${esc(id)}"`)} ${button(`${icon('printer')} Resumen para cliente`,'print-order','btn-secondary',`data-id="${esc(id)}"`)}${o.items?.length?`${button(`${icon('download')} Presupuesto Excel`,'export-legacy-quote','btn-secondary',`data-id="${esc(id)}"`)} ${button(`${icon('download')} Remito Excel`,'export-legacy-work','btn-secondary',`data-id="${esc(id)}"`)}`:''}}`)}<div class="detail-layout"><div><div class="card card-pad detail-section"><div style="display:flex;align-items:center;justify-content:space-between;gap:10px"><h3 style="margin:0">${o.documentKind==='quote'?'Detalle del presupuesto':'Detalle de la intervención'}</h3>${pill(o.status)}</div><div class="divider"></div><div class="info-grid">${descView('Categoría',esc(o.category))}${descView('Fecha de ingreso',formatDate(o.openedAt))}${descView('Kilometraje registrado',`${num(o.mileage)} km`)}${descView('Fecha de cierre',formatDate(o.completedAt))}</div><div class="divider"></div><h3 style="font-size:13px">Diagnóstico / Descripción</h3><p class="section-intro" style="white-space:pre-wrap">${esc(o.description||'Sin descripción adicional.')}</p>${renderOrderLines(o)}${o.notes?`<h3 style="font-size:13px">Notas</h3><p class="section-intro" style="white-space:pre-wrap">${esc(o.notes)}</p>`:''}</div><div class="card card-pad detail-section"><h3>Seguimiento</h3><p class="section-intro">Actualizá el estado del trabajo sin tener que abrir el formulario completo.</p><div class="field"><label for="status-quick">Estado actual</label><select id="status-quick" data-status-order="${esc(id)}">${Object.entries(STATUSES).map(([k,label])=>`<option value="${k}" ${k===o.status?'selected':''}>${label}</option>`).join('')}</select></div></div></div><div>${renderFinancialBox(o,id,cost)}<div class="card card-pad detail-section"><h3>Vehículo y cliente</h3><div class="info-grid">${descView('Vehículo',esc(fullVehicle(v)))}${descView('Patente',esc(v?.plate||''))}${descView('Cliente',esc(c?.name||''))}${descView('Contacto',phoneLink(c?.phone))}</div><div style="margin-top:20px">${button('Ver vehículo','view-vehicle','btn-secondary btn-sm',`data-id="${esc(v?.id||'')}"`)}</div></div><div class="card card-pad">${button(`${icon('trash')} Eliminar trabajo`,'delete-order','btn-danger-ghost btn-sm',`data-id="${esc(id)}"`)}</div></div></div>`;
 }
 function notFound(item,to){return `${back(to,'Volver')}${empty('No encontramos este '+item,'Es posible que el registro se haya eliminado.')}`;}
 function back(to,label){return `<button class="back-btn" data-nav="${to}">${icon('back',15)} Volver a ${esc(label)}</button>`;}
@@ -293,7 +328,7 @@ function renderSearch(){
 function renderSettings(){
   return `${sectionHead('Configuración y respaldos','Personalizá AutoTrace y administrá tu información.')}
   ${memoryOnly?'<p class="notice warning">Este navegador no permite almacenar datos. No cargues información real en esta sesión.</p>':''}
-  <div class="settings-grid"><div><div class="card settings-block detail-section"><h3>Preferencias del taller</h3><p>Estos ajustes afectan la visualización, no modifican tus importes.</p><form id="settings-form" class="form-grid"><div class="field span-2"><label for="garageName">Nombre del taller</label><input id="garageName" name="garageName" maxlength="100" value="${esc(db.settings.garageName)}" required /></div><div class="field"><label for="currency">Moneda</label><select id="currency" name="currency">${['ARS','USD','EUR'].map(c=>`<option value="${c}" ${db.settings.currency===c?'selected':''}>${c}</option>`).join('')}</select></div><div class="field" style="justify-content:flex-end"> <button class="btn btn-primary" type="submit">Guardar preferencias</button></div></form></div><div class="card settings-block"><h3>Datos locales</h3><p>Descargá una copia completa de clientes, vehículos, trabajos y preferencias. Importar reemplaza todos los registros actuales.</p><div class="settings-actions">${button(`${icon('download')} Exportar JSON`,'export-json','btn-primary')}${button(`${icon('upload')} Importar JSON`,'import-json','btn-secondary')}${button(`${icon('download')} Exportar CSV`,'export-csv','btn-secondary')}</div><div class="notice" style="margin-top:23px">${icon('shield',17)} Los registros se guardan con IndexedDB en este navegador. No se envían a GitHub ni a servidores de AutoTrace. Si borrás datos del sitio o cambiás de dispositivo, necesitarás el respaldo.</div></div></div><div><div class="card settings-block detail-section"><h3>Estado de la instalación</h3><p>Esta versión es una PWA instalable y funciona sin conexión después de abrirla por primera vez.</p><div class="info-grid">${descView('Clientes',String(db.clients.length))}${descView('Vehículos',String(db.vehicles.length))}${descView('Trabajos',String(db.orders.length))}${descView('Almacenamiento',memoryOnly?'No disponible':'Local (IndexedDB)')}</div></div><div class="card settings-block"><h3>Zona de mantenimiento</h3><p>Las acciones siguientes eliminan datos. Antes de continuar, exportá un respaldo JSON.</p><div class="settings-actions">${db.settings.demo?button('Eliminar datos de muestra','reset-demo','btn-secondary'):''}${button(`${icon('trash')} Borrar todos los datos`,'clear-all','btn-danger-ghost')}</div></div><div class="notice warning" style="margin-top:19px">Esta versión está pensada para pruebas y uso individual. No incluye cuentas, cifrado, facturación fiscal, copias automáticas ni sincronización entre dispositivos.</div></div></div>`;
+  <div class="settings-grid"><div><div class="card settings-block detail-section"><h3>Preferencias del taller</h3><p>Estos ajustes afectan la visualización, no modifican tus importes.</p><form id="settings-form" class="form-grid"><div class="field span-2"><label for="garageName">Nombre del taller</label><input id="garageName" name="garageName" maxlength="100" value="${esc(db.settings.garageName)}" required /></div><div class="field"><label for="currency">Moneda</label><select id="currency" name="currency">${['ARS','USD','EUR'].map(c=>`<option value="${c}" ${db.settings.currency===c?'selected':''}>${c}</option>`).join('')}</select></div><div class="field" style="justify-content:flex-end"> <button class="btn btn-primary" type="submit">Guardar preferencias</button></div></form></div><div class="card settings-block"><h3>Datos locales</h3><p>Descargá una copia completa de clientes, vehículos, trabajos y preferencias. Importar reemplaza todos los registros actuales.</p><div class="settings-actions">${button(`${icon('download')} Exportar JSON`,'export-json','btn-primary')}${button(`${icon('upload')} Importar JSON`,'import-json','btn-secondary')}${button(`${icon('download')} Exportar CSV`,'export-csv','btn-secondary')}${!desktopInvoke?`${button(`${icon('download')} Excel completo`,'export-excel-desktop','btn-primary')}${button(`${icon('upload')} Restaurar Excel completo`,'import-excel-desktop','btn-secondary')}${button(`${icon('upload')} Importar presupuesto / remito`,'import-legacy-document','btn-secondary')}`:''}${desktopInvoke?`${button(`${icon('download')} Excel completo`,'export-excel-desktop','btn-primary')}${button(`${icon('upload')} Importar Excel`,'import-excel-desktop','btn-secondary')}${button(`${icon('upload')} Importar presupuesto / remito`,'import-legacy-document','btn-secondary')}${button(`${icon('image')} Configurar logo del taller`,'choose-workshop-logo','btn-secondary')}${button(`${icon('upload')} Recuperar SQLite`,'restore-sqlite-desktop','btn-secondary')}${button(`${icon('shield')} Crear respaldo ahora`,'backup-desktop-now','btn-secondary')}${button(`${icon('download')} Elegir carpeta de respaldo`,'choose-external-backup','btn-secondary')}${button(`${icon('shield')} Probar recuperación`,'test-backup-recovery','btn-secondary')}`:''}</div><div class="notice" style="margin-top:23px">${icon('shield',17)} ${desktopInvoke?'SQLite local. Las copias automáticas SQLite + Excel se guardan EN ESTA COMPUTADORA. Para protegerte ante pérdida del equipo, exportá una copia a un disco externo. El Excel contiene datos personales y costos internos.':'Los registros se guardan con IndexedDB en este navegador. No se envían a GitHub ni a servidores de AutoTrace. Si borrás datos del sitio o cambiás de dispositivo, necesitarás el respaldo.'}</div></div></div><div><div class="card settings-block detail-section"><h3>Estado de la instalación</h3><p>${desktopInvoke?'AutoTrace Desktop funciona con SQLite local, sin servidor.':'La PWA funciona sin conexión después de abrirla por primera vez.'}</p><div class="info-grid">${descView('Clientes',String(db.clients.length))}${descView('Vehículos',String(db.vehicles.length))}${descView('Trabajos',String(db.orders.length))}${descView('Almacenamiento',desktopInvoke?'SQLite local':memoryOnly?'No disponible':'Local (IndexedDB)')}${desktopInvoke?descView('Carpeta de respaldo adicional',lastDesktopBackup?.externalDirectory||'Sin configurar'):''}${desktopInvoke?descView('Último respaldo local verificado',lastDesktopBackup?.lastBackupUnixMs?new Date(Number(lastDesktopBackup.lastBackupUnixMs)).toLocaleString('es-AR'):'No hay copia válida'):''}${desktopInvoke?descView('Última copia secundaria verificada',lastDesktopBackup?.lastExternalBackupUnixMs?new Date(Number(lastDesktopBackup.lastExternalBackupUnixMs)).toLocaleString('es-AR'):'No configurada / no válida'):''}</div></div><div class="card settings-block"><h3>Zona de mantenimiento</h3><p>Las acciones siguientes eliminan datos. Antes de continuar, exportá un respaldo JSON.</p><div class="settings-actions">${db.settings.demo?button('Eliminar datos de muestra','reset-demo','btn-secondary'):''}${button(`${icon('trash')} Borrar todos los datos`,'clear-all','btn-danger-ghost')}</div></div><div class="notice warning" style="margin-top:19px">${desktopInvoke?'Las copias automáticas locales NO protegen ante robo, fallo total del disco o incendio. Copiá el Excel completo y la copia SQLite a un medio externo. No hay cifrado automático ni backups en la nube.':'Esta versión está pensada para pruebas y uso individual. No incluye cuentas, cifrado, facturación fiscal, copias automáticas ni sincronización entre dispositivos.'}</div></div></div>`;
 }
 const input = (label,name,value='',opts={})=>`<div class="field ${opts.full?'span-2':''}"><label for="f-${name}">${esc(label)}${opts.required?' *':''}</label>${opts.textarea?`<textarea id="f-${name}" name="${name}" maxlength="${opts.maxlength||3000}" placeholder="${esc(opts.placeholder||'')}">${esc(value)}</textarea>`:opts.select?`<select id="f-${name}" name="${name}" ${opts.required?'required':''}>${opts.select.map(x=>`<option value="${esc(x.value)}" ${String(x.value)===String(value)?'selected':''}>${esc(x.label)}</option>`).join('')}</select>`:`<input id="f-${name}" type="${opts.type||'text'}" name="${name}" value="${esc(value)}" ${opts.required?'required':''} ${opts.min!==undefined?`min="${opts.min}"`:''} ${opts.max!==undefined?`max="${opts.max}"`:''} ${opts.step!==undefined?`step="${opts.step}"`:''} maxlength="${opts.maxlength||120}" placeholder="${esc(opts.placeholder||'')}" />`}${opts.hint?`<small>${esc(opts.hint)}</small>`:''}</div>`;
 function showModal(title,subtitle,kind,fields,id=''){
@@ -377,6 +412,55 @@ function selectVehicleForOrder(id){
   if(!form.dataset.id && (!mileage.value || Number(mileage.value)===Number(oldVehicle?.mileage??0)))mileage.value=selected.mileage;
   form.elements.namedItem('title').focus();
 }
+function orderLineRow(item={}){
+  const id=esc(item.id||uid());
+  const choices=[['part','Pieza / insumo'],['labor','Mano de obra'],['other','Otro']];
+  return '<div class="order-line-row" data-order-line data-item-id="'+id+'">'+
+    '<label class="line-description">Descripción<input name="lineDescription" maxlength="1500" value="'+esc(item.description||'')+'" placeholder="Pieza o tarea realizada" required></label>'+
+    '<label>Tipo<select name="lineKind">'+choices.map(([key,label])=>'<option value="'+key+'" '+(item.kind===key?'selected':'')+'>'+label+'</option>').join('')+'</select></label>'+
+    '<label>Cantidad<input name="lineQuantity" type="number" min=".001" step="any" value="'+esc(item.quantity??1)+'" required></label>'+
+    '<label>Precio unitario<input name="lineUnitPrice" type="number" min="0" step=".01" value="'+esc(item.unitPrice??0)+'" required></label>'+
+    '<button type="button" class="btn btn-secondary btn-sm" data-action="remove-order-line" aria-label="Quitar renglón">'+icon('trash',15)+'</button></div>';
+}
+function formOrderLines(form){
+  const rows=[...form.querySelectorAll('[data-order-line]')];if(rows.length>100)throw Error('Máximo 100 renglones.');
+  return rows.map((row,i)=>{
+    const description=row.querySelector('[name="lineDescription"]').value.trim();
+    const kind=row.querySelector('[name="lineKind"]').value;
+    const quantity=Number(row.querySelector('[name="lineQuantity"]').value);
+    const unitPrice=Number(row.querySelector('[name="lineUnitPrice"]').value);
+    if(!description||!['part','labor','other'].includes(kind)||!Number.isFinite(quantity)||quantity<=0||quantity>100000||
+      !Number.isFinite(unitPrice)||unitPrice<0||Math.abs(unitPrice*100-Math.round(unitPrice*100))>1e-5){
+        throw Error('Revisá descripción, cantidad y precio unitario del detalle.');
+    }
+    return {id:row.dataset.itemId||'line-'+(i+1),description,kind,quantity,unitPrice};
+  });
+}
+function lineAmount(items){return Math.round(items.reduce((a,x)=>a+Math.round(x.quantity*x.unitPrice*100)/100,0)*100)/100;}
+function refreshOrderLineTotal(form){
+  if(!form||form.dataset.kind!=='order')return;
+  let sum=0;for(const row of form.querySelectorAll('[data-order-line]')){
+    const q=Number(row.querySelector('[name="lineQuantity"]').value);
+    const u=Number(row.querySelector('[name="lineUnitPrice"]').value);
+    if(Number.isFinite(q)&&Number.isFinite(u)&&q>=0&&u>=0)sum+=Math.round(q*u*100)/100;
+  }
+  const label=form.querySelector('#order-lines-total');if(label)label.textContent=money(sum);
+  const charged=form.querySelector('[name="charged"]');
+  if(charged&&form.querySelector('[data-order-line]'))charged.value=String(Math.round(sum*100)/100);
+}
+function orderLinesPanel(order){
+  const lines=order?.items||[];
+  return '<div class="span-2 order-line-editor"><div class="order-line-heading"><strong>Detalle de piezas y tareas</strong><span>Total: <b id="order-lines-total">'+money(lineAmount(lines))+'</b></span></div>'+
+    '<p class="form-hint">Opcional. Podés agregar cada pieza o tarea con su cantidad y precio unitario; esto calculará el importe acordado.</p>'+
+    '<div id="order-lines">'+lines.map(orderLineRow).join('')+'</div>'+
+    button(icon('plus',15)+' Agregar renglón','add-order-line','btn-secondary btn-sm')+'</div>';
+}
+function renderOrderLines(order){
+  if(!order.items?.length)return '';
+  return '<h3>Detalle de piezas y tareas</h3><div class="table-scroll"><table class="data-table"><thead><tr><th>Descripción</th><th>Cantidad</th><th>Precio unitario</th><th>Subtotal</th></tr></thead><tbody>'+
+     order.items.map(item=>'<tr><td style="white-space:pre-wrap">'+esc(item.description)+'</td><td>'+num(item.quantity)+'</td><td>'+money(item.unitPrice)+'</td><td><strong>'+money(item.quantity*item.unitPrice)+'</strong></td></tr>').join('')+
+     '</tbody></table></div>';
+}
 function orderForm(id='',presetVehicle=''){
   const o=id?findOrder(id):null;
   if(!db.vehicles.length){toast('Primero agregá un vehículo para registrar un trabajo.','error');navigate('vehiculos');return;}
@@ -390,6 +474,7 @@ function orderForm(id='',presetVehicle=''){
     input('Fecha','openedAt',o?.openedAt||isoDate(new Date()),{type:'date',required:true}),
     input('Kilometraje','mileage',o?.mileage??chosen?.mileage??0,{type:'number',min:0,step:1}),
     input('Diagnóstico y tareas realizadas','description',o?.description,{textarea:true,full:true,placeholder:'Qué sucede, qué revisaste o reparaste…'}),
+    orderLinesPanel(o),
     `<div class="span-2"><details class="order-extras" ${hasAdvanced?'open':''}><summary>${icon('wallet',18)} Costos, cobros y notas <span class="extras-optional">Opcional</span>${icon('chevron',17)}</summary><div class="form-grid order-extras-grid">${[
       input('Costo de repuestos','partsCost',o?.partsCost??0,{type:'number',min:0,step:'.01'}),
       input('Costo interno de mano de obra','laborCost',o?.laborCost??0,{type:'number',min:0,step:'.01'}),
@@ -413,7 +498,27 @@ async function saveForm(form){
   const kind=form.dataset.kind,id=form.dataset.id,existing=!!id;
   const baseId=id||uid();
   let next,routeTo,message;
-  if(kind==='client'){
+  if(kind==='legacy'){
+    const doc=pendingLegacyDocument;
+    const vehicle=findVehicle(get('targetVehicle'));
+    if(!doc||!vehicle||get('confirmVehicle')!=='yes'){toast('Seleccioná y confirmá el vehículo del documento.','error');return;}
+    if(doc.plate && normPlate(doc.plate)!==vehicle.plate){toast('La patente del archivo no coincide con la del vehículo elegido.','error');return;}
+    if(db.orders.some(o=>o.sourceFingerprint===doc.sourceFingerprint)){toast('El archivo ya fue importado.','error');return;}
+    const items=doc.items.map(x=>({id:x.id,kind:x.kind,description:x.description,quantity:x.quantity,unitPrice:x.unitPrice}));
+    if(Math.abs(lineAmount(items)-doc.total)>0.011){toast('El total del documento no coincide con el detalle.','error');return;}
+    next={id:baseId,vehicleId:vehicle.id,title:doc.documentKind==='quote'?'Presupuesto importado':'Remito de trabajo importado',
+      category:doc.documentKind==='quote'?'Presupuesto':'Mecánica',
+      status:doc.documentKind==='quote'?'received':'done',
+      openedAt:doc.date,completedAt:doc.documentKind==='work'?doc.date:'',
+      mileage:doc.mileage||vehicle.mileage,
+      description:doc.vehicleObservation&&!doc.mileage?doc.vehicleObservation:'',
+      partsCost:0,laborCost:0,charged:doc.total,paid:0,
+      notes:'',createdAt:isoDate(new Date()),items,
+      documentKind:doc.documentKind,
+      ...(doc.documentNumber?{documentNumber:doc.documentNumber}:{}),
+      sourceFingerprint:doc.sourceFingerprint};
+    routeTo=['trabajo',baseId];message='Documento importado con '+items.length+' renglones.';
+  }else if(kind==='client'){
     next={id:baseId,name:get('name'),phone:get('phone'),email:get('email'),notes:get('notes'),createdAt:findClient(id)?.createdAt||isoDate(new Date())};
     if(!next.name){toast('Ingresá el nombre del cliente.','error');return;}
     routeTo=['cliente',baseId];message=existing?'Cliente actualizado.':'Cliente registrado.';
@@ -430,9 +535,13 @@ async function saveForm(form){
     if(paid>price){toast('El total pagado no puede superar el importe acordado.','error');return;}
     if(!get('openedAt')){toast('Ingresá la fecha del trabajo.','error');return;}
     const previous=findOrder(id);
+    let items;try{items=formOrderLines(form);}catch(error){toast(error.message,'error');return;}
+    if(items.length&&Math.abs(lineAmount(items)-price)>0.011){
+      toast('El importe acordado debe coincidir con los renglones.','error');return;
+    }
     const status=get('status');
     const wasClosed=previous&&['done','delivered'].includes(previous.status);
-    next={id:baseId,vehicleId:get('vehicleId'),title:get('title'),category:get('category'),status,openedAt:get('openedAt'),completedAt:['done','delivered'].includes(status)?(wasClosed?previous.completedAt||isoDate(new Date()):isoDate(new Date())):'',mileage:amount(get('mileage')),description:get('description'),partsCost:amount(get('partsCost')),laborCost:amount(get('laborCost')),charged:price,paid,notes:get('notes'),createdAt:previous?.createdAt||isoDate(new Date())};
+    next={id:baseId,vehicleId:get('vehicleId'),title:get('title'),category:get('category'),status,openedAt:get('openedAt'),completedAt:['done','delivered'].includes(status)?(wasClosed?previous.completedAt||isoDate(new Date()):isoDate(new Date())):'',mileage:amount(get('mileage')),description:get('description'),partsCost:amount(get('partsCost')),laborCost:amount(get('laborCost')),charged:price,paid,notes:get('notes'),createdAt:previous?.createdAt||isoDate(new Date()),...(items.length?{items}:{}),...(previous?.documentKind?{documentKind:previous.documentKind}:{}),...(previous?.documentNumber?{documentNumber:previous.documentNumber}:{}),...(previous?.sourceFingerprint?{sourceFingerprint:previous.sourceFingerprint}:{})};
     routeTo=['trabajo',baseId];message=existing?'Trabajo actualizado.':'Trabajo registrado.';
   }else if(kind==='payment'){
     const o=findOrder(id);const payment=Number(get('payment'));
@@ -443,12 +552,12 @@ async function saveForm(form){
     const key=kind==='client'?'clients':kind==='vehicle'?'vehicles':'orders';
     const index=data[key].findIndex(item=>item.id===baseId);
     if(index>=0)data[key][index]=next;else data[key].push(next);
-    if(kind==='order'){
+    if(kind==='order'||kind==='legacy'){
       const vehicle=data.vehicles.find(v=>v.id===next.vehicleId);
       if(vehicle&&next.mileage>vehicle.mileage)vehicle.mileage=next.mileage;
     }
   },message);
-  if(saved){modalOriginal='';document.querySelector('#form-dialog').close();navigate(...routeTo);}
+  if(saved){pendingLegacyDocument=null;modalOriginal='';document.querySelector('#form-dialog').close();navigate(...routeTo);}
 }
 function confirmAction(title,message,acceptText='Eliminar'){
   return new Promise(resolve=>{
@@ -473,10 +582,130 @@ function saveAsFile(content,filename,mime){
   const blob=new Blob([content],{type:mime});const url=URL.createObjectURL(blob);
   const a=document.createElement('a');a.href=url;a.download=filename;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),5000);
 }
+async function createDesktopBackup(silent=false){
+  if(!desktopInvoke || desktopBackupBusy)return false;
+  desktopBackupBusy=true;
+  try{
+    const completed=await desktopInvoke('backup_now');
+    lastDesktopBackup=await desktopInvoke('backup_status');
+    if(completed.externalCopyError)toast('Copia local correcta, pero falló la copia secundaria: '+completed.externalCopyError,'error');
+    else if(!silent)toast(completed.externalCopyOk?'Respaldo verificado también en la carpeta secundaria.':'Respaldo local creado. Elegí una carpeta en otro disco para protegerte ante averías.');
+    if(route().page==='ajustes')render();
+    return true;
+  }catch(error){
+    console.error('No se pudo completar el respaldo',error);
+    toast(`Falló el respaldo: ${String(error)}`,'error');
+    return false;
+  }finally{desktopBackupBusy=false;}
+}
+async function testDesktopRecovery(){
+  if(!desktopInvoke)return;
+  try{
+    const report=await desktopInvoke('test_backup_recovery');
+    if(!report)return;
+    toast('Recuperación simulada correcta: '+report.clients+' clientes, '+report.vehicles+' vehículos y '+report.orders+' trabajos. SQLite y Excel restauran los mismos datos.');
+  }catch(error){console.error(error);toast('No se pudo recuperar la copia: '+String(error),'error');}
+}
+async function chooseExternalBackup(){
+  if(!desktopInvoke)return;
+  try{
+    const folder=await desktopInvoke('configure_external_backup');
+    if(!folder)return;
+    toast('Destino de respaldo configurado. Se requiere otra unidad; las copias NO están cifradas.');
+    await createDesktopBackup();
+  }catch(error){console.error(error);toast(error?.message||String(error),'error');}
+}
+async function importLegacyDocumentDesktop(file=null){
+  if(!db.vehicles.length){toast('Registrá primero al menos un vehículo para asociar el documento.','error');navigate('vehiculos');return;}
+  try{
+    const doc=desktopInvoke?await desktopInvoke('choose_legacy_document'):
+      file?await parseWorkshopXlsx(await file.arrayBuffer(),window.XLSX):null;
+    if(!doc)return;
+    if(db.orders.some(o=>o.sourceFingerprint===doc.sourceFingerprint)){toast('Este archivo ya fue importado. No se crearon registros duplicados.','error');return;}
+    pendingLegacyDocument=doc;
+    const normalized=normPlate(doc.plate);
+    const identified=db.vehicles.find(v=>normalized&&v.plate===normalized);
+    const options=db.vehicles.map(v=>'<option value="'+esc(v.id)+'" '+(identified?.id===v.id?'selected':'')+'>'+esc(v.plate)+' · '+esc(fullVehicle(v))+' · '+esc(vehicleClient(v)?.name||'')+'</option>').join('');
+    const lines='<div class="table-scroll"><table class="data-table"><thead><tr><th>Descripción</th><th>Cant.</th><th>Unitario</th></tr></thead><tbody>'+
+      doc.items.map(item=>'<tr><td style="white-space:pre-wrap">'+esc(item.description)+'</td><td>'+num(item.quantity)+'</td><td>'+money(item.unitPrice)+'</td></tr>').join('')+'</tbody></table></div>';
+    const block='<div class="span-2"><p class="section-intro"><strong>'+esc(doc.documentKind==='quote'?'Presupuesto':'Remito de trabajo')+'</strong> · '+esc(doc.date)+
+      ' · '+esc(doc.customerName)+' · '+esc(doc.make)+' '+esc(doc.model)+(doc.plate?' · '+esc(doc.plate):' · SIN PATENTE EN EL ARCHIVO')+
+      '</p><p class="section-intro">'+doc.items.length+' renglones · Total '+money(doc.total)+'</p>'+lines+'</div>'+
+      '<div class="field span-2"><label for="f-targetVehicle">Vehículo asociado *</label><select name="targetVehicle" id="f-targetVehicle" required>'+
+      '<option value="">Elegir vehículo…</option>'+options+'</select><small>El archivo no crea clientes ni vehículos: confirmá la relación existente. Si falta, registralo antes.</small></div>'+
+      '<label class="span-2"><input type="checkbox" name="confirmVehicle" value="yes" required> Confirmo que elegí el vehículo correcto y que el documento corresponde a su propietario.</label>';
+    showModal('Importar documento del taller','Revisá los datos y confirmá el vehículo antes de registrar el trabajo.','legacy',block);
+  }catch(error){console.error(error);toast('No se pudo leer el documento: '+String(error),'error');}
+}
+async function importExcelDesktop(file=null){
+  try{
+    const preview=desktopInvoke?await desktopInvoke('choose_excel_import'):
+      file?{filename:file.name,data:await readBackupXlsx(await file.arrayBuffer(),window.XLSX)}:null;
+    if(!preview)return;
+    const next=validateData(preview.data);
+    const message=`Archivo: ${preview.filename}. Contiene ${next.clients.length} clientes, ${next.vehicles.length} vehículos y ${next.orders.length} trabajos. Se REEMPLAZARÁ todo lo actual. Se creará un respaldo previo local.`;
+    if(!await confirmAction('Restaurar desde Excel',message,'Respaldar y reemplazar'))return;
+    if(desktopInvoke){
+      if(!await createDesktopBackup(true))throw Error('No se pudo crear un respaldo previo; importación cancelada.');
+    }else exportJSON();
+    await saveData(next);
+    navigate('inicio');toast('Excel importado con todos sus identificadores y relaciones.');
+  }catch(e){console.error(e);toast(e?.message||String(e),'error');}
+}
+async function restoreSqliteDesktop(){
+  if(!desktopInvoke)return;
+  try{
+    const preview=await desktopInvoke('choose_sqlite_import');
+    if(!preview)return;
+    const next=validateData(preview.data);
+    const provenance=preview.verified?'El checksum del manifiesto coincide.':'No hay manifiesto: el origen no está autenticado.';
+    const detail='Archivo: '+preview.filename+'. '+provenance+' Incluye '+next.clients.length+' clientes, '+next.vehicles.length+' vehículos y '+next.orders.length+' trabajos. Se REEMPLAZARÁ todo. Se creará primero un respaldo.';
+    if(!await confirmAction('Restaurar desde SQLite',detail,'Respaldar y recuperar'))return;
+    if(!await createDesktopBackup(true))throw Error('No pudo crearse el respaldo previo.');
+    await saveData(next);navigate('inicio');toast('Datos SQLite recuperados.');
+  }catch(error){console.error(error);toast(error?.message||String(error),'error');}
+}
+async function chooseWorkshopLogo(){
+  if(!desktopInvoke)return;
+  try{const changed=await desktopInvoke('choose_workshop_logo');if(changed)toast(changed);}
+  catch(error){console.error(error);toast('No se pudo configurar el logo: '+String(error),'error');}
+}
+async function exportLegacyDocumentDesktop(orderId,kind){
+  try{
+    if(desktopInvoke){
+      const saved=await desktopInvoke('export_legacy_document',{orderId,kind});
+      if(saved)toast(kind==='quote'?'Presupuesto compatible exportado.':'Remito de trabajo compatible exportado.');
+    }else{
+      const content=writeWorkshopXlsx(db,orderId,kind,window.XLSX);
+      saveAsFile(content,'AutoTrace_'+(kind==='quote'?'presupuesto':'remito')+'-'+isoDate(new Date())+'.xlsx','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      toast('Documento Excel exportado. Para el logo y la impresión final usá la versión Desktop.');
+    }
+  }catch(error){console.error(error);toast('No se pudo generar el documento: '+String(error),'error');}
+}
+async function exportExcelDesktop(){
+  try{
+    if(desktopInvoke){
+      const wrote=await desktopInvoke('export_excel_dialog');if(wrote)toast('Excel completo exportado correctamente. Es confidencial.');
+    }else{
+      const bytes=await writeBackupXlsx(db,window.XLSX);
+      saveAsFile(bytes,'autotrace-respaldo-completo-'+isoDate(new Date())+'.xlsx','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      toast('Respaldo Excel completo descargado. Contiene datos privados y costos internos.');
+    }
+  }
+  catch(e){console.error(e);toast(String(e),'error');}
+}
+async function scheduleDesktopBackups(){
+  if(!desktopInvoke)return;
+  try{
+    lastDesktopBackup=await desktopInvoke('backup_status');
+    const stale=!lastDesktopBackup.lastBackupUnixMs || Date.now()-Number(lastDesktopBackup.lastBackupUnixMs)>=4*60*60*1000;
+    if(stale)await createDesktopBackup(true);
+  }catch(e){console.error(e);toast('No se pudo comprobar el estado de las copias de seguridad','error');}
+}
 function exportJSON(){const backup={format:'autotrace-backup',version:1,exportedAt:new Date().toISOString(),data:db};saveAsFile(JSON.stringify(backup,null,2),`autotrace-respaldo-${isoDate(new Date())}.json`,'application/json;charset=utf-8');toast('Respaldo JSON descargado.');}
 function exportCSV(){
   const headers=['Fecha','Estado','Categoría','Trabajo','Cliente','Teléfono','Patente','Vehículo','Kilometraje','Costo repuestos','Costo mano de obra','Importe','Pagado','Pendiente','Margen'];
-  const rows=db.orders.map(o=>{const v=findVehicle(o.vehicleId),c=vehicleClient(v);return [o.openedAt,STATUSES[o.status],o.category,o.title,c?.name||'',c?.phone||'',v?.plate||'',fullVehicle(v),o.mileage,o.partsCost,o.laborCost,o.charged,o.paid,pendingAmount(o),margin(o)];});
+  const rows=db.orders.filter(o=>o.documentKind!=='quote').map(o=>{const v=findVehicle(o.vehicleId),c=vehicleClient(v);return [o.openedAt,STATUSES[o.status],o.category,o.title,c?.name||'',c?.phone||'',v?.plate||'',fullVehicle(v),o.mileage,o.partsCost,o.laborCost,o.charged,o.paid,pendingAmount(o),margin(o)];});
   saveAsFile('\ufeff'+[headers,...rows].map(r=>r.map(csvCell).join(';')).join('\r\n'),`autotrace-trabajos-${isoDate(new Date())}.csv`,'text/csv;charset=utf-8');toast('CSV de trabajos descargado.');
 }
 async function importJSON(file){
@@ -488,6 +717,7 @@ async function importJSON(file){
     if(payload?.version && payload.version!==1)throw Error('La versión del respaldo no está soportada.');
     const next=validateData(payload?.data??payload);
     if(!await confirmAction('Reemplazar los datos actuales',`Se importarán ${next.clients.length} clientes, ${next.vehicles.length} vehículos y ${next.orders.length} trabajos. Se perderán los registros actuales si no los respaldaste.`, 'Importar y reemplazar'))return;
+    if(desktopInvoke && !await createDesktopBackup(true))throw Error('No se pudo respaldar la información previa.');
     await saveData(next);navigate('inicio');toast('Respaldo restaurado correctamente.');
   }catch(e){console.error(e);toast(e?.message||'No se pudo importar el archivo.','error');}
   finally{document.querySelector('#import-file').value='';}
@@ -529,6 +759,16 @@ document.addEventListener('click',async event=>{
     case 'edit-vehicle':vehicleForm(id);break;
     case 'view-vehicle':navigate('vehiculo',id);break;
     case 'new-order':orderForm('',target.dataset.vehicle||'');break;
+    case 'add-order-line':{
+      const form=document.querySelector('#entity-form');if(form?.dataset.kind!=='order')break;
+      const list=form.querySelector('#order-lines');if(list.children.length>=100){toast('Máximo 100 renglones.','error');break;}
+      list.insertAdjacentHTML('beforeend',orderLineRow());refreshOrderLineTotal(form);
+      list.lastElementChild.querySelector('[name="lineDescription"]')?.focus();break;
+    }
+    case 'remove-order-line':{
+      const form=document.querySelector('#entity-form');if(form?.dataset.kind!=='order')break;
+      target.closest('[data-order-line]')?.remove();refreshOrderLineTotal(form);break;
+    }
     case 'pick-vehicle':selectVehicleForOrder(id);break;
     case 'pick-client':selectClientForVehicle(id);break;
     case 'change-client':{
@@ -545,6 +785,8 @@ document.addEventListener('click',async event=>{
     case 'edit-order':orderForm(id);break;
     case 'add-payment':paymentForm(id);break;
     case 'print-order':printOrder(id);break;
+    case 'export-legacy-quote':await exportLegacyDocumentDesktop(id,'quote');break;
+    case 'export-legacy-work':await exportLegacyDocumentDesktop(id,'work');break;
     case 'delete-client':await deleteRecord('client',id);break;
     case 'delete-vehicle':await deleteRecord('vehicle',id);break;
     case 'delete-order':await deleteRecord('order',id);break;
@@ -553,14 +795,36 @@ document.addEventListener('click',async event=>{
     case 'clear-list-search':{const section=route().page;if(!Object.hasOwn(listQueries,section))break;listQueries[section]='';listPages[section]=1;const input=document.querySelector('#list-search');if(input){input.value='';input.focus();}refreshListResults();break;}
     case 'clear-list-filters':{if(route().page==='finanzas'){financeQuery='';financePage=1;financeFilter='all';const field=document.querySelector('#finance-search');if(field){field.value='';field.focus();}refreshFinanceResults();break;}const section=route().page;if(!Object.hasOwn(listQueries,section))break;listQueries[section]='';listPages[section]=1;if(section==='clientes')clientFilter='all';if(section==='vehiculos')vehicleFilter='all';if(section==='trabajos')activeFilter='all';const input=document.querySelector('#list-search');if(input){input.value='';input.focus();}refreshListResults();break;}
     case 'export-json':exportJSON();break;
+    case 'export-excel-desktop':await exportExcelDesktop();break;
+    case 'export-client-excel':if(id){
+      try{
+        if(desktopInvoke){
+          if(await desktopInvoke('export_customer_excel_dialog',{clientId:id}))toast('Informe Excel del cliente exportado.');
+        }else{
+          const customer=findClient(id);if(!customer)throw Error('Cliente inexistente.');
+          const bytes=writeCustomerReportXlsx(db,id,window.XLSX);
+          saveAsFile(bytes,'autotrace-cliente-'+isoDate(new Date())+'.xlsx','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+          toast('Informe Excel exportado sin costos internos ni notas privadas.');
+        }
+      }catch(error){console.error(error);toast(error?.message||String(error),'error');}
+    }break;
+    case 'import-excel-desktop':if(desktopInvoke)await importExcelDesktop();else document.querySelector('#import-backup-xlsx').click();break;
+    case 'import-legacy-document':if(desktopInvoke)await importLegacyDocumentDesktop();else document.querySelector('#import-workshop-xlsx').click();break;
+    case 'choose-workshop-logo':await chooseWorkshopLogo();break;
+    case 'restore-sqlite-desktop':await restoreSqliteDesktop();break;
+    case 'backup-desktop-now':await createDesktopBackup();break;
+    case 'choose-external-backup':await chooseExternalBackup();break;
+    case 'test-backup-recovery':await testDesktopRecovery();break;
     case 'export-csv':exportCSV();break;
     case 'import-json':document.querySelector('#import-file').click();break;
     case 'reset-demo':{
       if(!await confirmAction('Comenzar sin datos de muestra','Esto eliminará TODOS los registros, incluidos los que hayas agregado durante la demostración. Exportá un respaldo primero si querés conservarlos.','Borrar y comenzar'))break;
+      if(desktopInvoke && !await createDesktopBackup(true))break;
       const saved=await updateData(d=>{Object.assign(d,canonical());},'Ahora tenés un espacio vacío para tu taller.');if(saved)navigate('inicio');break;
     }
     case 'clear-all':{
       if(!await confirmAction('Eliminar absolutamente todo','Se borrarán clientes, vehículos, servicios, importes y configuración de este navegador. No se puede deshacer sin un respaldo.','Borrar todos los datos'))break;
+      if(desktopInvoke && !await createDesktopBackup(true))break;
       const saved=await updateData(d=>{Object.assign(d,canonical());},'Todos los datos fueron eliminados.');if(saved)navigate('inicio');break;
     }
   }
@@ -575,6 +839,12 @@ document.addEventListener('submit',async event=>{
 });
 document.addEventListener('change',async event=>{
   if(event.target.id==='import-file')await importJSON(event.target.files?.[0]);
+  if(event.target.id==='import-workshop-xlsx'){
+    const file=event.target.files?.[0];try{if(file)await importLegacyDocumentDesktop(file);}finally{event.target.value='';}
+  }
+  if(event.target.id==='import-backup-xlsx'){
+    const file=event.target.files?.[0];try{if(file)await importExcelDesktop(file);}finally{event.target.value='';}
+  }
   if(event.target.dataset.statusOrder){
     const id=event.target.dataset.statusOrder,status=event.target.value;
     if(!STATUSES[status])return;
@@ -582,6 +852,7 @@ document.addEventListener('change',async event=>{
   }
 });
 document.addEventListener('input',event=>{
+  if(event.target.closest('[data-order-line]')&&['lineQuantity','lineUnitPrice'].includes(event.target.name))refreshOrderLineTotal(document.querySelector('#entity-form'));
   if(event.target.id==='global-search'){activeQuery=event.target.value;refreshPage();}
   if(event.target.id==='client-lookup'){const results=document.querySelector('#client-suggestions');if(results)results.innerHTML=clientPickerResults(event.target.value);}
   if(event.target.id==='vehicle-lookup'){const results=document.querySelector('#vehicle-suggestions');if(results)results.innerHTML=vehiclePickerResults(event.target.value);}
@@ -603,7 +874,16 @@ document.addEventListener('keydown',event=>{
   if(event.key==='Escape' && document.activeElement?.id==='global-search' && activeQuery){activeQuery='';render();document.querySelector('#global-search')?.focus();}
 });
 window.addEventListener('hashchange' ,()=>{activeQuery='';render();});
-if('serviceWorker' in navigator&&(location.protocol==='https:'||location.hostname==='localhost')){
+if(!desktopInvoke && 'serviceWorker' in navigator&&(location.protocol==='https:'||location.hostname==='localhost')){
   window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(err=>console.warn('PWA sin service worker:',err)));
 }
-await loadData();render();
+try {
+  await loadData();render();
+if(desktopInvoke){
+  await scheduleDesktopBackups();
+  setInterval(scheduleDesktopBackups,4*60*60*1000);
+}
+} catch(err) {
+  console.error('No se pudo abrir la base de AutoTrace:',err);
+  app.textContent='No se pudo abrir la base de datos de AutoTrace. No se realizaron cambios. Revisá los permisos y la versión de la aplicación antes de continuar.';
+}
