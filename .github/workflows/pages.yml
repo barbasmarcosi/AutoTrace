@@ -26,10 +26,11 @@ jobs:
         with:
           ref: main
           path: _stable
-      - name: Checkout Excel LAB
+      - name: Checkout finance-enabled Excel LAB (reviewed revision)
         uses: actions/checkout@v4
         with:
-          ref: plan/desktop-sqlite-excel-backups-20261021
+          # Pinned to PR #7 for reproducible QA; stable site remains checked out from main.
+          ref: 9127319d5c957f3dea471812e61c0283516c1fe3
           path: _lab
       - name: Test both applications
         run: |
@@ -40,11 +41,32 @@ jobs:
           node --test _lab/tests/*.test.mjs
       - name: Audit exact Excel LAB source commit
         run: |
+          set -euo pipefail
           echo "Stable SHA: $(git -C _stable rev-parse HEAD)"
           echo "LAB SHA:    $(git -C _lab rev-parse HEAD)"
+          test "$(git -C _lab rev-parse HEAD)" = "9127319d5c957f3dea471812e61c0283516c1fe3"
       - name: Build isolated lab and stable root
         run: python3 _lab/scripts/build-pages-preview.py _stable/site _lab/site dist
-      - name: Verify LAB startup, in-place customer creation and vehicle reuse
+      - name: Publish LAB release marker and invalidate only its service-worker cache
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+          sw = Path('dist/lab/sw.js')
+          original = sw.read_text(encoding='utf-8')
+          needle = "const CACHE = 'autotrace-lab-shell-v8';"
+          assert original.count(needle) == 1, "Unexpected LAB service worker version"
+          sw.write_text(original.replace(needle, "const CACHE = 'autotrace-lab-shell-finance-v9';"), encoding='utf-8')
+          manifest = {
+              "environment": "lab",
+              "source": "AutoTrace PR #7",
+              "commit": "9127319d5c957f3dea471812e61c0283516c1fe3",
+              "features": ["labor-contribution", "payment-methods", "payment-destinations", "excel-backup-v3"]
+          }
+          Path('dist/lab/release.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\\n", encoding='utf-8')
+          assert b"autotrace-lab" not in Path('dist/app.js').read_bytes(), "Stable JS modified"
+          PY
+      - name: Verify LAB startup, customer import, cash-flow entry and vehicle reuse
         shell: bash
         run: |
           set -euo pipefail
