@@ -86,3 +86,24 @@ for(let i=0;i<35;i++)data.clients.push({...data.clients[0],id:'other-'+i,name:'N
 assert.equal(clientCandidates(document(),data.clients,'Nombre').length,10);
 assert.ok(vehicleCandidates(document(),data.vehicles,'c1').length>=1);
 });
+
+test('conflicting phone/email prevents automatic identification by name alone',()=>{
+  const d=document({customerPhone:'2230000000',customerEmail:'different@test.invalid'});
+  const matches=suggestedLegacySelection(d,state());
+  assert.equal(matches.clientId,'');
+  assert.ok(matches.clients[0].reasons.some(x=>x.includes('diferentes')));
+});
+test('same-name people can be registered after explicit confirmation, not silently',()=>{
+  const d=document({plate:'AS123BC',vin:'',customerPhone:'1122223333',customerEmail:'other@test.invalid'});
+  const opts=choice({clientId:'new',vehicleId:'new',name:'Maria Pérez',phone:'1122223333',email:'other@test.invalid',
+    plate:'AS123BC',make:'Toyota',model:'Corolla'});
+  assert.throws(()=>prepareLegacyImport(d,state(),opts,uid,today),/mismo nombre/);
+  const result=prepareLegacyImport(d,state(),{...opts,confirmSameName:true},uid,today);
+  assert.equal(result.data.clients.length,3);
+});
+test('unknown customer fields and unique exact plate infer the registered owner',()=>{
+  const doc=document({customerName:'',customerPhone:'',customerEmail:''});
+  const hint=suggestedLegacySelection(doc,state());
+  assert.equal(hint.clientId,'c1');
+  assert.equal(hint.vehicleId,'v1');
+});

@@ -626,7 +626,8 @@ function legacyWizardFields(doc){
   const newClient='<div id="legacy-new-client" class="legacy-fields">'+
     '<label>Nombre del cliente *<input name="legacyName" maxlength="120" value="'+esc(doc.customerName)+'" required placeholder="Nombre completo"></label>'+
     '<label>Teléfono<input name="legacyPhone" maxlength="120" type="tel" value="'+esc(doc.customerPhone)+'"></label>'+
-    '<label>Correo<input name="legacyEmail" maxlength="120" type="email" value="'+esc(doc.customerEmail)+'"></label></div>';
+    '<label>Correo<input name="legacyEmail" maxlength="120" type="email" value="'+esc(doc.customerEmail)+'"></label>'+
+    '<label class="legacy-confirm legacy-same-name"><input type="checkbox" name="confirmSameName" value="yes"> Si hay otro cliente con el mismo nombre, confirmo que se trata de una persona diferente.</label></div>';
   const newVehicle='<div id="legacy-new-vehicle" class="legacy-fields">'+
     '<label>Patente *<input name="legacyPlate" maxlength="12" value="'+esc(doc.plate)+'" required placeholder="Ej. AF 123 BC"></label>'+
     '<label>Marca *<input name="legacyMake" maxlength="120" value="'+esc(doc.make)+'" required></label>'+
@@ -699,7 +700,7 @@ async function saveLegacyWizard(form){
   const choice={clientId:val('legacyClient'),vehicleId:val('legacyVehicle'),
     name:val('legacyName'),phone:val('legacyPhone'),email:val('legacyEmail'),
     plate:val('legacyPlate'),make:val('legacyMake'),model:val('legacyModel'),
-    confirmed:val('confirmLegacy')==='yes',confirmSimilar:val('confirmSimilar')==='yes'};
+    confirmed:val('confirmLegacy')==='yes',confirmSimilar:val('confirmSimilar')==='yes',confirmSameName:val('confirmSameName')==='yes'};
   let preview;
   try{preview=prepareLegacyImport(doc,db,choice,uid,isoDate(new Date()));}
   catch(error){toast(error.message,'error');return;}
