@@ -83,7 +83,7 @@ try{
   await page.locator('[name="accountAlias"]').fill('taller.prueba');
   await page.locator('[name="paymentReference"]').fill('TRX-2026');
   await page.locator('#entity-form [type="submit"]').click();
-  await page.locator('#entity-form[data-kind="payment"]').waitFor({state:'detached',timeout:10000});
+  await page.locator('#entity-form[data-kind="payment"]').waitFor({state:'hidden',timeout:10000});
   const withPayment=await inspectStore(page);
   const updatedOrder=withPayment.orders.find(o=>o.id===newOrder.id);
   assert.equal(updatedOrder?.paid,10000);
