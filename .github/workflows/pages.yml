@@ -40,31 +40,17 @@ jobs:
           node --test _lab/tests/*.test.mjs
       - name: Build isolated lab and stable root
         run: python3 _lab/scripts/build-pages-preview.py _stable/site _lab/site dist
-      - name: Confirm LAB boots in headless Chromium before publishing
+      - name: Verify LAB startup and controls in real Chromium
         shell: bash
         run: |
           set -euo pipefail
           node --check dist/lab/app.js
-          node --check dist/lab/browser-excel.mjs
-          node --check dist/lab/browser-backup.mjs
+          npm install --no-save --no-package-lock playwright-core@1.56.1
           python3 -m http.server 8765 --directory dist >/tmp/autotrace-http.log 2>&1 &
           SERVER_PID=$!
           trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
           sleep 2
-          CHROME="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
-          timeout 35s "$CHROME" --headless=new --no-sandbox --disable-gpu --disable-dev-shm-usage \
-            --virtual-time-budget=14000 \
-            --dump-dom http://127.0.0.1:8765/lab/ >/tmp/lab-render.html 2>/tmp/lab-chrome.log || {
-              cat /tmp/autotrace-http.log
-              grep -Ei 'CONSOLE|Uncaught|SyntaxError|ReferenceError|TypeError|ERR_|Failed to' /tmp/lab-chrome.log | tail -35 || true
-              exit 1
-            }
-          if ! grep -q 'PANEL DE CONTROL' /tmp/lab-render.html; then
-            echo "::error::Excel LAB failed to initialize dashboard"
-            grep -Ei 'CONSOLE|Uncaught|SyntaxError|ReferenceError|TypeError|ERR_|Failed to' /tmp/lab-chrome.log | tail -35 || true
-            exit 1
-          fi
-          echo "PASS: LAB dashboard rendered in headless browser"
+          CHROME_PATH="$(command -v google-chrome || command -v chromium || command -v chromium-browser)" node _lab/tests/pwa-browser-smoke.mjs
       - uses: actions/configure-pages@v5
         with:
           enablement: true
