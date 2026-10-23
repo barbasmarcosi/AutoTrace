@@ -65,14 +65,16 @@ test('real-style formula caches and description continuation are not counted as 
   assert.match(doc.items[1].description,/taco de motor/);
   assert.equal(doc.total,13000);
 });
-test('browser full-backup XLSX v2 roundtrips all IDs, amounts and lines',async()=>{
+test('browser full-backup XLSX v3 roundtrips all IDs, amounts, accounts and receipts',async()=>{
   const before=fixture();
+  before.settings.accounts=[{id:'acct-1',name:'Banco taller',kind:'bank',alias:'taller.ejemplo'}];
+  before.orders[0].payments=[{id:'payment-1',date:'2026-10-20',amount:15000,method:'transfer',accountId:'acct-1',reference:'OPERACION_PRIVADA_789'}];
   const encoded=await writeBackupXlsx(before,XLSX);
   const after=await readBackupXlsx(encoded,XLSX);
   assert.deepEqual(after,before);
   assert.equal(pendingAmount(after.orders[1]),0);
   const wb=XLSX.read(encoded,{type:'array'});
-  assert.deepEqual(wb.SheetNames,['Manifest','Clientes','Vehiculos','Trabajos','DetalleTrabajos','Configuracion']);
+  assert.deepEqual(wb.SheetNames,['Manifest','Clientes','Vehiculos','Trabajos','DetalleTrabajos','Cuentas','Cobros','Configuracion']);
 });
 test('tampered workbook is rejected before import',async()=>{
   const bytes=await writeBackupXlsx(fixture(),XLSX);
@@ -82,14 +84,17 @@ test('tampered workbook is rejected before import',async()=>{
   await assert.rejects(()=>readBackupXlsx(altered,XLSX),/checksum|inválido|repetido|alterado/i);
 });
 test('client Excel contains breakdown but never private costs or other client',()=>{
-  const bytes=writeCustomerReportXlsx(fixture(),'c1',XLSX);
+  const data=fixture();
+  data.settings.accounts=[{id:'acct-1',name:'Cuenta privada',kind:'bank',alias:'ALIAS_PRIVADO_101'}];
+  data.orders[0].payments=[{id:'pay-1',date:'2026-10-20',amount:10000,method:'transfer',accountId:'acct-1',reference:'REFERENCIA_PRIVADA_202'}];
+  const bytes=writeCustomerReportXlsx(data,'c1',XLSX);
   const wb=XLSX.read(bytes,{type:'array'});
   assert.deepEqual(wb.SheetNames,['Resumen','Vehículos','Servicios','Detalle de trabajos']);
   const all=wb.SheetNames.flatMap(name=>
     XLSX.utils.sheet_to_json(wb.Sheets[name],{header:1}).flat()
   ).join('|');
   assert.match(all,/Filtro de aire|control de bujías/);
-  for(const token of ['PRIVADO_CLIENTE_987','PRIVADO_AJENO','VIN_SECRETO','NOTA_INTERNA','NOTA_DE_TALLER','TRABAJO_AJENO','7777777','8888888','AC123XY']){
+  for(const token of ['PRIVADO_CLIENTE_987','PRIVADO_AJENO','VIN_SECRETO','NOTA_INTERNA','NOTA_DE_TALLER','TRABAJO_AJENO','7777777','8888888','AC123XY','ALIAS_PRIVADO_101','REFERENCIA_PRIVADA_202']){
     assert.ok(!all.includes(token),'Filtró '+token);
   }
   const services=XLSX.utils.sheet_to_json(wb.Sheets.Servicios,{header:1,defval:''});
