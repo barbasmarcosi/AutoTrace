@@ -40,7 +40,7 @@ jobs:
           node --test _lab/tests/*.test.mjs
       - name: Build isolated lab and stable root
         run: python3 _lab/scripts/build-pages-preview.py _stable/site _lab/site dist
-      - name: Verify LAB startup and controls in real Chromium
+      - name: Verify LAB startup, in-place customer creation and vehicle reuse
         shell: bash
         run: |
           set -euo pipefail
