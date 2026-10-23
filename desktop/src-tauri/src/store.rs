@@ -251,7 +251,10 @@ pub(crate) fn validate(data: &AppData) -> Result<(), String> {
             if line.quantity<=0.0||line.quantity>100000.0{return Err("Cantidad inválida".into());}
             cents(line.unit_price,"renglon.precio")?;
             if !lines.insert(line.id.as_str()){return Err("Renglón duplicado".into());}
-            cents(line.quantity*line.unit_price,"renglon.total")?;
+            // Los insumos fraccionarios (p. ej. 1,25 litros) se liquidan redondeando
+            // cada subtotal a centavos. El producto intermedio no tiene que ser
+            // exactamente múltiplo de 0,01.
+            natural(line.quantity*line.unit_price,"renglon.total")?;
         }
         if !orders.insert(o.id.as_str()) { return Err("Trabajo duplicado".into()); }
     }
@@ -360,6 +363,27 @@ mod tests {
         assert_eq!(cents(0.29, "amount").unwrap(), 29);
         assert!(cents(-1.0, "amount").is_err());
         assert!(cents(1.234, "amount").is_err());
+    }
+    #[test]
+    fn fractional_fluid_quantities_round_subtotals_to_cents(){
+        let payload=serde_json::json!({
+            "clients":[{"id":"c","name":"Cliente sintético","phone":"","email":"","notes":"","createdAt":""}],
+            "vehicles":[{"id":"v","clientId":"c","plate":"AF012BC","make":"Auto","model":"Modelo","year":"",
+                          "mileage":1,"vin":"","color":"","nextServiceDate":"","notes":"","createdAt":""}],
+            "orders":[{"id":"o","vehicleId":"v","title":"Lubricante fraccionario","category":"Servicio",
+                       "status":"received","openedAt":"2026-10-22","completedAt":"","mileage":1,
+                       "description":"","partsCost":0,"laborCost":0,"charged":41.66,"paid":0,
+                       "notes":"","createdAt":"","items":[{"id":"l","kind":"part","description":"Aceite",
+                       "quantity":1.25,"unitPrice":33.33}]}],
+            "settings":{"garageName":"Taller","currency":"ARS","demo":false}
+        });
+        let value:AppData=serde_json::from_value(payload).unwrap();
+        assert!(validate(&value).is_ok());
+        let mut db=Connection::open_in_memory().unwrap();
+        db.execute_batch(SCHEMA).unwrap();
+        write(&mut db,&value,0).unwrap();
+        let restored=read(&db).unwrap().data;
+        assert_eq!(serde_json::to_value(restored).unwrap()["orders"][0]["items"][0]["quantity"],1.25);
     }
     #[test]
     fn rejects_foreign_keys_before_mutation() {
