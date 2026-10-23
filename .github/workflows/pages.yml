@@ -38,6 +38,10 @@ jobs:
           node --check _lab/site/browser-excel.mjs
           node --check _lab/site/browser-backup.mjs
           node --test _lab/tests/*.test.mjs
+      - name: Audit exact Excel LAB source commit
+        run: |
+          echo "Stable SHA: $(git -C _stable rev-parse HEAD)"
+          echo "LAB SHA:    $(git -C _lab rev-parse HEAD)"
       - name: Build isolated lab and stable root
         run: python3 _lab/scripts/build-pages-preview.py _stable/site _lab/site dist
       - name: Verify LAB startup, in-place customer creation and vehicle reuse
