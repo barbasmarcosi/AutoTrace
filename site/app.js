@@ -357,10 +357,21 @@ function renderSearch(){
   const os=db.orders.filter(o=>{const v=findVehicle(o.vehicleId);return matchesOrder(o,v,vehicleClient(v),activeQuery);});
   return `${sectionHead('Resultados de búsqueda',`Buscando “${esc(activeQuery)}” en clientes, vehículos y trabajos.`)}<div class="card"><div class="card-heading"><h3>Clientes <span class="tag">${cs.length}</span></h3></div>${cs.length?`<div class="detail-list">${cs.slice(0,8).map(c=>`<button class="detail-row table-link" data-nav="cliente" data-id="${esc(c.id)}"><div class="detail-icon">${icon('users')}</div><div class="detail-content"><strong>${esc(c.name)}</strong><small>${esc(c.phone||c.email||'Sin contacto')}</small></div>${icon('chevron')}</button>`).join('')}</div>`:empty('Ningún cliente coincide','Probá con otro término.','','users')}</div><div class="card" style="margin-top:18px"><div class="card-heading"><h3>Vehículos <span class="tag">${vs.length}</span></h3></div>${vs.length?`<div class="detail-list">${vs.slice(0,8).map(v=>`<button class="detail-row table-link" data-nav="vehiculo" data-id="${esc(v.id)}"><div class="detail-icon">${icon('car')}</div><div class="detail-content"><strong>${esc(fullVehicle(v))}</strong><small>${esc(v.plate)} · ${esc(findClient(v.clientId)?.name||'')}</small></div>${icon('chevron')}</button>`).join('')}</div>`:empty('Ningún vehículo coincide','Buscá por patente, marca o modelo.','','car')}</div><div class="card" style="margin-top:18px"><div class="card-heading"><h3>Trabajos <span class="tag">${os.length}</span></h3></div>${os.length?`<div class="table-scroll">${renderOrderTable(os.slice(0,8))}</div>`:empty('Ningún trabajo coincide','Buscá por nombre del trabajo, categoría o patente.')}</div>`;
 }
+function renderAccountSettings(){
+  const accounts=db.settings.accounts||[];
+  return '<section class="card card-pad detail-section" style="margin-top:18px"><div class="card-heading" style="padding:0 0 16px"><div><h3>Cuentas que reciben cobros</h3><p>Elegí un nombre para identificar adónde llega el dinero. No ingreses contraseñas.</p></div>'+
+    button(icon('plus',15)+' Agregar cuenta','new-account','btn-secondary btn-sm')+'</div>'+
+    (accounts.length?'<div class="detail-list">'+accounts.map(a=>
+      '<div class="detail-row"><div class="detail-content"><strong>'+esc(a.name)+'</strong><small>'+
+      esc(a.kind==='bank'?'Banco':a.kind==='wallet'?'Billetera':'Otra cuenta')+(a.alias?' · '+esc(a.alias):'')+
+      '</small></div>'+button('Editar','edit-account','btn-secondary btn-sm','data-id="'+esc(a.id)+'"')+'</div>').join('')+'</div>':
+      '<p class="muted-sm">Todavía no hay cuentas configuradas. Podés agregarlas aquí o durante el primer cobro electrónico.</p>')+
+    '</section>';
+}
 function renderSettings(){
   return `${sectionHead('Configuración y respaldos','Personalizá AutoTrace y administrá tu información.')}
   ${memoryOnly?'<p class="notice warning">Este navegador no permite almacenar datos. No cargues información real en esta sesión.</p>':''}
-  <div class="settings-grid"><div><div class="card settings-block detail-section"><h3>Preferencias del taller</h3><p>Estos ajustes afectan la visualización, no modifican tus importes.</p><form id="settings-form" class="form-grid"><div class="field span-2"><label for="garageName">Nombre del taller</label><input id="garageName" name="garageName" maxlength="100" value="${esc(db.settings.garageName)}" required /></div><div class="field"><label for="currency">Moneda</label><select id="currency" name="currency">${['ARS','USD','EUR'].map(c=>`<option value="${c}" ${db.settings.currency===c?'selected':''}>${c}</option>`).join('')}</select></div><div class="field" style="justify-content:flex-end"> <button class="btn btn-primary" type="submit">Guardar preferencias</button></div></form></div><div class="card settings-block"><h3>Datos locales</h3><p>Descargá una copia completa de clientes, vehículos, trabajos y preferencias. Importar reemplaza todos los registros actuales.</p><div class="settings-actions">${button(`${icon('download')} Exportar JSON`,'export-json','btn-primary')}${button(`${icon('upload')} Importar JSON`,'import-json','btn-secondary')}${button(`${icon('download')} Exportar CSV`,'export-csv','btn-secondary')}${!desktopInvoke?`${button(`${icon('download')} Excel completo`,'export-excel-desktop','btn-primary')}${button(`${icon('upload')} Restaurar Excel completo`,'import-excel-desktop','btn-secondary')}${button(`${icon('upload')} Importar presupuesto / remito`,'import-legacy-document','btn-secondary')}`:''}${desktopInvoke?`${button(`${icon('download')} Excel completo`,'export-excel-desktop','btn-primary')}${button(`${icon('upload')} Importar Excel`,'import-excel-desktop','btn-secondary')}${button(`${icon('upload')} Importar presupuesto / remito`,'import-legacy-document','btn-secondary')}${button(`${icon('image')} Configurar logo del taller`,'choose-workshop-logo','btn-secondary')}${button(`${icon('upload')} Recuperar SQLite`,'restore-sqlite-desktop','btn-secondary')}${button(`${icon('shield')} Crear respaldo ahora`,'backup-desktop-now','btn-secondary')}${button(`${icon('download')} Elegir carpeta de respaldo`,'choose-external-backup','btn-secondary')}${button(`${icon('shield')} Probar recuperación`,'test-backup-recovery','btn-secondary')}`:''}</div><div class="notice" style="margin-top:23px">${icon('shield',17)} ${desktopInvoke?'SQLite local. Las copias automáticas SQLite + Excel se guardan EN ESTA COMPUTADORA. Para protegerte ante pérdida del equipo, exportá una copia a un disco externo. El Excel contiene datos personales y costos internos.':'Los registros se guardan con IndexedDB en este navegador. No se envían a GitHub ni a servidores de AutoTrace. Si borrás datos del sitio o cambiás de dispositivo, necesitarás el respaldo.'}</div></div></div><div><div class="card settings-block detail-section"><h3>Estado de la instalación</h3><p>${desktopInvoke?'AutoTrace Desktop funciona con SQLite local, sin servidor.':'La PWA funciona sin conexión después de abrirla por primera vez.'}</p><div class="info-grid">${descView('Clientes',String(db.clients.length))}${descView('Vehículos',String(db.vehicles.length))}${descView('Trabajos',String(db.orders.length))}${descView('Almacenamiento',desktopInvoke?'SQLite local':memoryOnly?'No disponible':'Local (IndexedDB)')}${desktopInvoke?descView('Carpeta de respaldo adicional',lastDesktopBackup?.externalDirectory||'Sin configurar'):''}${desktopInvoke?descView('Último respaldo local verificado',lastDesktopBackup?.lastBackupUnixMs?new Date(Number(lastDesktopBackup.lastBackupUnixMs)).toLocaleString('es-AR'):'No hay copia válida'):''}${desktopInvoke?descView('Última copia secundaria verificada',lastDesktopBackup?.lastExternalBackupUnixMs?new Date(Number(lastDesktopBackup.lastExternalBackupUnixMs)).toLocaleString('es-AR'):'No configurada / no válida'):''}</div></div><div class="card settings-block"><h3>Zona de mantenimiento</h3><p>Las acciones siguientes eliminan datos. Antes de continuar, exportá un respaldo JSON.</p><div class="settings-actions">${db.settings.demo?button('Eliminar datos de muestra','reset-demo','btn-secondary'):''}${button(`${icon('trash')} Borrar todos los datos`,'clear-all','btn-danger-ghost')}</div></div><div class="notice warning" style="margin-top:19px">${desktopInvoke?'Las copias automáticas locales NO protegen ante robo, fallo total del disco o incendio. Copiá el Excel completo y la copia SQLite a un medio externo. No hay cifrado automático ni backups en la nube.':'Esta versión está pensada para pruebas y uso individual. No incluye cuentas, cifrado, facturación fiscal, copias automáticas ni sincronización entre dispositivos.'}</div></div></div>`;
+  <div class="settings-grid"><div><div class="card settings-block detail-section"><h3>Preferencias del taller</h3><p>Estos ajustes afectan la visualización, no modifican tus importes.</p><form id="settings-form" class="form-grid"><div class="field span-2"><label for="garageName">Nombre del taller</label><input id="garageName" name="garageName" maxlength="100" value="${esc(db.settings.garageName)}" required /></div><div class="field"><label for="currency">Moneda</label><select id="currency" name="currency">${['ARS','USD','EUR'].map(c=>`<option value="${c}" ${db.settings.currency===c?'selected':''}>${c}</option>`).join('')}</select></div><div class="field" style="justify-content:flex-end"> <button class="btn btn-primary" type="submit">Guardar preferencias</button></div></form></div><div class="card settings-block"><h3>Datos locales</h3><p>Descargá una copia completa de clientes, vehículos, trabajos y preferencias. Importar reemplaza todos los registros actuales.</p><div class="settings-actions">${button(`${icon('download')} Exportar JSON`,'export-json','btn-primary')}${button(`${icon('upload')} Importar JSON`,'import-json','btn-secondary')}${button(`${icon('download')} Exportar CSV`,'export-csv','btn-secondary')}${!desktopInvoke?`${button(`${icon('download')} Excel completo`,'export-excel-desktop','btn-primary')}${button(`${icon('upload')} Restaurar Excel completo`,'import-excel-desktop','btn-secondary')}${button(`${icon('upload')} Importar presupuesto / remito`,'import-legacy-document','btn-secondary')}`:''}${desktopInvoke?`${button(`${icon('download')} Excel completo`,'export-excel-desktop','btn-primary')}${button(`${icon('upload')} Importar Excel`,'import-excel-desktop','btn-secondary')}${button(`${icon('upload')} Importar presupuesto / remito`,'import-legacy-document','btn-secondary')}${button(`${icon('image')} Configurar logo del taller`,'choose-workshop-logo','btn-secondary')}${button(`${icon('upload')} Recuperar SQLite`,'restore-sqlite-desktop','btn-secondary')}${button(`${icon('shield')} Crear respaldo ahora`,'backup-desktop-now','btn-secondary')}${button(`${icon('download')} Elegir carpeta de respaldo`,'choose-external-backup','btn-secondary')}${button(`${icon('shield')} Probar recuperación`,'test-backup-recovery','btn-secondary')}`:''}</div><div class="notice" style="margin-top:23px">${icon('shield',17)} ${desktopInvoke?'SQLite local. Las copias automáticas SQLite + Excel se guardan EN ESTA COMPUTADORA. Para protegerte ante pérdida del equipo, exportá una copia a un disco externo. El Excel contiene datos personales y costos internos.':'Los registros se guardan con IndexedDB en este navegador. No se envían a GitHub ni a servidores de AutoTrace. Si borrás datos del sitio o cambiás de dispositivo, necesitarás el respaldo.'}</div></div></div><div><div class="card settings-block detail-section"><h3>Estado de la instalación</h3><p>${desktopInvoke?'AutoTrace Desktop funciona con SQLite local, sin servidor.':'La PWA funciona sin conexión después de abrirla por primera vez.'}</p><div class="info-grid">${descView('Clientes',String(db.clients.length))}${descView('Vehículos',String(db.vehicles.length))}${descView('Trabajos',String(db.orders.length))}${descView('Almacenamiento',desktopInvoke?'SQLite local':memoryOnly?'No disponible':'Local (IndexedDB)')}${desktopInvoke?descView('Carpeta de respaldo adicional',lastDesktopBackup?.externalDirectory||'Sin configurar'):''}${desktopInvoke?descView('Último respaldo local verificado',lastDesktopBackup?.lastBackupUnixMs?new Date(Number(lastDesktopBackup.lastBackupUnixMs)).toLocaleString('es-AR'):'No hay copia válida'):''}${desktopInvoke?descView('Última copia secundaria verificada',lastDesktopBackup?.lastExternalBackupUnixMs?new Date(Number(lastDesktopBackup.lastExternalBackupUnixMs)).toLocaleString('es-AR'):'No configurada / no válida'):''}</div></div><div class="card settings-block"><h3>Zona de mantenimiento</h3><p>Las acciones siguientes eliminan datos. Antes de continuar, exportá un respaldo JSON.</p><div class="settings-actions">${db.settings.demo?button('Eliminar datos de muestra','reset-demo','btn-secondary'):''}${button(`${icon('trash')} Borrar todos los datos`,'clear-all','btn-danger-ghost')}</div></div>${renderAccountSettings()}<div class="notice warning" style="margin-top:19px">${desktopInvoke?'Las copias automáticas locales NO protegen ante robo, fallo total del disco o incendio. Copiá el Excel completo y la copia SQLite a un medio externo. No hay cifrado automático ni backups en la nube.':'Esta versión está pensada para pruebas y uso individual. No incluye cuentas, cifrado, facturación fiscal, copias automáticas ni sincronización entre dispositivos.'}</div></div></div>`;
 }
 const input = (label,name,value='',opts={})=>`<div class="field ${opts.full?'span-2':''}"><label for="f-${name}">${esc(label)}${opts.required?' *':''}</label>${opts.textarea?`<textarea id="f-${name}" name="${name}" maxlength="${opts.maxlength||3000}" placeholder="${esc(opts.placeholder||'')}">${esc(value)}</textarea>`:opts.select?`<select id="f-${name}" name="${name}" ${opts.required?'required':''}>${opts.select.map(x=>`<option value="${esc(x.value)}" ${String(x.value)===String(value)?'selected':''}>${esc(x.label)}</option>`).join('')}</select>`:`<input id="f-${name}" type="${opts.type||'text'}" name="${name}" value="${esc(value)}" ${opts.required?'required':''} ${opts.min!==undefined?`min="${opts.min}"`:''} ${opts.max!==undefined?`max="${opts.max}"`:''} ${opts.step!==undefined?`step="${opts.step}"`:''} maxlength="${opts.maxlength||120}" placeholder="${esc(opts.placeholder||'')}" />`}${opts.hint?`<small>${esc(opts.hint)}</small>`:''}</div>`;
 function showModal(title,subtitle,kind,fields,id=''){
@@ -511,24 +522,82 @@ function orderForm(id='',presetVehicle=''){
       input('Costo de repuestos','partsCost',o?.partsCost??0,{type:'number',min:0,step:'.01'}),
       input('Costo interno de mano de obra','laborCost',o?.laborCost??0,{type:'number',min:0,step:'.01'}),
       input('Importe acordado','charged',o?.charged??0,{type:'number',min:0,step:'.01'}),
-      input('Ya pagado','paid',o?.paid??0,{type:'number',min:0,step:'.01',hint:'Total recibido hasta ahora.'}),
+      '<p class="muted-sm span-2">Los cobros se registran desde la ficha del trabajo para identificar medio, fecha y cuenta receptora.</p>',
       input('Notas adicionales','notes',o?.notes,{textarea:true,full:true,placeholder:'Pendientes o recomendaciones…'})
     ].join('')}</div></details></div>`
   ].join(''),id);
   if(matchMedia('(min-width: 851px)').matches) setTimeout(()=>document.querySelector(chosen?'#f-title':'#vehicle-lookup')?.focus(),0);
 }
+function accountForm(id=''){
+  const a=(db.settings.accounts||[]).find(item=>item.id===id);
+  showModal(a?'Editar cuenta receptora':'Nueva cuenta receptora',
+    'Un nombre claro permite distinguir cuentas bancarias y billeteras al cobrar.','account',[
+      input('Nombre de la cuenta','name',a?.name,{required:true,full:true,maxlength:120,placeholder:'Ej. Banco Provincia - Cuenta principal'}),
+      input('Tipo','kind',a?.kind||'bank',{select:[{value:'bank',label:'Banco'},{value:'wallet',label:'Billetera virtual'},{value:'other',label:'Otro'}],required:true}),
+      input('Alias / identificador (opcional)','alias',a?.alias,{maxlength:120,full:true,placeholder:'Ej. taller.mp'})
+    ].join(''),id);
+}
+async function saveAccountForm(form){
+  const fd=new FormData(form),get=k=>String(fd.get(k)||'').trim();
+  const item={id:form.dataset.id||uid(),name:get('name'),kind:get('kind'),alias:get('alias')};
+  if(!item.name){toast('Ingresá un nombre para la cuenta.','error');return;}
+  const accounts=db.settings.accounts||[];
+  if(accounts.some(a=>a.id!==item.id&&a.name.toUpperCase()===item.name.toUpperCase())){
+    toast('Ya existe una cuenta con ese nombre.','error');return;
+  }
+  const saved=await updateData(data=>{
+    const list=data.settings.accounts||[];
+    const i=list.findIndex(a=>a.id===item.id);
+    if(i>=0)list[i]=item;else list.push(item);
+    data.settings.accounts=list;
+  },'Cuenta receptora guardada.');
+  if(saved){modalOriginal='';document.querySelector('#form-dialog').close();}
+}
+function refreshPaymentFields(form){
+  if(!form||form.dataset.kind!=='payment')return;
+  const electronic=ELECTRONIC_METHODS.includes(form.elements.namedItem('method')?.value);
+  const area=form.querySelector('#payment-destination'),account=form.elements.namedItem('accountId');
+  area.hidden=!electronic;
+  account.disabled=!electronic;
+  if(!electronic)account.value='';
+  else if(!account.value)account.value=account.querySelector('option[value="new"]')?'new':'';
+  const newFields=form.querySelector('#payment-new-account');
+  const create=electronic&&account.value==='new';
+  newFields.hidden=!create;
+  for(const input of newFields.querySelectorAll('input, select')){
+    input.disabled=!create;
+    if(input.name==='accountName')input.required=create;
+  }
+}
 function paymentForm(id){
   const o=findOrder(id);if(!o)return;
   const pending=pendingAmount(o);if(!pending){toast('Este trabajo no tiene saldo pendiente.');return;}
+  const accounts=db.settings.accounts||[];
+  const methodChoices=Object.entries(PAYMENT_METHODS).map(([value,label])=>({value,label}));
+  const accountChoices=accounts.map(a=>({value:a.id,label:a.name+(a.alias?' · '+a.alias:'')}));
+  accountChoices.push({value:'new',label:'+ Agregar nueva cuenta ahora'});
   showModal('Registrar cobro',`Saldo pendiente: ${money(pending)} · ${o.title}`,'payment',[
-    input('Importe recibido','payment',pending,{required:true,type:'number',min:'.01',max:pending,step:'.01',full:true,hint:'Se sumará a los pagos anteriores del trabajo.'})
+    input('Importe recibido','payment',pending,{required:true,type:'number',min:'.01',max:pending,step:'.01',full:true}),
+    input('Fecha de cobro','paymentDate',isoDate(new Date()),{required:true,type:'date'}),
+    input('Medio de pago','method','cash',{required:true,select:methodChoices}),
+    '<div id="payment-destination" class="field span-2" hidden><label for="f-accountId">Cuenta que recibió el pago *</label>'+
+      '<select id="f-accountId" name="accountId">'+accountChoices.map(c=>'<option value="'+esc(c.value)+'">'+esc(c.label)+'</option>').join('')+'</select>'+
+      '<small>Cuenta real que recibió la transferencia, tarjeta o QR; no es necesariamente la del cliente.</small></div>',
+    '<div id="payment-new-account" class="span-2" hidden>'+
+      input('Nombre de la nueva cuenta','accountName','',{required:true,maxlength:120,full:true,placeholder:'Ej. Banco Nación - Caja de ahorro'})+
+      input('Tipo de cuenta','accountKind','bank',{required:true,select:[{value:'bank',label:'Banco'},{value:'wallet',label:'Billetera virtual'},{value:'other',label:'Otro'}]})+
+      input('Alias / identificador (opcional)','accountAlias','',{maxlength:120})+'</div>',
+    input('Referencia de operación (opcional)','paymentReference','',{maxlength:160,full:true,placeholder:'Comprobante, ID de transacción…'})
   ].join(''),id);
+  refreshPaymentFields(document.querySelector('#entity-form'));
 }
 async function saveForm(form){
   if(!form.reportValidity())return;
   const fd=new FormData(form);const get=k=>String(fd.get(k)||'').trim();
   const kind=form.dataset.kind,id=form.dataset.id,existing=!!id;
+  if(kind==='account')return saveAccountForm(form);
   const baseId=id||uid();
+  let newPaymentAccount=null;
   let next,routeTo,message;
   if(kind==='legacy'){return saveLegacyWizard(form);
   }else if(kind==='client'){
@@ -554,14 +623,30 @@ async function saveForm(form){
     }
     const status=get('status');
     const wasClosed=previous&&['done','delivered'].includes(previous.status);
-    next={id:baseId,vehicleId:get('vehicleId'),title:get('title'),category:get('category'),status,openedAt:get('openedAt'),completedAt:['done','delivered'].includes(status)?(wasClosed?previous.completedAt||isoDate(new Date()):isoDate(new Date())):'',mileage:amount(get('mileage')),description:get('description'),partsCost:amount(get('partsCost')),laborCost:amount(get('laborCost')),charged:price,paid,notes:get('notes'),createdAt:previous?.createdAt||isoDate(new Date()),...(items.length?{items}:{}),...(previous?.documentKind?{documentKind:previous.documentKind}:{}),...(previous?.documentNumber?{documentNumber:previous.documentNumber}:{}),...(previous?.sourceFingerprint?{sourceFingerprint:previous.sourceFingerprint}:{})};
+    next={id:baseId,vehicleId:get('vehicleId'),title:get('title'),category:get('category'),status,openedAt:get('openedAt'),completedAt:['done','delivered'].includes(status)?(wasClosed?previous.completedAt||isoDate(new Date()):isoDate(new Date())):'',mileage:amount(get('mileage')),description:get('description'),partsCost:amount(get('partsCost')),laborCost:amount(get('laborCost')),charged:price,paid:previous?.paid??0,notes:get('notes'),createdAt:previous?.createdAt||isoDate(new Date()),...(items.length?{items}:{}),...(previous?.documentKind?{documentKind:previous.documentKind}:{}),...(previous?.documentNumber?{documentNumber:previous.documentNumber}:{}),...(previous?.sourceFingerprint?{sourceFingerprint:previous.sourceFingerprint}:{}),...(previous?.payments?.length?{payments:previous.payments}:{})};
     routeTo=['trabajo',baseId];message=existing?'Trabajo actualizado.':'Trabajo registrado.';
   }else if(kind==='payment'){
     const o=findOrder(id);const payment=Number(get('payment'));
     if(!o||!Number.isFinite(payment)||payment<=0||payment>pendingAmount(o)+.00001){toast('Ingresá un importe válido, que no supere el saldo.','error');return;}
-    next={...o,paid:amount(Number(o.paid)+payment)};routeTo=['trabajo',id];message='Cobro registrado.';
+    const method=get('method'),electronic=ELECTRONIC_METHODS.includes(method),date=get('paymentDate');
+    if(!Object.hasOwn(PAYMENT_METHODS,method)){toast('Seleccioná un medio de pago válido.','error');return;}
+    let accountId='';
+    if(electronic){
+      accountId=get('accountId');
+      if(accountId==='new'){
+        const name=get('accountName');
+        if(!name){toast('Ingresá el nombre de la cuenta receptora.','error');return;}
+        if((db.settings.accounts||[]).some(a=>a.name.toUpperCase()===name.toUpperCase())){toast('La cuenta ya existe. Seleccionala.','error');return;}
+        newPaymentAccount={id:uid(),name,kind:get('accountKind'),alias:get('accountAlias')};
+        accountId=newPaymentAccount.id;
+      }else if(!(db.settings.accounts||[]).some(a=>a.id===accountId)){toast('Seleccioná la cuenta que recibió el dinero.','error');return;}
+    }
+    const entry={id:uid(),date,amount:Math.round(payment*100)/100,method,accountId,reference:get('paymentReference')};
+    next={...o,paid:amount(Number(o.paid)+payment),payments:[...(o.payments||[]),entry]};
+    routeTo=['trabajo',id];message='Cobro registrado con medio y destino.';
   }else return;
   const saved=await updateData(data=>{
+    if(newPaymentAccount)(data.settings.accounts??=[]).push(newPaymentAccount);
     const key=kind==='client'?'clients':kind==='vehicle'?'vehicles':'orders';
     const index=data[key].findIndex(item=>item.id===baseId);
     if(index>=0)data[key][index]=next;else data[key].push(next);
@@ -883,6 +968,8 @@ document.addEventListener('click',async event=>{
     case 'show-active-orders':activeFilter='active';listPages.trabajos=1;navigate('trabajos');break;
     case 'show-unpaid-orders':activeFilter='unpaid';listPages.trabajos=1;navigate('trabajos');break;
     case 'show-due-vehicles':vehicleFilter='due';listPages.vehiculos=1;navigate('vehiculos');break;
+    case 'new-account':accountForm();break;
+    case 'edit-account':accountForm(id);break;
     case 'new-client':clientForm();break;
     case 'edit-client':clientForm(id);break;
     case 'view-client':navigate('cliente',id);break;
@@ -969,6 +1056,7 @@ document.addEventListener('submit',async event=>{
   }
 });
 document.addEventListener('change',async event=>{
+  if(event.target.name==='method'||event.target.name==='accountId'){refreshPaymentFields(event.target.form);return;}
   if(event.target.id==='legacy-client-select'){refreshLegacyWizard(event.target.form,true);return;}
   if(event.target.id==='legacy-vehicle-select'){refreshLegacyWizard(event.target.form);return;}
   if(event.target.id==='import-file')await importJSON(event.target.files?.[0]);
