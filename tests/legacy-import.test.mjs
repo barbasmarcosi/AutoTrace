@@ -56,7 +56,7 @@ assert.throws(()=>prepareLegacyImport(doc,state(),choice({clientId:'c2',vehicleI
 });
 test('never duplicate an existing client with same unique name',()=>{
 assert.throws(()=>prepareLegacyImport(document(),state(),choice({clientId:'new',vehicleId:'new',name:'María Pérez',plate:'AR111BC',
-make:'Toyota',model:'Corolla'}),uid,today),/Existe un cliente/);
+make:'Toyota',model:'Corolla'}),uid,today),/mismo nombre/);
 });
 test('two names alike are ambiguous without an independent identifier',()=>{
 const data=state();data.clients.push({...data.clients[0],id:'c3',phone:'00000111',email:'otro@test.invalid'});
