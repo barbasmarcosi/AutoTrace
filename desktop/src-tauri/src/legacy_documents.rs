@@ -317,7 +317,7 @@ pub(crate) fn export_legacy_document(app:tauri::AppHandle,order_id:String,kind:S
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rust_xlsxwriter::Workbook;
+    use rust_xlsxwriter::{Workbook,Formula};
     fn fixture(quote:bool)->Vec<u8>{
         let mut w=Workbook::new();let s=w.add_worksheet();
         s.set_name("Hoja1").unwrap();
@@ -353,6 +353,78 @@ mod tests {
             assert!(parsed.items[1].description.contains("control de bujías"));
             assert_eq!(parsed.total,4400.0);
             assert_eq!(parsed.plate,"AF012BC");
+        }
+    }
+    /// Mimics the structural details observed in the two supplied templates:
+    /// formula cells with saved results, zero-valued formulas in empty rows,
+    /// six budget items and three service items with a split description.
+    /// Values and identities here are fictitious: original XLSX never enters Git.
+    fn template_shaped_fixture(quote:bool)->Vec<u8>{
+        let mut wb=Workbook::new();
+        let sheet=wb.add_worksheet();
+        sheet.set_name("Hoja1").unwrap();
+        sheet.write_string(0,1,if quote{"PRESUPUESTO - ESTIMACION REPARACION"}else{"REMITO TRABAJO"}).unwrap();
+        sheet.write_string(3,1,if quote{"N° Presupuesto:"}else{"N° Remito:"}).unwrap();
+        sheet.write_number(3,9,46317.0).unwrap();
+        sheet.write_string(5,1,"TALLER FICTICIO").unwrap();
+        sheet.write_string(5,7,"Cliente:").unwrap();
+        sheet.write_string(5,8,"PERSONA DEMO").unwrap();
+        sheet.write_string(11,3,"Marca prueba").unwrap();
+        sheet.write_string(12,3,"Modelo prueba").unwrap();
+        if !quote{
+            sheet.write_string(13,3,"AF012BC").unwrap();
+            sheet.write_number(15,3,123000.0).unwrap();
+        }
+        for (column,label)in [(1,"REFERENCIA / DETALLE PIEZAS"),(7,"CANTIDAD"),(8,"VALOR UNITARIO"),(9,"TOTAL")]{
+            sheet.write_string(17,column,label).unwrap();
+        }
+        let lines:&[(&str,f64,f64)]=if quote{
+            &[("INSUMO A",1.0,2800.0),("INSUMO B",1.0,2300.0),("INSUMO C",1.0,3600.0),
+              ("INSUMO D",1.0,1800.0),("LUBRICANTE",8.0,1900.0),("MANO DE OBRA",1.0,9000.0)]
+        }else{
+            &[("LUZ",1.0,400.0),("COMBUSTIBLE",1.0,3000.0),("MANO DE OBRA - control de puesta a punto,",1.0,9000.0)]
+        };
+        let mut total=0.0;
+        for (index,(description,qty,unit)) in lines.iter().enumerate(){
+            let row=19+index as u32;
+            sheet.write_string(row,1,*description).unwrap();
+            sheet.write_number(row,7,*qty).unwrap();
+            sheet.write_number(row,8,*unit).unwrap();
+            let subtotal=qty*unit;
+            total+=subtotal;
+            sheet.write_formula(row,9,Formula::new(format!("=H{}*I{}",row+1,row+1))
+                .set_result(subtotal.to_string())).unwrap();
+        }
+        if !quote{
+            sheet.write_string(22,1,"control de bujías y taco de motor").unwrap();
+        }
+        let last=if quote{45u32}else{44u32};
+        for row in 19+lines.len() as u32..last {
+            sheet.write_formula(row,9,Formula::new(format!("=H{}*I{}",row+1,row+1))
+                .set_result("0")).unwrap();
+        }
+        let total_row=if quote{46u32}else{45u32};
+        sheet.write_string(total_row,8,"TOTAL").unwrap();
+        sheet.write_formula(total_row,9,Formula::new(format!("=SUM(J20:J{})",last))
+            .set_result(total.to_string())).unwrap();
+        wb.save_to_buffer().unwrap()
+    }
+
+    #[test]
+    fn exact_legacy_structure_with_cached_formula_zeros_and_continuation(){
+        for quote in [true,false]{
+            let doc=parse(&template_shaped_fixture(quote)).unwrap();
+            assert_eq!(doc.document_kind,if quote{"quote"}else{"work"});
+            assert_eq!(doc.items.len(),if quote{6}else{3});
+            assert_eq!(doc.total,if quote{34700.0}else{12400.0});
+            if quote{
+                assert_eq!(doc.plate,"");
+                assert_eq!(doc.items[4].quantity,8.0);
+            }else{
+                assert_eq!(doc.plate,"AF012BC");
+                assert_eq!(doc.mileage,123000.0);
+                assert!(doc.items[2].description.contains("taco de motor"));
+            }
         }
     }
     #[test]
