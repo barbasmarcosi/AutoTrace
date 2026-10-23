@@ -74,6 +74,27 @@ try{
   assert.equal(newCar?.clientId,newClient?.id);
   assert.equal(newOrder?.items.length,2);
   assert.equal(newOrder?.charged,25000);
+  // Register an electronic payment and its new destination without leaving the order.
+  await page.locator('[data-action="add-payment"][data-id="'+newOrder.id+'"]').click();
+  await page.locator('#entity-form[data-kind="payment"]').waitFor({timeout:10000});
+  await page.locator('[name="payment"]').fill('10000');
+  await page.locator('[name="method"]').selectOption('transfer');
+  await page.locator('[name="accountName"]').fill('Banco de pruebas');
+  await page.locator('[name="accountAlias"]').fill('taller.prueba');
+  await page.locator('[name="paymentReference"]').fill('TRX-2026');
+  await page.locator('#entity-form [type="submit"]').click();
+  await page.locator('#entity-form[data-kind="payment"]').waitFor({state:'detached',timeout:10000});
+  const withPayment=await inspectStore(page);
+  const updatedOrder=withPayment.orders.find(o=>o.id===newOrder.id);
+  assert.equal(updatedOrder?.paid,10000);
+  assert.equal(updatedOrder?.payments?.length,1);
+  assert.equal(updatedOrder.payments[0].method,'transfer');
+  assert.equal(updatedOrder.payments[0].reference,'TRX-2026');
+  const receiver=withPayment.settings.accounts.find(a=>a.id===updatedOrder.payments[0].accountId);
+  assert.equal(receiver.name,'Banco de pruebas');
+  await page.goto(base+'#finanzas',{waitUntil:'domcontentloaded'});
+  await page.getByText('Cobros por cuenta receptora').waitFor({timeout:10000});
+  await page.getByText('Resultado mano de obra').waitFor({timeout:10000});
   // End-to-end: identify an existing known owner and plate; no duplicate records.
   await page.goto(base+'#ajustes',{waitUntil:'domcontentloaded'});
   await page.locator('#import-workshop-xlsx').setInputFiles({
