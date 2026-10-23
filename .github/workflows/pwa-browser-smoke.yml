@@ -1,0 +1,44 @@
+name: Browser startup smoke for Excel LAB
+
+on:
+  push:
+    branches: [plan/desktop-sqlite-excel-backups-20261021]
+    paths:
+      - '.github/workflows/pwa-browser-smoke.yml'
+      - 'site/**'
+      - 'tests/browser-excel.test.mjs'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  headless-chrome:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check packaged modules and tests
+        run: |
+          node --test tests/browser-excel.test.mjs
+          node --check site/app.js
+      - name: Check Chrome availability
+        run: command -v google-chrome || command -v chromium || command -v chromium-browser
+      - name: Inspect deployed LAB boot in headless Chrome
+        shell: bash
+        run: |
+          set -u
+          CHROME="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
+          set +e
+          timeout 35s "$CHROME" --headless=new --no-sandbox --disable-gpu --disable-dev-shm-usage             --enable-logging=stderr --v=0 --virtual-time-budget=12000             --dump-dom 'https://barbasmarcosi.github.io/AutoTrace/lab/' > /tmp/autotrace-lab.html 2>/tmp/chrome-errors.txt
+          code=$?
+          set -e
+          echo "Chromium exit: $code"
+          echo "Document excerpt:"
+          grep -E -o 'AUTOTRACE LAB|PANEL DE CONTROL|Cargando AutoTrace|No se pudo abrir la base[^<]*' /tmp/autotrace-lab.html | head -15 || true
+          echo "Browser errors:"
+          grep -Ei 'CONSOLE|Uncaught|ERROR:|Failed to|MIME type|ERR_|SyntaxError|ReferenceError|TypeError' /tmp/chrome-errors.txt | tail -50 || true
+          if ! grep -q 'PANEL DE CONTROL' /tmp/autotrace-lab.html; then
+            echo "::error::LAB still shows boot screen or did not render dashboard"
+            exit 1
+          fi
