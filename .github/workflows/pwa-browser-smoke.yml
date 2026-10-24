@@ -3,6 +3,7 @@ on:
   pull_request:
     paths:
       - '.github/workflows/pwa-browser-smoke.yml'
+      - 'desktop/**'
       - 'site/**'
       - 'scripts/build-pages-preview.py'
       - 'tests/**'
