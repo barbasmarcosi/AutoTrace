@@ -1,6 +1,6 @@
 //! Encrypted off-device replication through a user-chosen Google Drive for desktop folder.
 //! This module does NOT call Google APIs, store a password, or assert that Drive synced.
-use crate::{backup, store};
+use crate::backup;
 use age::secrecy::SecretString;
 use serde::Serialize;
 use std::{fs,io::{Read,Write,BufReader,BufWriter},path::{Path,PathBuf},sync::{Mutex,OnceLock},time::UNIX_EPOCH};
@@ -41,11 +41,12 @@ fn configured_directory(app:&tauri::AppHandle)->Result<Option<PathBuf>,String>{
     if directory.is_empty(){return Err("Carpeta cifrada no configurada".into());}
     Ok(Some(PathBuf::from(directory)))
 }
+fn paths_overlap(a:&Path,b:&Path)->bool{a.starts_with(b)||b.starts_with(a)}
 pub(crate) fn overlaps_encrypted_destination(app:&tauri::AppHandle,folder:&Path)->Result<bool,String>{
     let Some(cloud)=configured_directory(app)? else {return Ok(false)};
     let local=fs::canonicalize(folder).unwrap_or_else(|_|folder.to_path_buf());
     let cloud=fs::canonicalize(&cloud).unwrap_or(cloud);
-    Ok(local.starts_with(&cloud)||cloud.starts_with(&local))
+    Ok(paths_overlap(&local,&cloud))
 }
 fn archives_in(folder:&Path)->Result<Vec<PathBuf>,String>{
     if !folder.is_dir(){return Err("Carpeta sincronizada no disponible".into());}
@@ -99,7 +100,7 @@ pub(crate) fn configure_drive_backup(app:tauri::AppHandle,passphrase:String)->Re
     // Prevent accidental replication of UNENCRYPTED external backups into the same Drive tree.
     if let Some(external)=backup::configured_folder(&app)? {
         let external=fs::canonicalize(&external).unwrap_or(external);
-        if external.starts_with(&directory)||directory.starts_with(&external){
+        if paths_overlap(&external,&directory){
             return Err("Ya existe una copia externa sin cifrar en esta carpeta o una carpeta superior. Elegí otro destino seguro para no subir SQLite/Excel sin cifrar.".into());
         }
     }
@@ -258,7 +259,15 @@ pub(crate) fn choose_drive_restore(passphrase:String)->Result<Option<backup::Sql
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store;
     use rusqlite::Connection;
+    #[test]
+    fn plain_and_encrypted_backup_folders_cannot_overlap(){
+        assert!(paths_overlap(Path::new("G:/Mi unidad/AutoTrace"),Path::new("G:/Mi unidad/AutoTrace")));
+        assert!(paths_overlap(Path::new("G:/Mi unidad"),Path::new("G:/Mi unidad/AutoTrace")));
+        assert!(paths_overlap(Path::new("G:/Mi unidad/AutoTrace"),Path::new("G:/Mi unidad/AutoTrace/plain")));
+        assert!(!paths_overlap(Path::new("D:/USB/backups"),Path::new("G:/Mi unidad/AutoTrace")));
+    }
     #[test]
     fn cloud_archive_is_encrypted_recovers_both_formats_and_rejects_wrong_key(){
         let temp=std::env::temp_dir().join(format!("autotrace-drive-test-{}",uuid::Uuid::new_v4()));
