@@ -21,6 +21,9 @@ concurrency:
 jobs:
   windows-nsis:
     runs-on: windows-latest
+    env:
+      # Public OAuth Desktop client ID. Empty until AutoTrace's Google Cloud app is registered.
+      AUTOTRACE_GOOGLE_OAUTH_CLIENT_ID: ${{ vars.AUTOTRACE_GOOGLE_OAUTH_CLIENT_ID }}
     timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4

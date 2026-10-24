@@ -145,8 +145,13 @@ pub(crate) fn upload(token:&str,path:&Path)->Result<String,String>{
             },
             Ok(r) if r.status().as_u16()==308=>{
                 let new=next_offset(r.headers().get(RANGE).and_then(|x|x.to_str().ok()),size)?;
-                if new<=offset {return Err("Google no confirmó progreso de subida".into());}
-                offset=new;retries=0;
+                if new<=offset {
+                    // Google may return 308 without Range before persisting a chunk.
+                    // Do not claim progress; retry after a bounded status probe.
+                    retries+=1;
+                }else{
+                    offset=new;retries=0;
+                }
             },
             Ok(r) if r.status().is_server_error()||r.status().as_u16()==429=>{retries+=1;},
             Err(_)=>{retries+=1;},
@@ -201,6 +206,42 @@ pub(crate) fn download(token:&str,id:&str,destination:&Path)->Result<(),String>{
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[test] fn mock_google_http_errors_are_safe_and_non_retryable_without_bytes(){
+        use std::io::{Read,Write};
+        use std::net::TcpListener;
+        for status in [401,403,429,500]{
+            let listener=TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr=listener.local_addr().unwrap();
+            let server=std::thread::spawn(move ||{
+                let (mut socket,_)=listener.accept().unwrap();
+                socket.set_read_timeout(Some(std::time::Duration::from_secs(4))).unwrap();
+                let mut request=[0u8;8192];
+                let _=socket.read(&mut request).unwrap();
+                let response=format!("HTTP/1.1 {status} MOCK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}");
+                socket.write_all(response.as_bytes()).unwrap();
+            });
+            let endpoint=format!("http://{addr}/drive/v3/files");
+            let result=json_get(&http().unwrap(),"synthetic-test-token",&endpoint);
+            assert!(result.is_err(),"status {status} cannot be treated as successful Drive verification");
+            assert!(result.unwrap_err().contains(&status.to_string()));
+            server.join().unwrap();
+        }
+    }
+    #[test] fn bad_mock_json_is_not_accepted_as_remote_confirmation(){
+        use std::io::{Read,Write};
+        use std::net::TcpListener;
+        let listener=TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr=listener.local_addr().unwrap();
+        let server=std::thread::spawn(move ||{
+            let (mut s,_)=listener.accept().unwrap();
+            s.set_read_timeout(Some(std::time::Duration::from_secs(4))).unwrap();
+            let mut req=[0u8;8192];let _=s.read(&mut req).unwrap();
+            s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nNOTJS").unwrap();
+        });
+        let result=json_get(&http().unwrap(),"synthetic-test-token",&format!("http://{addr}/drive/v3/files"));
+        assert!(result.is_err());
+        server.join().unwrap();
+    }
     #[test] fn ranges_and_ids_are_checked(){
         assert_eq!(next_offset(None,20).unwrap(),0);
         assert_eq!(next_offset(Some("bytes=0-7"),20).unwrap(),8);
