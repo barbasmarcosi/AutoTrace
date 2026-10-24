@@ -26,5 +26,5 @@ test('Portable recovery phrase is generated in native code and never placed in g
   assert.match(native,/uuid::Uuid::new_v4\(\)\.simple\(\).*uuid::Uuid::new_v4\(\)\.simple\(\)/);
   assert.match(commands,/drive_backup::generate_recovery_phrase/);
   assert.match(ui,/Crear kit de recuperación/);
-  assert.match(ui,/window\.__autotraceRecoveryKitSuffix/, 'unexpected positive');
+  assert.doesNotMatch(ui,/window\.__autotraceRecoveryKitSuffix/);
 });
