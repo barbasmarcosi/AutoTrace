@@ -14,6 +14,11 @@ on:
 permissions:
   contents: read
 
+# Avoid compiling many previous versions of the same pull request on paid Windows runners.
+concurrency:
+  group: autotrace-desktop-foundation-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   domain:
     runs-on: ubuntu-latest
@@ -30,6 +35,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri -> target
       - name: Rust unit tests, SQLite and Excel roundtrip on Windows
         working-directory: desktop/src-tauri
         run: cargo test --all-targets
