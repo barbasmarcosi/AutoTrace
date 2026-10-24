@@ -125,11 +125,27 @@ pub(crate) fn upload(token:&str,path:&Path)->Result<String,String>{
        !url.path().starts_with("/upload/drive/v3/files"){
         return Err("Google entregó una URL de subida no confiable".into());
     }
+    let id=upload_chunks(&client,token,&url,path,size,CHUNK)?;
+
+    let mut url=Url::parse(&format!("{API}/{id}")).map_err(|e|e.to_string())?;
+    url.query_pairs_mut().append_pair("fields","id,size,md5Checksum,appProperties");
+    let remote=json_get(&client,token,url.as_str())?;
+    if remote["size"].as_str()!=Some(size.to_string().as_str())||
+       remote["md5Checksum"].as_str()!=Some(checksum.as_str())||
+       remote["appProperties"]["autotraceBackup"]!="age-v1"{
+        return Err("La copia está subida pero falló la verificación de tamaño y checksum.".into());
+    }
+    Ok(id)
+}
+/// Transfer a resumable session in bounded chunks. Keeping this separate
+/// allows deterministic loopback tests without Google credentials.
+fn upload_chunks(client:&Client,token:&str,url:&Url,path:&Path,size:u64,chunk_size:u64)->Result<String,String>{
+    if chunk_size==0{return Err("Tamaño de fragmento inválido".into());}
     let mut offset=0u64;
     let mut retries=0usize;
     let mut id=None;
     while offset<size {
-        let end=(offset+CHUNK).min(size)-1;
+        let end=(offset+chunk_size).min(size)-1;
         let mut f=fs::File::open(path).map_err(|e|e.to_string())?;
         f.seek(SeekFrom::Start(offset)).map_err(|e|e.to_string())?;
         let len=end-offset+1;
@@ -171,16 +187,7 @@ pub(crate) fn upload(token:&str,path:&Path)->Result<String,String>{
             }else{return Err("No se pudo reanudar la subida. La copia sigue pendiente localmente.".into());}
         }
     }
-    let id=id.ok_or("No se completó la subida de Drive")?;
-    let mut url=Url::parse(&format!("{API}/{id}")).map_err(|e|e.to_string())?;
-    url.query_pairs_mut().append_pair("fields","id,size,md5Checksum,appProperties");
-    let remote=json_get(&client,token,url.as_str())?;
-    if remote["size"].as_str()!=Some(size.to_string().as_str())||
-       remote["md5Checksum"].as_str()!=Some(checksum.as_str())||
-       remote["appProperties"]["autotraceBackup"]!="age-v1"{
-        return Err("La copia está subida pero falló la verificación de tamaño y checksum.".into());
-    }
-    Ok(id)
+    id.ok_or("No se completó la subida de Drive".into())
 }
 pub(crate) fn download(token:&str,id:&str,destination:&Path)->Result<(),String>{
     let client=http()?;
