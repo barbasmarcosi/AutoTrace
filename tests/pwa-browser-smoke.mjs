@@ -92,6 +92,43 @@ try{
   assert.equal(updatedOrder.payments[0].reference,'TRX-2026');
   const receiver=withPayment.settings.accounts.find(a=>a.id===updatedOrder.payments[0].accountId);
   assert.equal(receiver.name,'Banco de pruebas');
+  // Reuse the existing bank/wallet destination in a second, partial electronic receipt.
+  await page.locator('[data-action="add-payment"][data-id="'+newOrder.id+'"]').click();
+  await page.locator('#entity-form[data-kind="payment"]').waitFor({timeout:10000});
+  await page.locator('[name="payment"]').fill('5000');
+  await page.locator('[name="method"]').selectOption('qr');
+  await page.locator('[name="accountId"]').selectOption(receiver.id);
+  await page.locator('[name="paymentReference"]').fill('QR-PARCIAL');
+  await page.locator('#entity-form [type="submit"]').click();
+  await page.locator('#entity-form[data-kind="payment"]').waitFor({state:'hidden',timeout:10000});
+  const twoPayments=await inspectStore(page);
+  const two=twoPayments.orders.find(o=>o.id===newOrder.id);
+  assert.equal(two.paid,15000);
+  assert.equal(two.payments.length,2);
+  assert.equal(two.payments[1].method,'qr');
+  assert.equal(two.payments[1].accountId,receiver.id);
+  assert.equal(twoPayments.settings.accounts.length,withPayment.settings.accounts.length,
+    'A second electronic receipt must reuse the destination without creating duplicates');
+
+  // Finish in cash. Two synchronous submit attempts must persist only one receipt.
+  await page.locator('[data-action="add-payment"][data-id="'+newOrder.id+'"]').click();
+  await page.locator('#entity-form[data-kind="payment"]').waitFor({timeout:10000});
+  await page.locator('[name="payment"]').fill('10000');
+  assert.equal(await page.locator('[name="method"]').inputValue(),'cash');
+  await page.evaluate(()=>{
+    const form=document.querySelector('#entity-form[data-kind="payment"]');
+    form.requestSubmit();
+    form.requestSubmit();
+  });
+  await page.locator('#entity-form[data-kind="payment"]').waitFor({state:'hidden',timeout:10000});
+  const fullyPaid=await inspectStore(page);
+  const paidOrder=fullyPaid.orders.find(o=>o.id===newOrder.id);
+  assert.equal(paidOrder.paid,25000);
+  assert.equal(paidOrder.payments.length,3,'Duplicate submit must not create an extra payment');
+  assert.deepEqual(paidOrder.payments.map(p=>p.method),['transfer','qr','cash']);
+  assert.equal(paidOrder.payments[2].accountId,'');
+  assert.equal(paidOrder.payments.reduce((total,p)=>total+p.amount,0),paidOrder.paid);
+  assert.equal(await page.locator('[data-action="add-payment"][data-id="'+newOrder.id+'"]').isDisabled(),true);
   await page.goto(base+'#finanzas',{waitUntil:'domcontentloaded'});
   await page.getByText('Cobros por cuenta receptora').waitFor({timeout:10000});
   await page.getByText('Resultado mano de obra').waitFor({timeout:10000});
