@@ -180,6 +180,28 @@ function renderPage(){
 }
 function refreshPage(){const target=document.querySelector('#page-content');if(target)target.innerHTML=renderPage();}
 function demoBanner(){return db.settings.demo?`<div class="demo-banner"><p><strong>Modo demostración.</strong><span class="demo-explanation"> Los nombres, vehículos e importes son ficticios. Podés explorar sin riesgo y luego comenzar con tus propios registros.</span><span class="demo-mini"> Datos ficticios para explorar.</span></p>${button('Comenzar desde cero','reset-demo','btn-secondary btn-sm')}</div>`:'';}
+function backupHealthNotice(){
+  if(!desktopInvoke || !(db.clients.length||db.vehicles.length||db.orders.length))return '';
+  const freshnessMs=24*60*60*1000;
+  const local=Number(lastDesktopBackup?.lastBackupUnixMs||0);
+  const secondary=Number(lastDesktopBackup?.lastExternalBackupUnixMs||0);
+  const direct=lastDirectDrive?.lastVerifiedUploadAt?Date.parse(lastDirectDrive.lastVerifiedUploadAt):0;
+  const now=Date.now();
+  if(!local||!Number.isFinite(local)||now-local>freshnessMs){
+    return '<div class="notice warning storage-alert" role="status">'+
+      icon('alert',17)+' No hay un respaldo local verificado durante las últimas 24 horas. '+
+      button('Revisar copias de seguridad','go-settings','btn-secondary btn-sm')+'</div>';
+  }
+  const externalFresh=secondary>0&&now-secondary<=freshnessMs;
+  const cloudFresh=Number.isFinite(direct)&&direct>0&&now-direct<=freshnessMs;
+  if(!externalFresh&&!cloudFresh){
+    return '<div class="notice warning storage-alert" role="status">'+icon('alert',17)+
+      ' No consta una copia externa o subida a Drive verificada en las últimas 24 horas. '+
+      'Si exportaste manualmente un respaldo a USB, comprobalo con una prueba de restauración. '+
+      button('Proteger mis datos','go-settings','btn-secondary btn-sm')+'</div>';
+  }
+  return '';
+}
 function renderDashboard(){
   const recent=[...db.orders].sort((a,b)=>b.openedAt.localeCompare(a.openedAt)).slice(0,5);
   const open=activeOrders();
@@ -187,7 +209,7 @@ function renderDashboard(){
   const monthly=db.orders.filter(x=>x.documentKind!=='quote'&&x.openedAt.startsWith(thisMonth));
   const due=db.vehicles.filter(v=>v.nextServiceDate&&daysUntil(v.nextServiceDate)<=30).sort((a,b)=>a.nextServiceDate.localeCompare(b.nextServiceDate)).slice(0,5);
   const pending=sum(db.orders,pendingAmount);
-  return `${demoBanner()}<div class="heading"><div><p class="eyebrow">PANEL DE CONTROL</p><h1>${db.settings.garageName==='Mi taller'?'Tu taller, hoy':`Resumen de ${esc(db.settings.garageName)}`}</h1><p>Todo lo que necesitás resolver, en un solo lugar.</p></div><span class="badge-local">${icon('shield',15)} Privado y local</span></div>
+  return `${demoBanner()}${backupHealthNotice()}<div class="heading"><div><p class="eyebrow">PANEL DE CONTROL</p><h1>${db.settings.garageName==='Mi taller'?'Tu taller, hoy':`Resumen de ${esc(db.settings.garageName)}`}</h1><p>Todo lo que necesitás resolver, en un solo lugar.</p></div><span class="badge-local">${icon('shield',15)} Privado y local</span></div>
   <section class="hero"><div class="hero-content"><div class="hero-eyebrow">${icon('sparkle',16)} ACCIONES RÁPIDAS</div><h2>Todo listo para tu próximo trabajo.</h2><p>Creá una orden o sumá un cliente sin dar vueltas.</p><div class="hero-actions">${button(`${icon('plus')} Registrar trabajo`,'new-order','btn-lime')}${button(`${icon('users')} Nuevo cliente`,'new-client','btn-secondary')}</div></div><div class="hero-watermark">${icon('car',210)}</div></section>
   <div class="priority-strip" aria-label="Pendientes del taller"><button data-action="show-active-orders" class="priority-card"><span class="priority-icon">${icon('wrench',20)}</span><span class="priority-body"><strong>${open.length} trabajos en curso</strong><small>Revisar el estado de las órdenes</small></span>${icon('chevron',18)}</button><button data-action="show-unpaid-orders" class="priority-card"><span class="priority-icon priority-amber">${icon('wallet',20)}</span><span class="priority-body"><strong>${db.orders.filter(o=>pendingAmount(o)>0).length} cobros pendientes</strong><small>${money(pending)} de saldo por cobrar</small></span>${icon('chevron',18)}</button><button data-action="show-due-vehicles" class="priority-card"><span class="priority-icon priority-blue">${icon('calendar',20)}</span><span class="priority-body"><strong>${db.vehicles.filter(v=>v.nextServiceDate&&daysUntil(v.nextServiceDate)<=30).length} servicios próximos o vencidos</strong><small>Revisar fechas de mantenimiento</small></span>${icon('chevron',18)}</button></div>
   <div class="stats-grid">${stat('Clientes',db.clients.length,'Registrados en el taller','users')}${stat('Trabajos activos',open.length,'En recepción o proceso','wrench')}${stat('Acordado este mes',money(sum(monthly,o=>o.charged)),'Trabajos ingresados este mes','trending')}${stat('Pendiente de cobro',money(pending),'Saldo de todos los trabajos','wallet')}</div>
@@ -773,7 +795,7 @@ async function createDesktopBackup(silent=false){
     if(completed.driveCopyError)toast('Respaldo local correcto, pero No se pudo generar el respaldo cifrado en la carpeta sincronizada: '+completed.driveCopyError,'error');
     if(completed.externalCopyError)toast('Copia local correcta, pero falló la copia secundaria: '+completed.externalCopyError,'error');
     else if(!silent)toast(completed.cloudCopyOk?'Respaldo cifrado subido y verificado en Google Drive.':completed.driveCopyOk?'Respaldo cifrado creado en carpeta sincronizada. Verificá que Google Drive termine de subirlo.':completed.externalCopyOk?'Respaldo verificado en la carpeta secundaria.':'Respaldo local creado.');
-    if(route().page==='ajustes')render();
+    if(['ajustes','inicio'].includes(route().page))render();
     return true;
   }catch(error){
     console.error('No se pudo completar el respaldo',error);
@@ -1176,7 +1198,7 @@ async function scheduleDesktopBackups(){
     catch(e){console.warn('No se pudo consultar el estado de la carpeta cifrada:',String(e));lastDriveStatus=null;}
     try{lastDirectDrive=await desktopInvoke('drive_api_status');}
     catch(e){console.warn('No se pudo consultar Google Drive API:',String(e));lastDirectDrive=null;}
-    if(route().page==='ajustes')render();
+    if(['ajustes','inicio'].includes(route().page))render();
     const stale=!lastDesktopBackup.lastBackupUnixMs || Date.now()-Number(lastDesktopBackup.lastBackupUnixMs)>=4*60*60*1000;
     if(stale)await createDesktopBackup(true);
     else if(lastDirectDrive?.connected&&lastDirectDrive.pendingCount>0&&!desktopBackupBusy){
