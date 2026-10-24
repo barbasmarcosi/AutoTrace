@@ -568,9 +568,19 @@ mod tests {
         assert_eq!(rehearsal.orders,1);
         assert!(read_archive(&cloud,"wrong passphrase more than sixteen").is_err());
         assert!(seal(&pair,&drive,&password).is_err(),"must never overwrite earlier cloud backups");
-        let mut damaged=raw;let idx=damaged.len()-33;damaged[idx]^=0x6a;
+        let mut damaged=raw.clone();let idx=damaged.len()-33;damaged[idx]^=0x6a;
         let tampered=drive.join("tampered.age");fs::write(&tampered,damaged).unwrap();
         assert!(read_archive(&tampered,password.expose_secret_for_restore()).is_err());
+        // G4: interrupted copies must never pass the encrypted-archive checks,
+        // even when most of the age stream was written successfully.
+        for cut in [0,raw.len()/2,raw.len()-1] {
+            let truncated=drive.join(format!("truncated-{cut}.atbackup.age"));
+            fs::write(&truncated,&raw[..cut]).unwrap();
+            assert!(test_archive_at(&truncated,password.expose_secret_for_restore()).is_err(),
+                "a {cut}-byte truncated archive must fail the recovery rehearsal");
+            assert!(preview_archive_at(&truncated,password.expose_secret_for_restore()).is_err(),
+                "a truncated archive must not expose a restorable preview");
+        }
         drop(recovered);
         fs::remove_dir_all(temp).unwrap();
     }
