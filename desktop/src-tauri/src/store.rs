@@ -631,4 +631,55 @@ mod tests {
         assert!(write(&mut db, &data, 0).is_err());
         assert_eq!(read(&db).unwrap().revision, 0);
     }
+    /// G1 performance protocol. Intentionally ignored by CI: Windows operator
+    /// hardware and SSD performance are part of the acceptance evidence.
+    /// Run: cargo test --locked release_scale_profile -- --ignored --nocapture
+    #[test]
+    #[ignore = "manual 1k/10k/50k hardware timing; never assert CI runner latency"]
+    fn release_scale_profile(){
+        use std::time::Instant;
+        for n in [1_000usize,10_000,50_000]{
+            let mut data=AppData::default();
+            data.clients.push(Client{
+                id:"benchmark-client".into(),name:"Cliente ficticio".into(),phone:"".into(),
+                email:"".into(),notes:"".into(),created_at:"".into()
+            });
+            data.vehicles.push(Vehicle{
+                id:"benchmark-vehicle".into(),client_id:"benchmark-client".into(),
+                plate:"AF123BC".into(),make:"Marca".into(),model:"Modelo".into(),
+                year:serde_json::json!(2020),mileage:100.0,vin:"".into(),
+                color:"".into(),next_service_date:"".into(),notes:"".into(),
+                created_at:"".into()
+            });
+            for i in 0..n {
+                data.orders.push(Order{
+                    id:format!("synthetic-{i}"),vehicle_id:"benchmark-vehicle".into(),
+                    title:"Diagnóstico ficticio".into(),category:"".into(),status:"received".into(),
+                    opened_at:"".into(),completed_at:"".into(),mileage:0.0,
+                    description:"".into(),parts_cost:25.25,labor_cost:30.5,
+                    charged:100.99,paid:20.5,notes:"".into(),created_at:"".into(),
+                    items:Vec::new(),document_kind:"".into(),document_number:"".into(),
+                    source_fingerprint:"".into(),payments:Vec::new()
+                });
+            }
+            let mut db=Connection::open_in_memory().unwrap();
+            db.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+            db.execute_batch(SCHEMA).unwrap();
+            let initial=Instant::now();
+            write(&mut db,&data,0).unwrap();
+            let bulk=initial.elapsed();
+            let initial=Instant::now();
+            let loaded=read(&db).unwrap();
+            let read_time=initial.elapsed();
+            assert_eq!(loaded.data.orders.len(),n);
+            data.clients[0].name="Cliente actualizado".into();
+            let initial=Instant::now();
+            write(&mut db,&data,1).unwrap();
+            let single_edit=initial.elapsed();
+            assert_eq!(read(&db).unwrap().data.clients[0].name,"Cliente actualizado");
+            println!("synthetic_orders={n} bulk_write_ms={} read_ms={} single_edit_ms={}",
+                bulk.as_millis(),read_time.as_millis(),single_edit.as_millis());
+        }
+    }
+
 }
