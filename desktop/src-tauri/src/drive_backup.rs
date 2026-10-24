@@ -42,6 +42,12 @@ pub(crate) fn enable_auto_unlock(passphrase:String)->Result<(),String>{
     set_secret(Some(SecretString::from(passphrase)))
 }
 #[tauri::command]
+/// 244 bits of OS-backed UUIDv4 randomness across two independent values.
+/// The phrase is returned ONCE to the Desktop recovery-kit dialog; never logged or saved.
+#[tauri::command]
+pub(crate) fn generate_recovery_phrase()->String{
+    format!("AT-{}-{}",uuid::Uuid::new_v4().simple(),uuid::Uuid::new_v4().simple())
+}
 pub(crate) fn disable_auto_unlock()->Result<(),String>{
     let key=windows_key()?;
     match key.delete_credential(){
@@ -186,6 +192,61 @@ pub(crate) fn unlock_for_api(passphrase:String,files:&[PathBuf])->Result<(),Stri
     // An existing encrypted pending queue MUST decrypt with the supplied phrase.
     if let Some(first)=files.first(){let _=read_archive(first,&passphrase)?;}
     set_secret(Some(SecretString::from(passphrase)))
+}
+/// Export a fresh, fully verified encrypted disaster-recovery snapshot to
+/// a user-selected file. No Google OAuth, Google Desktop or web access required.
+#[tauri::command]
+pub(crate) async fn export_portable_encrypted_backup(app:tauri::AppHandle,passphrase:String)->Result<Option<String>,String>{
+    check_pass(&passphrase)?;
+    let Some(destination)=rfd::FileDialog::new()
+        .set_title("Guardá esta copia CIFRADA en un pendrive o disco diferente")
+        .add_filter("Respaldo cifrado AutoTrace",&["age"])
+        .set_file_name("AutoTrace_respaldo_portatil.atbackup.age")
+        .save_file() else {return Ok(None)};
+    let filename=destination.file_name().map(|n|n.to_string_lossy().into_owned());
+    tauri::async_runtime::spawn_blocking(move ||{
+        export_portable_snapshot(&app,&destination,&passphrase)
+    }).await.map_err(|_|"Falló el proceso de exportación cifrada".to_owned())??;
+    Ok(filename)
+}
+fn export_portable_snapshot(app:&tauri::AppHandle,destination:&Path,phrase:&str)->Result<(),String>{
+    check_pass(phrase)?;
+    if destination.exists(){return Err("El archivo de destino ya existe: elegí otro nombre para no sobrescribir respaldos.".into());}
+    let local=app.path().app_local_data_dir().map_err(|e|e.to_string())?;
+    let private=local.join("backups");
+    fs::create_dir_all(&private).map_err(|e|e.to_string())?;
+    let id=format!("portable-{}-{}",chrono::Utc::now().timestamp_millis(),uuid::Uuid::new_v4().simple());
+    let pair=backup::backup_pair(&crate::store::open_app(app)?,&private,&id)?;
+    let cipher_dir=local.join("encrypted-export-staging");
+    fs::create_dir_all(&cipher_dir).map_err(|e|e.to_string())?;
+    let cipher=seal(&pair,&cipher_dir,&SecretString::from(phrase.to_owned()))?;
+    struct DeleteOnDrop(PathBuf);
+    impl Drop for DeleteOnDrop { fn drop(&mut self){let _=fs::remove_file(&self.0);} }
+    let _cipher_cleanup=DeleteOnDrop(cipher.clone());
+    let parent=destination.parent().ok_or("Destino de exportación inválido")?;
+    let temp=parent.join(format!(".autotrace-export-{}.partial",uuid::Uuid::new_v4()));
+    let _temp_cleanup=DeleteOnDrop(temp.clone());
+    let mut from=fs::File::open(&cipher).map_err(|e|e.to_string())?;
+    let mut out=fs::File::create_new(&temp).map_err(|e|e.to_string())?;
+    std::io::copy(&mut from,&mut out).map_err(|e|e.to_string())?;
+    out.sync_all().map_err(|e|e.to_string())?;
+    drop(out);
+    // Verify that the destination copy contains exactly the authenticated ciphertext.
+    fn hash(path:&Path)->Result<Vec<u8>,String>{
+        use sha2::{Digest,Sha256};
+        let mut h=Sha256::new();let mut f=fs::File::open(path).map_err(|e|e.to_string())?;
+        let mut chunk=[0u8;128*1024];
+        loop {
+            let n=f.read(&mut chunk).map_err(|e|e.to_string())?;
+            if n==0{break;}
+            h.update(&chunk[..n]);
+        }
+        Ok(h.finalize().to_vec())
+    }
+    if hash(&temp)?!=hash(&cipher)?{return Err("El medio externo no conservó íntegro el archivo cifrado.".into());}
+    if destination.exists(){return Err("Otro proceso creó el archivo de destino: no se sobrescribió.".into());}
+    fs::rename(&temp,destination).map_err(|e|e.to_string())?;
+    Ok(())
 }
 pub(crate) fn test_archive_at(path:&Path,passphrase:&str)->Result<backup::RecoveryTestResult,String>{
     check_pass(passphrase)?;
@@ -355,6 +416,16 @@ mod tests {
         assert!(is_plain_workshop_backup_name("AutoTrace_2026-01.manifest.json"));
         assert!(!is_plain_workshop_backup_name("AutoTrace_2026-01.atbackup.age"));
         assert!(!is_plain_workshop_backup_name("Comprobante_cliente.xlsx"));
+    }
+    #[test]
+    fn generated_recovery_key_is_high_entropy_and_portable(){
+        let a=generate_recovery_phrase();
+        let b=generate_recovery_phrase();
+        assert!(a.starts_with("AT-"));
+        assert_eq!(a.len(),68);
+        assert!(a.bytes().all(|v|v.is_ascii_alphanumeric()||v==b'-'));
+        assert_ne!(a,b);
+        check_pass(&a).unwrap();
     }
     #[test]
     fn plain_and_encrypted_backup_folders_cannot_overlap(){

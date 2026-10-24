@@ -422,6 +422,13 @@ function renderDirectDrive(){
       descView('Cifrado automático con Windows',st.autoUnlockEnabled?'Habilitado · clave protegida por Windows':'No habilitado')+
       descView('Copias cifradas pendientes',String(st.pendingCount??0))+
       descView('Respaldos remotos listados',String(directDriveFiles.length))+'</div>'+
+    '<p class="muted-sm" style="margin-top:12px"><strong>Recuperación sin Google:</strong> guardá una copia cifrada en un pendrive o disco externo y tu frase de recuperación por separado. Esto también funciona sin Internet.</p>'+
+    '<div class="settings-actions">'+
+      (!st.autoUnlockEnabled&&!st.lastVerifiedUploadAt&&!(st.pendingCount>0)?button('Crear kit de recuperación','generate-recovery-kit','btn-primary'):'')+
+      button('Exportar copia cifrada a USB','export-portable-backup','btn-secondary')+
+      button('Probar copia cifrada portátil','test-drive-recovery','btn-secondary')+
+      button('Recuperar copia portátil','restore-drive-backup','btn-secondary')+
+    '</div>'+
     '<div class="settings-actions" style="margin-top:14px">'+
       (!connected&&ready?button('Conectar con Google','connect-drive-api','btn-primary'):'')+
       (st.developerMode&&!ready?button('Configurar identidad OAuth (desarrollo)','set-drive-client','btn-secondary'):'')+
@@ -664,6 +671,8 @@ async function saveForm(form){
   const fd=new FormData(form);const get=k=>String(fd.get(k)||'').trim();
   const kind=form.dataset.kind,id=form.dataset.id,existing=!!id;
   if(kind==='account')return saveAccountForm(form);
+  if(kind==='drive-recovery-kit')return saveRecoveryKitForm(form);
+  if(kind==='drive-portable-export')return exportPortableBackupForm(form);
   if(kind.startsWith('drive-api-'))return saveDriveApiForm(form);
   if(kind.startsWith('drive-'))return saveDriveForm(form);
   const baseId=id||uid();
@@ -771,6 +780,66 @@ async function createDesktopBackup(silent=false){
     toast(`Falló el respaldo: ${String(error)}`,'error');
     return false;
   }finally{desktopBackupBusy=false;}
+}
+async function createRecoveryKit(){
+  if(!desktopInvoke)return;
+  if(lastDirectDrive?.autoUnlockEnabled||lastDirectDrive?.pendingCount||lastDirectDrive?.lastVerifiedUploadAt){
+    toast('Ya existen claves o copias cifradas. Conservá tu frase anterior para no perder acceso a respaldos históricos.','error');return;
+  }
+  if(!await confirmAction('Preparar un kit de recuperación',
+    'Se generará una nueva frase privada. Guardala fuera de la computadora (por ejemplo, en papel). Nunca la subas sin cifrar a Drive. Si ya tenés copias cifradas, usá su frase existente.',
+    'Generar frase segura'))return;
+  try{
+    const phrase=await desktopInvoke('generate_recovery_phrase');
+    showModal('Kit de recuperación del taller',
+      'Copiá esta frase y guardala físicamente fuera de esta PC. Se requiere para restaurar tus datos si se pierde el equipo. Solo se muestra ahora.',
+      'drive-recovery-kit',
+      '<div class="field span-2"><label for="recovery-kit-value">Frase privada del taller</label>'+
+        '<textarea id="recovery-kit-value" name="drivePassphrase" readonly rows="3">'+esc(phrase)+'</textarea>'+
+        '<small>No compartas esta frase ni la guardes en la carpeta que sincronizás.</small></div>'+
+      input('Escribí los últimos ocho caracteres de la frase','recoverySuffix','',
+        {required:true,full:true,maxlength:8,placeholder:'Confirmación de lectura'})+
+      '<div class="field span-2"><label><input type="checkbox" name="savedOutside" value="yes" required /> Confirmo que guardé la frase en un lugar independiente de esta computadora.</label></div>');
+    // The recovery phrase stays only in the temporary Desktop dialog.
+  }catch(e){toast('No se pudo generar la frase: '+String(e),'error');}
+}
+function portableExportForm(){
+  if(!desktopInvoke)return;
+  showModal('Exportar respaldo cifrado portátil',
+    'Se generará un snapshot nuevo y se copiará cifrado al destino que elijas. Necesitarás exactamente esta frase para restaurarlo. Escribila dos veces.',
+    'drive-portable-export',
+    input('Frase de recuperación','drivePassphrase','',{type:'password',required:true,full:true,maxlength:256})+
+    input('Repetir frase de recuperación','drivePassphraseRepeat','',{type:'password',required:true,full:true,maxlength:256}));
+}
+async function saveRecoveryKitForm(form){
+  const fd=new FormData(form);
+  const phrase=String(fd.get('drivePassphrase')||'');
+  const suffix=String(fd.get('recoverySuffix')||'');
+  if(!phrase.startsWith('AT-')||suffix!==phrase.slice(-8)||fd.get('savedOutside')!=='yes'){
+    toast('Confirmá los caracteres de la frase y que la guardaste fuera de esta PC.','error');return;
+  }
+  try{
+    await desktopInvoke('drive_api_enable_auto_unlock',{passphrase:phrase});
+    modalOriginal='';document.querySelector('#form-dialog').close();
+    document.querySelector('#modal-content').textContent='';
+    lastDirectDrive=await desktopInvoke('drive_api_status');
+    render();
+    toast('Kit preparado. Windows protege la frase para respaldos automáticos. Guardá tu copia física.');
+  }catch(e){toast('No se pudo activar el kit: '+String(e),'error');}
+}
+async function exportPortableBackupForm(form){
+  const fd=new FormData(form);
+  const phrase=String(fd.get('drivePassphrase')||'');
+  if(phrase.length<16||phrase!==String(fd.get('drivePassphraseRepeat')||'')){
+    toast('Las dos frases deben coincidir y tener 16 caracteres como mínimo.','error');return;
+  }
+  try{
+    const name=await desktopInvoke('export_portable_encrypted_backup',{passphrase:phrase});
+    if(!name)return;
+    modalOriginal='';document.querySelector('#form-dialog').close();
+    document.querySelector('#modal-content').textContent='';
+    toast('Respaldo cifrado portátil creado y comprobado: '+name+'. Probá su recuperación antes de necesitarlo.');
+  }catch(e){toast('No se pudo exportar la copia cifrada: '+String(e),'error');}
 }
 function driveApiForm(kind){
   if((kind==='restore'||kind==='test')&&!directDriveFiles.length){toast('Primero consultá las copias de Google Drive.','error');return;}
@@ -1237,6 +1306,8 @@ document.addEventListener('click',async event=>{
     case 'unlock-drive-backup':driveSetupForm('unlock');break;
     case 'restore-drive-backup':driveSetupForm('restore');break;
     case 'test-drive-recovery':driveSetupForm('test');break;
+    case 'generate-recovery-kit':await createRecoveryKit();break;
+    case 'export-portable-backup':portableExportForm();break;
     case 'set-drive-client':driveApiForm('client');break;
     case 'unlock-drive-api':driveApiForm('unlock');break;
     case 'enable-drive-auto':driveApiForm('auto');break;
@@ -1354,10 +1425,23 @@ document.addEventListener('input',event=>{
   if(event.target.id==='finance-search'){financeQuery=event.target.value;financePage=1;refreshFinanceResults();}
   if(event.target.dataset.listSearch){const section=event.target.dataset.listSearch;if(!Object.hasOwn(listQueries,section))return;listQueries[section]=event.target.value;listPages[section]=1;refreshListResults();}
 });
+function eraseRecoveryFields(dialog){
+  const form=dialog?.querySelector('#entity-form');
+  if(!['drive-recovery-kit','drive-portable-export'].includes(form?.dataset.kind))return;
+  for(const field of form.querySelectorAll('textarea,input')){
+    if(field.type!=='checkbox')field.value='';
+  }
+  const content=dialog.querySelector('#modal-content');
+  if(content)content.textContent='';
+}
 async function closeFormSafely(){
   const dialog=document.querySelector('#form-dialog');const form=dialog.querySelector('#entity-form');
-  if(!form || modalOriginal===modalSnapshot(form)){modalOriginal='';dialog.close();return;}
-  if(await confirmAction('¿Descartar los cambios?','Modificaste datos del formulario que todavía no se guardaron.','Descartar cambios')){modalOriginal='';dialog.close();}
+  if(!form || modalOriginal===modalSnapshot(form)){
+    modalOriginal='';eraseRecoveryFields(dialog);dialog.close();return;
+  }
+  if(await confirmAction('¿Descartar los cambios?','Modificaste datos del formulario que todavía no se guardaron.','Descartar cambios')){
+    modalOriginal='';eraseRecoveryFields(dialog);dialog.close();
+  }
 }
 document.querySelector('#form-dialog').addEventListener('cancel',event=>{event.preventDefault();void closeFormSafely();});
 document.addEventListener('keydown',event=>{
