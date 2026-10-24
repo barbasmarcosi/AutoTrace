@@ -20,6 +20,14 @@ AutoTrace funciona sin un servidor ni APIs de Google. En Windows Desktop genera 
 
 Cada archivo `.age` contiene un único snapshot completo: SQLite, Excel y manifest. El lector verifica que las dos representaciones reproducen exactamente el mismo estado y que coincidan con sus SHA-256. El cifrado se realiza con el formato estándar **age**, en modo contraseña con scrypt y autenticación integrada. Se genera un archivo único por copia; la aplicación **no sobrescribe copias anteriores**.
 
+## Prueba de recuperación sin modificar datos
+
+En **Ajustes → Google Drive · copia cifrada → Probar copia cifrada** ingresá la frase de recuperación y seleccioná un archivo `.atbackup.age` que **hayas descargado realmente** desde Google Drive. AutoTrace lo descifra temporalmente, verifica hashes y relaciones, restaura sus datos de forma independiente en dos bases SQLite temporales (una usando el SQLite respaldado y otra importando el Excel), y compara ambos resultados.
+
+La prueba muestra conteos de clientes, vehículos y trabajos. **No reemplaza ni modifica la base actual.** Si la frase está equivocada, el archivo está adulterado, faltan datos o Excel y SQLite difieren, falla. El directorio temporal descifrado se elimina al terminar.
+
+**Esta función no comprueba que Google Drive haya sincronizado automáticamente**: para ensayar recuperación fuera del equipo de origen, elegí una copia efectivamente descargada desde la web de Drive y guardala en otra computadora.
+
 ## Recuperación en otra computadora
 
 1. Instalar la misma versión compatible de AutoTrace Desktop; preparar una carpeta local propia para los datos de AutoTrace.
