@@ -254,7 +254,9 @@ fn export_portable_snapshot(app:&tauri::AppHandle,destination:&Path,phrase:&str)
     ensure_phrase_consistent(phrase)?;
     let private=local.join("backups");
     fs::create_dir_all(&private).map_err(|e|e.to_string())?;
-    let id=format!("portable-{}-{}",chrono::Utc::now().timestamp_millis(),uuid::Uuid::new_v4().simple());
+    // Use a normal timestamped snapshot ID so the local dual pair remains
+    // eligible for the conservative retention policy instead of accumulating forever.
+    let id=format!("{}-{}",chrono::Utc::now().timestamp_millis(),uuid::Uuid::new_v4().simple());
     let pair=backup::backup_pair(&crate::store::open_app(app)?,&private,&id)?;
     let cipher_dir=local.join("encrypted-export-staging");
     fs::create_dir_all(&cipher_dir).map_err(|e|e.to_string())?;
