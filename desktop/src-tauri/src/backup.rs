@@ -424,7 +424,7 @@ pub(crate) struct RecoveryTestResult{
 }
 /// Destructive-free restore rehearsal: independently import SQLite and Excel
 /// into two FRESH SQLite databases and compare canonical data with snapshot.
-fn recovery_rehearsal(manifest_path:&Path)->Result<RecoveryTestResult,String>{
+pub(crate) fn recovery_rehearsal(manifest_path:&Path)->Result<RecoveryTestResult,String>{
     verify_pair_marker(manifest_path)?;
     let doc:serde_json::Value=serde_json::from_slice(&fs::read(manifest_path).map_err(err)?).map_err(err)?;
     let id=doc["snapshotId"].as_str().ok_or("Respaldo sin identificador")?;

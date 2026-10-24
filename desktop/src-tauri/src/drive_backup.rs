@@ -257,6 +257,18 @@ pub(crate) fn replicate_if_unlocked(app:&tauri::AppHandle,result:&backup::Backup
     let pass=active_secret()?.ok_or("La copia de Google Drive está bloqueada: desbloqueala en Ajustes.")?;
     seal(result,&dir,&pass).map(|p|Some(p.display().to_string()))
 }
+/// Verify a downloaded encrypted archive against both fresh SQLite and Excel stores,
+/// without modifying the active workshop database.
+#[tauri::command]
+pub(crate) fn test_drive_recovery(passphrase:String)->Result<Option<backup::RecoveryTestResult>,String>{
+    check_pass(&passphrase)?;
+    let Some(path)=rfd::FileDialog::new()
+      .set_title("Elegí la copia cifrada descargada de Google Drive que querés comprobar")
+      .add_filter("Respaldo AutoTrace cifrado",&["age"]).pick_file() else{return Ok(None)};
+    let archive=read_archive(&path,&passphrase)?;
+    let manifest=archive.sqlite.with_extension("manifest.json");
+    backup::recovery_rehearsal(&manifest).map(Some)
+}
 #[tauri::command]
 pub(crate) fn choose_drive_restore(passphrase:String)->Result<Option<backup::SqlitePreview>,String>{
     check_pass(&passphrase)?;
@@ -317,6 +329,13 @@ mod tests {
         let (restored,verified)=backup::read_sqlite_candidate(&recovered.sqlite).unwrap();
         assert!(verified);
         assert_eq!(excel_canonical(&restored),excel_canonical(&doc));
+        // Independent recovery into TWO clean SQLite databases (one from SQLite,
+        // one from Excel), with ledger and receiver accounts preserved.
+        let rehearsal=backup::recovery_rehearsal(&recovered.sqlite.with_extension("manifest.json")).unwrap();
+        assert!(rehearsal.sqlite_and_excel_match);
+        assert_eq!(rehearsal.clients,1);
+        assert_eq!(rehearsal.vehicles,1);
+        assert_eq!(rehearsal.orders,1);
         assert!(read_archive(&cloud,"wrong passphrase more than sixteen").is_err());
         assert!(seal(&pair,&drive,&password).is_err(),"must never overwrite earlier cloud backups");
         let mut damaged=raw;let idx=damaged.len()-33;damaged[idx]^=0x6a;

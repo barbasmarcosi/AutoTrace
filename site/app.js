@@ -388,6 +388,7 @@ function renderDriveSettings(){
       button('Configurar carpeta cifrada','configure-drive-backup','btn-primary')+
       (folder&&!st?.unlocked?button('Desbloquear copias','unlock-drive-backup','btn-secondary'):'')+
       (folder&&st?.unlocked?button('Bloquear clave','lock-drive-backup','btn-secondary'):'')+
+      button('Probar copia cifrada','test-drive-recovery','btn-secondary')+
       button('Recuperar copia cifrada','restore-drive-backup','btn-secondary')+
     '</div><p class="muted-sm" style="margin-top:15px">Conservá la frase fuera de la computadora. Si la perdés, no podremos descifrar los respaldos. La clave no se guarda en AutoTrace y se debe ingresar cada vez que reinicies Desktop. Sincronizá solamente los archivos <strong>.atbackup.age</strong>, nunca el Excel o SQLite sin cifrar.</p></section>';
 }
@@ -726,9 +727,10 @@ async function createDesktopBackup(silent=false){
 function driveSetupForm(kind){
   if(!desktopInvoke)return;
   const setup=kind==='configure',restore=kind==='restore';
-  showModal(setup?'Configurar copia cifrada para Google Drive':restore?'Recuperar copia cifrada':'Desbloquear copia cifrada',
+  showModal(setup?'Configurar copia cifrada para Google Drive':restore?'Recuperar copia cifrada':kind==='test'?'Probar recuperación cifrada':'Desbloquear copia cifrada',
     setup?'Seleccionarás una carpeta de Google Drive. La frase protege los archivos y NO se guarda en AutoTrace.':
       restore?'Elegirás un archivo cifrado de Google Drive para revisarlo antes de restaurar.':
+      kind==='test'?'Descifrará y restaurará temporalmente SQLite y Excel, comprobará que coincidan y NO modificará los registros actuales.':
       'Ingresá tu frase de recuperación para retomar la copia automática cifrada mientras la aplicación esté abierta.',
     'drive-'+kind,[
       input('Frase de recuperación (mínimo 16 caracteres)','drivePassphrase','',{type:'password',required:true,full:true,maxlength:256,placeholder:'Una frase larga que guardes fuera de la computadora'}),
@@ -744,6 +746,15 @@ async function saveDriveForm(form){
     toast('Las frases no coinciden.','error');return;
   }
   try{
+    if(kind==='drive-test'){
+      modalOriginal='';document.querySelector('#form-dialog').close();
+      const report=await desktopInvoke('test_drive_recovery',{passphrase});
+      if(!report)return;
+      toast('Prueba de recuperación cifrada aprobada: '+report.clients+' clientes, '+
+        report.vehicles+' vehículos y '+report.orders+
+        ' trabajos. Excel y SQLite reproducen la misma información; tus datos actuales no se modificaron.');
+      return;
+    }
     if(kind==='drive-restore'){
       modalOriginal='';document.querySelector('#form-dialog').close();
       const preview=await desktopInvoke('choose_drive_restore',{passphrase});
@@ -1115,6 +1126,7 @@ document.addEventListener('click',async event=>{
     case 'configure-drive-backup':driveSetupForm('configure');break;
     case 'unlock-drive-backup':driveSetupForm('unlock');break;
     case 'restore-drive-backup':driveSetupForm('restore');break;
+    case 'test-drive-recovery':driveSetupForm('test');break;
     case 'lock-drive-backup':{
       if(desktopInvoke){
         await desktopInvoke('lock_drive_backup');
