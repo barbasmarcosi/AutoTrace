@@ -249,6 +249,78 @@ mod tests{
         assert!(result.is_err());
         server.join().unwrap();
     }
+    /// Simulate a provider that acknowledges chunk 0 with 308 and finishes
+    /// the next chunk. No Google credentials or network outside loopback.
+    #[test] fn resumable_transfer_obeys_server_confirmed_ranges(){
+        use std::io::{Read,Write};
+        use std::net::TcpListener;
+        let dir=std::env::temp_dir().join(format!("autotrace-drive-chunks-{}",uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let file=dir.join("encrypted.age");
+        fs::write(&file,b"ABCDEFGH").unwrap();
+        let listener=TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr=listener.local_addr().unwrap();
+        let server=std::thread::spawn(move ||{
+            let mut ranges=Vec::new();
+            for round in 0..2 {
+                let (mut socket,_)=listener.accept().unwrap();
+                socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                let mut collected=Vec::new();
+                let mut buf=[0u8;2048];
+                loop{
+                    let n=socket.read(&mut buf).unwrap();
+                    assert!(n>0,"upload request ended before content");
+                    collected.extend_from_slice(&buf[..n]);
+                    let Some(head_end)=collected.windows(4).position(|c|c==b"\r\n\r\n") else {continue};
+                    let headers=String::from_utf8_lossy(&collected[..head_end]).to_ascii_lowercase();
+                    let size=headers.lines().find_map(|line|line.strip_prefix("content-length:"))
+                        .unwrap().trim().parse::<usize>().unwrap();
+                    if collected.len()<head_end+4+size{continue;}
+                    let range=headers.lines().find(|line|line.starts_with("content-range:")).unwrap().to_owned();
+                    ranges.push(range);
+                    let body=&collected[head_end+4..head_end+4+size];
+                    assert_eq!(body,if round==0{b"ABCD"}else{b"EFGH"});
+                    break;
+                }
+                if round==0{
+                    socket.write_all(b"HTTP/1.1 308 Resume Incomplete\r\nRange: bytes=0-3\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+                }else{
+                    let payload=r#"{"id":"mock-verified-123"}"#;
+                    write!(socket,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",payload.len(),payload).unwrap();
+                }
+            }
+            ranges
+        });
+        let client=http().unwrap();
+        let endpoint=Url::parse(&format!("http://{addr}/upload-session")).unwrap();
+        let result=upload_chunks(&client,"synthetic-token",&endpoint,&file,8,4).unwrap();
+        assert_eq!(result,"mock-verified-123");
+        assert_eq!(server.join().unwrap(),vec!["content-range: bytes 0-3/8","content-range: bytes 4-7/8"]);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+    #[test] fn malformed_confirmed_range_cannot_publish_remote_success(){
+        use std::io::{Read,Write};
+        use std::net::TcpListener;
+        let dir=std::env::temp_dir().join(format!("autotrace-drive-invalid-{}",uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let path=dir.join("sealed.age");
+        fs::write(&path,b"12345678").unwrap();
+        let listener=TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr=listener.local_addr().unwrap();
+        let server=std::thread::spawn(move ||{
+            let (mut socket,_)=listener.accept().unwrap();
+            socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut request=[0u8;4096];
+            let _=socket.read(&mut request).unwrap();
+            socket.write_all(b"HTTP/1.1 308 Resume Incomplete\r\nRange: bytes=0-99\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+        });
+        let client=http().unwrap();
+        let endpoint=Url::parse(&format!("http://{addr}/upload-session")).unwrap();
+        let result=upload_chunks(&client,"synthetic-token",&endpoint,&path,8,4);
+        assert!(result.is_err(),"an impossible Range must never complete the upload");
+        server.join().unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+    }
     #[test] fn ranges_and_ids_are_checked(){
         assert_eq!(next_offset(None,20).unwrap(),0);
         assert_eq!(next_offset(Some("bytes=0-7"),20).unwrap(),8);
