@@ -1,6 +1,6 @@
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashSet, fs, path::PathBuf, time::Duration};
+use std::{collections::{HashMap,HashSet}, fs, path::PathBuf, time::Duration};
 use tauri::Manager;
 
 const SCHEMA: &str = include_str!("../migrations/001_init.sql");
@@ -364,6 +364,33 @@ fn remove_deleted(conn:&Connection,table:&str,expected:&HashSet<&str>)->Result<(
     Ok(())
 }
 
+/// SQLite's unique plate index would reject valid swaps (A->B and B->A)
+/// if we upserted one vehicle before another. Release changed existing plates
+/// using short unique placeholders only inside the active transaction.
+fn release_changed_vehicle_plates(conn:&Connection,data:&AppData)->Result<(),String>{
+    let target:HashMap<&str,&str>=data.vehicles.iter().map(|v|(v.id.as_str(),v.plate.as_str())).collect();
+    let rows={
+        let mut stmt=conn.prepare("SELECT id,plate FROM vehicles").map_err(sqlite_error)?;
+        let read=stmt.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))
+            .map_err(sqlite_error)?;
+        read.collect::<rusqlite::Result<Vec<_>>>().map_err(sqlite_error)?
+    };
+    let mut reserved:HashSet<String>=rows.iter().map(|(_,p)|p.clone()).collect();
+    reserved.extend(data.vehicles.iter().map(|v|v.plate.clone()));
+    for (id,old_plate) in rows{
+        if target.get(id.as_str()).is_some_and(|wanted|*wanted!=old_plate){
+            let placeholder=loop{
+                let id=uuid::Uuid::new_v4().simple().to_string();
+                let token=format!("TMP{}",id[..8].to_ascii_uppercase());
+                if reserved.insert(token.clone()){break token;}
+            };
+            conn.execute("UPDATE vehicles SET plate=?1 WHERE id=?2",params![placeholder,id])
+                .map_err(sqlite_error)?;
+        }
+    }
+    Ok(())
+}
+
 /// Transactional incremental persistence: avoid DELETE ALL / INSERT ALL on
 /// each phone edit or payment. The complete submitted model is still validated,
 /// and revision checking prevents concurrent overwrites from other windows.
@@ -391,6 +418,7 @@ pub(crate) fn write(conn: &mut Connection, data: &AppData, expected_revision: u6
                 .map_err(sqlite_error)?;
         }
     }
+    release_changed_vehicle_plates(&tx,data)?;
     {
         let mut stmt=tx.prepare(
             "INSERT INTO vehicles(id,client_id,plate,record_json) VALUES (?1,?2,?3,?4)
