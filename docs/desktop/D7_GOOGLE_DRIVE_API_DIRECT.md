@@ -15,6 +15,12 @@
 - **Recuperación:** Ajustes → Ver copias en Drive → Probar copia remota (sin modificar base) o Recuperar desde Drive (confirmación, backup local previo, reemplazo validado). La descarga verifica tamaño y MD5 antes de descifrar age y revisar SQLite/Excel.
 - **Distintos destinos:** la función anterior que replica archivos cifrados en carpeta sincronizada sigue siendo opcional; la conexión API directa no depende de ella. El respaldo local nunca debe guardarse sin cifrar en una carpeta compartida.
 
+## Evolución a experiencia en un clic (D8)
+
+Este documento describe el **estado técnico actual del PR #10**, donde se introduce un Client ID de prueba desde Ajustes. El **producto final no mostrará ese campo al taller**: AutoTrace integrará el Client ID público de una única aplicación OAuth oficial y presentará solamente **Conectar con Google**. No se debe registrar un OAuth Client ID por cliente ni incrustar refresh tokens. El plan detallado, orden ejecutable sin Google Cloud, tratamiento de clave de recuperación y aceptación están en [D8 — Google Drive en un clic](D8_GOOGLE_DRIVE_ONE_CLICK_PLAN.md).
+
+**Bloqueo conocido:** la versión D7 requiere desbloquear manualmente la frase age en cada sesión. Por eso no debe describirse como copia remota completamente desatendida hasta implementar D8-B (clave de cifrado protegida por Windows y mecanismo independiente de recuperación). También se debe contemplar la migración entre distintos OAuth Client IDs, que no asegura acceso transparente a todos los archivos creados por una aplicación anterior.
+
 ## Activación — configuración externa que necesita el propietario
 
 1. Abrir [Google Cloud Console](https://console.cloud.google.com/), crear/elegir un proyecto y **habilitar Google Drive API** para él.
