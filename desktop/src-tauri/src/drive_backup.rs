@@ -203,10 +203,11 @@ pub(crate) async fn export_portable_encrypted_backup(app:tauri::AppHandle,passph
         .add_filter("Respaldo cifrado AutoTrace",&["age"])
         .set_file_name("AutoTrace_respaldo_portatil.atbackup.age")
         .save_file() else {return Ok(None)};
+    let filename=destination.file_name().map(|n|n.to_string_lossy().into_owned());
     tauri::async_runtime::spawn_blocking(move ||{
         export_portable_snapshot(&app,&destination,&passphrase)
     }).await.map_err(|_|"Falló el proceso de exportación cifrada".to_owned())??;
-    Ok(destination.file_name().map(|n|n.to_string_lossy().into_owned()))
+    Ok(filename)
 }
 fn export_portable_snapshot(app:&tauri::AppHandle,destination:&Path,phrase:&str)->Result<(),String>{
     check_pass(phrase)?;
