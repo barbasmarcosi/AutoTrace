@@ -1,0 +1,18 @@
+# Keep the Desktop dependency lockfile and CI actions up to date.
+# Dependabot PRs must pass Windows Rust, Chromium and NSIS before approval.
+version: 2
+updates:
+  - package-ecosystem: "cargo"
+    directory: "/desktop/src-tauri"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
