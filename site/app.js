@@ -1,4 +1,4 @@
-import {validateData, csvCell, pendingAmount, margin} from "./model.mjs";
+import {validateData, csvCell, pendingAmount, margin, laborRevenue, laborContribution, historicalUnallocated, PAYMENT_METHODS, ELECTRONIC_METHODS} from "./model.mjs";
 import {matchesClient, matchesVehicle, matchesOrder, paginate, filterVehicleHistory} from "./search.mjs";
 import {buildCustomerSummary} from "./customer-summary.mjs";
 import {suggestVehicles, suggestClients} from "./pickers.mjs";
@@ -98,6 +98,8 @@ let desktopRevision = 0;
 let lastDesktopBackup = null;
 let desktopBackupBusy = false;
 let pendingLegacyDocument = null;
+// Impide registrar dos veces el mismo cobro al pulsar Guardar repetidamente.
+const savingForms = new WeakSet();
 let memoryOnly = false;
 let toastTimeout;
 const app = document.querySelector('#app');
@@ -125,9 +127,10 @@ async function loadData(){
   } catch(err){ console.error('AutoTrace storage unavailable:',err); memoryOnly=true;db=seedDemo(); }
 }
 async function saveData(next){
+  const validated=validateData(next);
   if(desktopInvoke){
     // La revisión SQL protege contra una segunda ventana con datos desactualizados.
-    const canonical=validateData(next);
+    const canonical=validated;
     const result=await desktopInvoke('save_state',{data:canonical,expectedRevision:desktopRevision});
     desktopRevision=result.revision;
     db=canonical;
@@ -135,9 +138,9 @@ async function saveData(next){
   }
   if(memoryOnly)throw Error('El almacenamiento local no está disponible. No se guardaron los cambios.');
   await new Promise((resolve,reject)=>{
-    const tx=dbConnection.transaction(STORE,'readwrite');tx.objectStore(STORE).put(next,KEY);tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);tx.onabort=()=>reject(tx.error);
+    const tx=dbConnection.transaction(STORE,'readwrite');tx.objectStore(STORE).put(validated,KEY);tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);tx.onabort=()=>reject(tx.error);
   });
-  db=next;
+  db=validated;
 }
 async function updateData(mutator, message){
   try {
@@ -256,17 +259,36 @@ function renderOrders(){
 function renderFinance(){
   const billable=db.orders.filter(o=>o.documentKind!=='quote');
   const charged=sum(billable,o=>o.charged),paid=sum(billable,o=>o.paid),cost=sum(billable,o=>amount(o.partsCost)+amount(o.laborCost)),pending=sum(billable,pendingAmount);
+  const laborDetailed=billable.filter(o=>laborContribution(o)!==null);
+  const laborSales=sum(laborDetailed,laborRevenue),laborNet=sum(laborDetailed,laborContribution);
   return `${demoBanner()}${sectionHead('Resumen económico','Un panorama simple de ingresos, costos y saldos. No reemplaza un sistema contable.',button(`${icon('download')} Exportar CSV`,'export-csv','btn-secondary'))}
-  <div class="stats-grid">${stat('Importes acordados',money(charged),'Total cargado en los trabajos','wallet')}${stat('Pagos recibidos',money(paid),'Monto efectivamente abonado','trending')}${stat('Costos registrados',money(cost),'Repuestos y mano de obra','wrench')}${stat('Saldo pendiente',money(pending),'Pendiente de cobrar','clock')}</div>
-  <div class="dashboard-grid"><div class="card card-pad"><h3 style="font-size:15px">Evolución mensual</h3><p class="section-intro">Importes acordados frente a costos registrados</p>${renderChart()}</div><div class="card card-pad"><h3 style="font-size:15px">Margen estimado</h3><div class="money-box highlight" style="margin:17px 0"><small>Importes cargados − costos</small><strong class="${charged-cost<0?'text-negative':'text-positive'}">${money(charged-cost)}</strong></div><p class="muted-sm" style="line-height:1.8">Es una aproximación, no una utilidad neta: no contempla alquiler, impuestos, herramientas, gastos generales ni el criterio de reconocimiento contable. La mano de obra aquí se considera un costo interno.</p></div></div>
+  <div class="stats-grid">${stat('Importes acordados',money(charged),'Total cargado en los trabajos','wallet')}${stat('Pagos recibidos',money(paid),'Monto efectivamente abonado','trending')}${stat('Costos registrados',money(cost),'Repuestos y mano de obra','wrench')}${stat('Saldo pendiente',money(pending),'Pendiente de cobrar','clock')}${stat('Resultado estimado',money(charged-cost),'Acordado menos costos directos; no es caja ni utilidad contable','trending')}${stat('Resultado mano de obra',money(laborNet),'Solo trabajos con renglones de mano de obra; ventas '+money(laborSales),'wrench')}</div>
+  <div class="dashboard-grid"><div class="card card-pad"><h3 style="font-size:15px">Evolución mensual</h3><p class="section-intro">Importes acordados frente a costos registrados</p>${renderChart()}</div><div class="card card-pad"><h3 style="font-size:15px">Margen estimado</h3><div class="money-box highlight" style="margin:17px 0"><small>Importes cargados − costos</small><strong class="${charged-cost<0?'text-negative':'text-positive'}">${money(charged-cost)}</strong></div><p class="muted-sm" style="line-height:1.8">El resultado estimado incluye ingresos todavía no cobrados y resta solo costos directos; no es utilidad neta contable ni saldo bancario. Faltan alquiler, impuestos, comisiones y otros gastos. Resultado de mano de obra = renglones de mano de obra − costo interno, solo en trabajos con desglose.</p></div></div>
+  ${renderPaymentDestinations()}
   <div class="card finance-records"><div class="card-heading"><div><h3>Detalle por trabajo</h3><p>Consultá importes, costos y saldos por intervención</p></div></div>
   <div class="finance-toolbar"><div class="list-search-field">${icon('search',18)}<label class="sr-only" for="finance-search">Buscar en movimientos</label><input id="finance-search" type="search" placeholder="Buscar trabajo, patente o cliente…" value="${esc(financeQuery)}" autocomplete="off" /></div><div class="finance-tabs" role="group" aria-label="Filtrar movimientos">${[['all','Todos'],['unpaid','Con saldo'],['negative','Margen negativo']].map(([v,t])=>`<button type="button" data-finance-filter="${v}" aria-pressed="${financeFilter===v}" class="filter-tab ${financeFilter===v?'active':''}">${t}</button>`).join('')}</div></div><div id="finance-results">${renderFinanceResults()}</div></div>`;
+}
+function renderPaymentDestinations(){
+  const accounts=db.settings.accounts||[];
+  const orders=db.orders.filter(o=>o.documentKind!=='quote');
+  const payments=orders.flatMap(o=>(o.payments||[]).map(p=>({p,order:o})));
+  const known=sum(payments,x=>x.p.amount);
+  const historical=sum(orders,historicalUnallocated);
+  const accountRows=accounts.map(a=>({
+    label:a.name+(a.alias?' · '+a.alias:''),total:sum(payments,x=>x.p.accountId===a.id?x.p.amount:0)
+  }));
+  const cash=sum(payments,x=>x.p.method==='cash'?x.p.amount:0);
+  const other=sum(payments,x=>x.p.method==='other'?x.p.amount:0);
+  return '<section class="card card-pad detail-section" style="margin-bottom:20px"><div class="card-heading" style="padding:0 0 15px"><div><h3>Cobros por cuenta receptora</h3><p>Importes registrados con medio y destino, no concilian saldos bancarios.</p></div>'+button('Administrar cuentas','go-settings','btn-secondary btn-sm')+'</div>'+
+    '<div class="info-grid">'+accountRows.map(a=>descView(a.label,money(a.total))).join('')+
+    descView('Efectivo',money(cash))+descView('Otros medios',money(other))+descView('Cobros históricos sin clasificar',money(historical))+'</div>'+
+    '<p class="muted-sm">Cobros con detalle: '+money(known)+'. Los pagos cargados antes de esta funcionalidad siguen preservados, pero no se les inventa una cuenta.</p></section>';
 }
 function renderFinanceResults(){
   let orders=db.orders.filter(o=>o.documentKind!=='quote').sort((a,b)=>b.openedAt.localeCompare(a.openedAt));
   orders=orders.filter(o=>{const v=findVehicle(o.vehicleId);return matchesOrder(o,v,vehicleClient(v),financeQuery)&&(financeFilter==='all'||financeFilter==='unpaid'&&pendingAmount(o)>0||financeFilter==='negative'&&margin(o)<0);});
   const page=paginate(orders,financePage,15);financePage=page.page;
-  return `${listFooter(page,'finanzas')}${page.total?`<div class="table-scroll finance-table-wrap"><table class="data-table"><thead><tr><th>Trabajo</th><th>Costo</th><th>Acordado</th><th>Pagado</th><th>Saldo</th><th>Margen estimado</th></tr></thead><tbody>${page.items.map(o=>`<tr><td><button class="table-link" data-nav="trabajo" data-id="${esc(o.id)}"><span class="main-cell">${esc(o.title)}</span><span class="sub-cell">${esc(findVehicle(o.vehicleId)?.plate||'')} · ${formatDate(o.openedAt)}</span></button></td><td>${money(amount(o.partsCost)+amount(o.laborCost))}</td><td>${money(o.charged)}</td><td>${money(o.paid)}</td><td>${money(pendingAmount(o))}</td><td class="${margin(o)<0?'text-negative':'text-positive'}">${money(margin(o))}</td></tr>`).join('')}</tbody></table></div><div class="finance-mobile-list">${page.items.map(o=>{const v=findVehicle(o.vehicleId);return `<button class="finance-mobile-card" data-nav="trabajo" data-id="${esc(o.id)}"><span class="order-mobile-top"><strong>${esc(o.title)}</strong>${icon('chevron',17)}</span><span class="order-mobile-vehicle">${esc(v?.plate||'')} · ${formatDate(o.openedAt)}</span><span class="finance-mobile-metrics"><span><small>Acordado</small><strong>${money(o.charged)}</strong></span><span><small>Pagado</small><strong>${money(o.paid)}</strong></span><span><small>Saldo</small><strong class="${pendingAmount(o)>0?'text-negative':'text-positive'}">${money(pendingAmount(o))}</strong></span></span></button>`;}).join('')}</div>`:db.orders.some(o=>o.documentKind!=='quote')?listNoMatch('finanzas'):empty('Sin movimientos todavía','Los importes que cargues en tus trabajos aparecerán acá.','','wallet')}`;
+  return `${listFooter(page,'finanzas')}${page.total?`<div class="table-scroll finance-table-wrap"><table class="data-table"><thead><tr><th>Trabajo</th><th>Costo</th><th>Acordado</th><th>Pagado</th><th>Saldo</th><th>Resultado estimado</th><th>Mano de obra neta*</th></tr></thead><tbody>${page.items.map(o=>`<tr><td><button class="table-link" data-nav="trabajo" data-id="${esc(o.id)}"><span class="main-cell">${esc(o.title)}</span><span class="sub-cell">${esc(findVehicle(o.vehicleId)?.plate||'')} · ${formatDate(o.openedAt)}</span></button></td><td>${money(amount(o.partsCost)+amount(o.laborCost))}</td><td>${money(o.charged)}</td><td>${money(o.paid)}</td><td>${money(pendingAmount(o))}</td><td class="${margin(o)<0?'text-negative':'text-positive'}">${money(margin(o))}</td><td>${laborContribution(o)===null?'—':money(laborContribution(o))}</td></tr>`).join('')}</tbody></table></div><div class="finance-mobile-list">${page.items.map(o=>{const v=findVehicle(o.vehicleId);return `<button class="finance-mobile-card" data-nav="trabajo" data-id="${esc(o.id)}"><span class="order-mobile-top"><strong>${esc(o.title)}</strong>${icon('chevron',17)}</span><span class="order-mobile-vehicle">${esc(v?.plate||'')} · ${formatDate(o.openedAt)}</span><span class="finance-mobile-metrics"><span><small>Acordado</small><strong>${money(o.charged)}</strong></span><span><small>Pagado</small><strong>${money(o.paid)}</strong></span><span><small>Saldo</small><strong class="${pendingAmount(o)>0?'text-negative':'text-positive'}">${money(pendingAmount(o))}</strong></span></span></button>`;}).join('')}</div>`:db.orders.some(o=>o.documentKind!=='quote')?listNoMatch('finanzas'):empty('Sin movimientos todavía','Los importes que cargues en tus trabajos aparecerán acá.','','wallet')}`;
 }
 function refreshFinanceResults(){const node=document.querySelector('#finance-results');if(node)node.innerHTML=renderFinanceResults();document.querySelectorAll('[data-finance-filter]').forEach(el=>{const active=el.dataset.financeFilter===financeFilter;el.classList.toggle('active',active);el.setAttribute('aria-pressed',String(active));});}
 
@@ -303,6 +325,18 @@ function renderVehicleDetail(id){
   <section class="card card-pad detail-section"><div class="card-heading history-heading"><div><h3>Historial de servicios</h3><p>Todo lo que se hizo en este vehículo, organizado por fecha.</p></div><span class="tag">${works.length} registros</span></div>${works.length?`${renderHistoryToolbar()}<div id="vehicle-history-results">${renderVehicleHistory(id)}</div>`:empty('Sin historial','Agregá el primer trabajo para construir el historial del vehículo.',button('Registrar primer trabajo','new-order','btn-primary',`data-vehicle="${esc(id)}"`))}</section></div>
   <div><div class="card card-pad detail-section"><h3>Propietario</h3><div class="card-top"><div class="avatar">${esc(initials(c?.name))}</div><div class="person-info"><h3>${esc(c?.name||'Sin propietario')}</h3><p>${esc(c?.phone||'Sin teléfono')}</p></div></div><div class="vehicle-owner-actions">${button('Abrir ficha del cliente','view-client','btn-secondary',`data-id="${esc(c?.id||'')}"`)}${c?.phone?phoneLink(c.phone):''}</div></div><div class="card card-pad"><h3>Administración</h3><p class="muted-sm">Solo podés eliminar un vehículo sin trabajos asociados.</p>${button(`${icon('trash')} Eliminar vehículo`,'delete-vehicle','btn-danger-ghost btn-sm',`data-id="${esc(id)}"`)}</div></div></div>`;
 }
+function renderPaymentLedger(order){
+  if(order.documentKind==='quote')return '';
+  const history=order.payments||[],historical=historicalUnallocated(order);
+  const accounts=db.settings.accounts||[];
+  return '<div class="divider"></div><h3>Historial de cobros</h3>'+
+    (history.length?'<div class="detail-list">'+history.map(p=>{
+      const a=accounts.find(x=>x.id===p.accountId);
+      return '<div class="detail-row"><div class="detail-content"><strong>'+esc(PAYMENT_METHODS[p.method]||p.method)+' · '+money(p.amount)+'</strong><small>'+
+        esc(formatDate(p.date))+(a?' · '+esc(a.name):'')+(p.reference?' · Ref. '+esc(p.reference):'')+'</small></div></div>';
+    }).join('')+'</div>':'<p class="muted-sm">Sin cobros detallados todavía.</p>')+
+    (historical>0?'<p class="notice">Cobros anteriores sin medio/cuenta informados: <strong>'+money(historical)+'</strong>. No se asignaron automáticamente.</p>':'');
+}
 function renderFinancialBox(order,id,cost){
   const o=order;
   if(o.documentKind==='quote'){
@@ -310,7 +344,7 @@ function renderFinancialBox(order,id,cost){
       '<p class="section-intro">Estimación informativa: no es una cuenta por cobrar ni un trabajo facturado. Podés editar sus renglones y exportarlo en Excel.</p>'+
       '<div class="money-box highlight"><small>Importe presupuestado</small><strong>'+money(o.charged)+'</strong></div></div>';
   }
-  return `<div class="card card-pad detail-section"><h3>Balance del trabajo</h3><div class="money-grid" style="margin-top:18px"><div class="money-box"><small>Costo de repuestos</small><strong>${money(o.partsCost)}</strong></div><div class="money-box"><small>Costo de mano de obra</small><strong>${money(o.laborCost)}</strong></div><div class="money-box"><small>Costo total</small><strong>${money(cost)}</strong></div><div class="money-box"><small>Importe acordado</small><strong>${money(o.charged)}</strong></div><div class="money-box highlight"><small>Pagado</small><strong>${money(o.paid)}</strong></div><div class="money-box ${pendingAmount(o)?'due':''}"><small>Saldo pendiente</small><strong>${money(pendingAmount(o))}</strong></div></div><div class="divider"></div><div class="info-item"><small>Margen bruto estimado</small><strong class="${margin(o)<0?'text-negative':'text-positive'}" style="font-size:22px">${money(margin(o))}</strong></div><div style="margin-top:20px">${button(`${icon('plus')} Registrar cobro`,'add-payment',pendingAmount(o)>0?'btn-primary':'btn-secondary',`data-id="${esc(id)}" ${pendingAmount(o)===0?'disabled':''}`)}</div></div>`;
+  return `<div class="card card-pad detail-section"><h3>Balance del trabajo</h3><div class="money-grid" style="margin-top:18px"><div class="money-box"><small>Costo de repuestos</small><strong>${money(o.partsCost)}</strong></div><div class="money-box"><small>Costo de mano de obra</small><strong>${money(o.laborCost)}</strong></div><div class="money-box"><small>Costo total</small><strong>${money(cost)}</strong></div><div class="money-box"><small>Importe acordado</small><strong>${money(o.charged)}</strong></div><div class="money-box highlight"><small>Pagado</small><strong>${money(o.paid)}</strong></div><div class="money-box ${pendingAmount(o)?'due':''}"><small>Saldo pendiente</small><strong>${money(pendingAmount(o))}</strong></div></div><div class="divider"></div><div class="info-item"><small>Margen bruto estimado</small><strong class="${margin(o)<0?'text-negative':'text-positive'}" style="font-size:22px">${money(margin(o))}</strong></div><div style="margin-top:20px">${button(`${icon('plus')} Registrar cobro`,'add-payment',pendingAmount(o)>0?'btn-primary':'btn-secondary',`data-id="${esc(id)}" ${pendingAmount(o)===0?'disabled':''}`)}</div>${renderPaymentLedger(o)}</div>`;
 }
 
 function renderOrderDetail(id){
@@ -326,10 +360,21 @@ function renderSearch(){
   const os=db.orders.filter(o=>{const v=findVehicle(o.vehicleId);return matchesOrder(o,v,vehicleClient(v),activeQuery);});
   return `${sectionHead('Resultados de búsqueda',`Buscando “${esc(activeQuery)}” en clientes, vehículos y trabajos.`)}<div class="card"><div class="card-heading"><h3>Clientes <span class="tag">${cs.length}</span></h3></div>${cs.length?`<div class="detail-list">${cs.slice(0,8).map(c=>`<button class="detail-row table-link" data-nav="cliente" data-id="${esc(c.id)}"><div class="detail-icon">${icon('users')}</div><div class="detail-content"><strong>${esc(c.name)}</strong><small>${esc(c.phone||c.email||'Sin contacto')}</small></div>${icon('chevron')}</button>`).join('')}</div>`:empty('Ningún cliente coincide','Probá con otro término.','','users')}</div><div class="card" style="margin-top:18px"><div class="card-heading"><h3>Vehículos <span class="tag">${vs.length}</span></h3></div>${vs.length?`<div class="detail-list">${vs.slice(0,8).map(v=>`<button class="detail-row table-link" data-nav="vehiculo" data-id="${esc(v.id)}"><div class="detail-icon">${icon('car')}</div><div class="detail-content"><strong>${esc(fullVehicle(v))}</strong><small>${esc(v.plate)} · ${esc(findClient(v.clientId)?.name||'')}</small></div>${icon('chevron')}</button>`).join('')}</div>`:empty('Ningún vehículo coincide','Buscá por patente, marca o modelo.','','car')}</div><div class="card" style="margin-top:18px"><div class="card-heading"><h3>Trabajos <span class="tag">${os.length}</span></h3></div>${os.length?`<div class="table-scroll">${renderOrderTable(os.slice(0,8))}</div>`:empty('Ningún trabajo coincide','Buscá por nombre del trabajo, categoría o patente.')}</div>`;
 }
+function renderAccountSettings(){
+  const accounts=db.settings.accounts||[];
+  return '<section class="card card-pad detail-section" style="margin-top:18px"><div class="card-heading" style="padding:0 0 16px"><div><h3>Cuentas que reciben cobros</h3><p>Elegí un nombre para identificar adónde llega el dinero. No ingreses contraseñas.</p></div>'+
+    button(icon('plus',15)+' Agregar cuenta','new-account','btn-secondary btn-sm')+'</div>'+
+    (accounts.length?'<div class="detail-list">'+accounts.map(a=>
+      '<div class="detail-row"><div class="detail-content"><strong>'+esc(a.name)+'</strong><small>'+
+      esc(a.kind==='bank'?'Banco':a.kind==='wallet'?'Billetera':'Otra cuenta')+(a.alias?' · '+esc(a.alias):'')+
+      '</small></div>'+button('Editar','edit-account','btn-secondary btn-sm','data-id="'+esc(a.id)+'"')+'</div>').join('')+'</div>':
+      '<p class="muted-sm">Todavía no hay cuentas configuradas. Podés agregarlas aquí o durante el primer cobro electrónico.</p>')+
+    '</section>';
+}
 function renderSettings(){
   return `${sectionHead('Configuración y respaldos','Personalizá AutoTrace y administrá tu información.')}
   ${memoryOnly?'<p class="notice warning">Este navegador no permite almacenar datos. No cargues información real en esta sesión.</p>':''}
-  <div class="settings-grid"><div><div class="card settings-block detail-section"><h3>Preferencias del taller</h3><p>Estos ajustes afectan la visualización, no modifican tus importes.</p><form id="settings-form" class="form-grid"><div class="field span-2"><label for="garageName">Nombre del taller</label><input id="garageName" name="garageName" maxlength="100" value="${esc(db.settings.garageName)}" required /></div><div class="field"><label for="currency">Moneda</label><select id="currency" name="currency">${['ARS','USD','EUR'].map(c=>`<option value="${c}" ${db.settings.currency===c?'selected':''}>${c}</option>`).join('')}</select></div><div class="field" style="justify-content:flex-end"> <button class="btn btn-primary" type="submit">Guardar preferencias</button></div></form></div><div class="card settings-block"><h3>Datos locales</h3><p>Descargá una copia completa de clientes, vehículos, trabajos y preferencias. Importar reemplaza todos los registros actuales.</p><div class="settings-actions">${button(`${icon('download')} Exportar JSON`,'export-json','btn-primary')}${button(`${icon('upload')} Importar JSON`,'import-json','btn-secondary')}${button(`${icon('download')} Exportar CSV`,'export-csv','btn-secondary')}${!desktopInvoke?`${button(`${icon('download')} Excel completo`,'export-excel-desktop','btn-primary')}${button(`${icon('upload')} Restaurar Excel completo`,'import-excel-desktop','btn-secondary')}${button(`${icon('upload')} Importar presupuesto / remito`,'import-legacy-document','btn-secondary')}`:''}${desktopInvoke?`${button(`${icon('download')} Excel completo`,'export-excel-desktop','btn-primary')}${button(`${icon('upload')} Importar Excel`,'import-excel-desktop','btn-secondary')}${button(`${icon('upload')} Importar presupuesto / remito`,'import-legacy-document','btn-secondary')}${button(`${icon('image')} Configurar logo del taller`,'choose-workshop-logo','btn-secondary')}${button(`${icon('upload')} Recuperar SQLite`,'restore-sqlite-desktop','btn-secondary')}${button(`${icon('shield')} Crear respaldo ahora`,'backup-desktop-now','btn-secondary')}${button(`${icon('download')} Elegir carpeta de respaldo`,'choose-external-backup','btn-secondary')}${button(`${icon('shield')} Probar recuperación`,'test-backup-recovery','btn-secondary')}`:''}</div><div class="notice" style="margin-top:23px">${icon('shield',17)} ${desktopInvoke?'SQLite local. Las copias automáticas SQLite + Excel se guardan EN ESTA COMPUTADORA. Para protegerte ante pérdida del equipo, exportá una copia a un disco externo. El Excel contiene datos personales y costos internos.':'Los registros se guardan con IndexedDB en este navegador. No se envían a GitHub ni a servidores de AutoTrace. Si borrás datos del sitio o cambiás de dispositivo, necesitarás el respaldo.'}</div></div></div><div><div class="card settings-block detail-section"><h3>Estado de la instalación</h3><p>${desktopInvoke?'AutoTrace Desktop funciona con SQLite local, sin servidor.':'La PWA funciona sin conexión después de abrirla por primera vez.'}</p><div class="info-grid">${descView('Clientes',String(db.clients.length))}${descView('Vehículos',String(db.vehicles.length))}${descView('Trabajos',String(db.orders.length))}${descView('Almacenamiento',desktopInvoke?'SQLite local':memoryOnly?'No disponible':'Local (IndexedDB)')}${desktopInvoke?descView('Carpeta de respaldo adicional',lastDesktopBackup?.externalDirectory||'Sin configurar'):''}${desktopInvoke?descView('Último respaldo local verificado',lastDesktopBackup?.lastBackupUnixMs?new Date(Number(lastDesktopBackup.lastBackupUnixMs)).toLocaleString('es-AR'):'No hay copia válida'):''}${desktopInvoke?descView('Última copia secundaria verificada',lastDesktopBackup?.lastExternalBackupUnixMs?new Date(Number(lastDesktopBackup.lastExternalBackupUnixMs)).toLocaleString('es-AR'):'No configurada / no válida'):''}</div></div><div class="card settings-block"><h3>Zona de mantenimiento</h3><p>Las acciones siguientes eliminan datos. Antes de continuar, exportá un respaldo JSON.</p><div class="settings-actions">${db.settings.demo?button('Eliminar datos de muestra','reset-demo','btn-secondary'):''}${button(`${icon('trash')} Borrar todos los datos`,'clear-all','btn-danger-ghost')}</div></div><div class="notice warning" style="margin-top:19px">${desktopInvoke?'Las copias automáticas locales NO protegen ante robo, fallo total del disco o incendio. Copiá el Excel completo y la copia SQLite a un medio externo. No hay cifrado automático ni backups en la nube.':'Esta versión está pensada para pruebas y uso individual. No incluye cuentas, cifrado, facturación fiscal, copias automáticas ni sincronización entre dispositivos.'}</div></div></div>`;
+  <div class="settings-grid"><div><div class="card settings-block detail-section"><h3>Preferencias del taller</h3><p>Estos ajustes afectan la visualización, no modifican tus importes.</p><form id="settings-form" class="form-grid"><div class="field span-2"><label for="garageName">Nombre del taller</label><input id="garageName" name="garageName" maxlength="100" value="${esc(db.settings.garageName)}" required /></div><div class="field"><label for="currency">Moneda</label><select id="currency" name="currency">${['ARS','USD','EUR'].map(c=>`<option value="${c}" ${db.settings.currency===c?'selected':''}>${c}</option>`).join('')}</select></div><div class="field" style="justify-content:flex-end"> <button class="btn btn-primary" type="submit">Guardar preferencias</button></div></form></div><div class="card settings-block"><h3>Datos locales</h3><p>Descargá una copia completa de clientes, vehículos, trabajos y preferencias. Importar reemplaza todos los registros actuales.</p><div class="settings-actions">${button(`${icon('download')} Exportar JSON`,'export-json','btn-primary')}${button(`${icon('upload')} Importar JSON`,'import-json','btn-secondary')}${button(`${icon('download')} Exportar CSV`,'export-csv','btn-secondary')}${!desktopInvoke?`${button(`${icon('download')} Excel completo`,'export-excel-desktop','btn-primary')}${button(`${icon('upload')} Restaurar Excel completo`,'import-excel-desktop','btn-secondary')}${button(`${icon('upload')} Importar presupuesto / remito`,'import-legacy-document','btn-secondary')}`:''}${desktopInvoke?`${button(`${icon('download')} Excel completo`,'export-excel-desktop','btn-primary')}${button(`${icon('upload')} Importar Excel`,'import-excel-desktop','btn-secondary')}${button(`${icon('upload')} Importar presupuesto / remito`,'import-legacy-document','btn-secondary')}${button(`${icon('image')} Configurar logo del taller`,'choose-workshop-logo','btn-secondary')}${button(`${icon('upload')} Recuperar SQLite`,'restore-sqlite-desktop','btn-secondary')}${button(`${icon('shield')} Crear respaldo ahora`,'backup-desktop-now','btn-secondary')}${button(`${icon('download')} Elegir carpeta de respaldo`,'choose-external-backup','btn-secondary')}${button(`${icon('shield')} Probar recuperación`,'test-backup-recovery','btn-secondary')}`:''}</div><div class="notice" style="margin-top:23px">${icon('shield',17)} ${desktopInvoke?'SQLite local. Las copias automáticas SQLite + Excel se guardan EN ESTA COMPUTADORA. Para protegerte ante pérdida del equipo, exportá una copia a un disco externo. El Excel contiene datos personales y costos internos.':'Los registros se guardan con IndexedDB en este navegador. No se envían a GitHub ni a servidores de AutoTrace. Si borrás datos del sitio o cambiás de dispositivo, necesitarás el respaldo.'}</div></div></div><div><div class="card settings-block detail-section"><h3>Estado de la instalación</h3><p>${desktopInvoke?'AutoTrace Desktop funciona con SQLite local, sin servidor.':'La PWA funciona sin conexión después de abrirla por primera vez.'}</p><div class="info-grid">${descView('Clientes',String(db.clients.length))}${descView('Vehículos',String(db.vehicles.length))}${descView('Trabajos',String(db.orders.length))}${descView('Almacenamiento',desktopInvoke?'SQLite local':memoryOnly?'No disponible':'Local (IndexedDB)')}${desktopInvoke?descView('Carpeta de respaldo adicional',lastDesktopBackup?.externalDirectory||'Sin configurar'):''}${desktopInvoke?descView('Último respaldo local verificado',lastDesktopBackup?.lastBackupUnixMs?new Date(Number(lastDesktopBackup.lastBackupUnixMs)).toLocaleString('es-AR'):'No hay copia válida'):''}${desktopInvoke?descView('Última copia secundaria verificada',lastDesktopBackup?.lastExternalBackupUnixMs?new Date(Number(lastDesktopBackup.lastExternalBackupUnixMs)).toLocaleString('es-AR'):'No configurada / no válida'):''}</div></div><div class="card settings-block"><h3>Zona de mantenimiento</h3><p>Las acciones siguientes eliminan datos. Antes de continuar, exportá un respaldo JSON.</p><div class="settings-actions">${db.settings.demo?button('Eliminar datos de muestra','reset-demo','btn-secondary'):''}${button(`${icon('trash')} Borrar todos los datos`,'clear-all','btn-danger-ghost')}</div></div>${renderAccountSettings()}<div class="notice warning" style="margin-top:19px">${desktopInvoke?'Las copias automáticas locales NO protegen ante robo, fallo total del disco o incendio. Copiá el Excel completo y la copia SQLite a un medio externo. No hay cifrado automático ni backups en la nube.':'Esta versión está pensada para pruebas y uso individual. Las cuentas receptoras son etiquetas locales para registrar cobros; no se conectan a tu banco. No incluye cifrado, facturación fiscal, copias automáticas ni sincronización entre dispositivos.'}</div></div></div>`;
 }
 const input = (label,name,value='',opts={})=>`<div class="field ${opts.full?'span-2':''}"><label for="f-${name}">${esc(label)}${opts.required?' *':''}</label>${opts.textarea?`<textarea id="f-${name}" name="${name}" maxlength="${opts.maxlength||3000}" placeholder="${esc(opts.placeholder||'')}">${esc(value)}</textarea>`:opts.select?`<select id="f-${name}" name="${name}" ${opts.required?'required':''}>${opts.select.map(x=>`<option value="${esc(x.value)}" ${String(x.value)===String(value)?'selected':''}>${esc(x.label)}</option>`).join('')}</select>`:`<input id="f-${name}" type="${opts.type||'text'}" name="${name}" value="${esc(value)}" ${opts.required?'required':''} ${opts.min!==undefined?`min="${opts.min}"`:''} ${opts.max!==undefined?`max="${opts.max}"`:''} ${opts.step!==undefined?`step="${opts.step}"`:''} maxlength="${opts.maxlength||120}" placeholder="${esc(opts.placeholder||'')}" />`}${opts.hint?`<small>${esc(opts.hint)}</small>`:''}</div>`;
 function showModal(title,subtitle,kind,fields,id=''){
@@ -480,24 +525,82 @@ function orderForm(id='',presetVehicle=''){
       input('Costo de repuestos','partsCost',o?.partsCost??0,{type:'number',min:0,step:'.01'}),
       input('Costo interno de mano de obra','laborCost',o?.laborCost??0,{type:'number',min:0,step:'.01'}),
       input('Importe acordado','charged',o?.charged??0,{type:'number',min:0,step:'.01'}),
-      input('Ya pagado','paid',o?.paid??0,{type:'number',min:0,step:'.01',hint:'Total recibido hasta ahora.'}),
+      '<p class="muted-sm span-2">Los cobros se registran desde la ficha del trabajo para identificar medio, fecha y cuenta receptora.</p>',
       input('Notas adicionales','notes',o?.notes,{textarea:true,full:true,placeholder:'Pendientes o recomendaciones…'})
     ].join('')}</div></details></div>`
   ].join(''),id);
   if(matchMedia('(min-width: 851px)').matches) setTimeout(()=>document.querySelector(chosen?'#f-title':'#vehicle-lookup')?.focus(),0);
 }
+function accountForm(id=''){
+  const a=(db.settings.accounts||[]).find(item=>item.id===id);
+  showModal(a?'Editar cuenta receptora':'Nueva cuenta receptora',
+    'Un nombre claro permite distinguir cuentas bancarias y billeteras al cobrar.','account',[
+      input('Nombre de la cuenta','name',a?.name,{required:true,full:true,maxlength:120,placeholder:'Ej. Banco Provincia - Cuenta principal'}),
+      input('Tipo','kind',a?.kind||'bank',{select:[{value:'bank',label:'Banco'},{value:'wallet',label:'Billetera virtual'},{value:'other',label:'Otro'}],required:true}),
+      input('Alias / identificador (opcional)','alias',a?.alias,{maxlength:120,full:true,placeholder:'Ej. taller.mp'})
+    ].join(''),id);
+}
+async function saveAccountForm(form){
+  const fd=new FormData(form),get=k=>String(fd.get(k)||'').trim();
+  const item={id:form.dataset.id||uid(),name:get('name'),kind:get('kind'),alias:get('alias')};
+  if(!item.name){toast('Ingresá un nombre para la cuenta.','error');return;}
+  const accounts=db.settings.accounts||[];
+  if(accounts.some(a=>a.id!==item.id&&a.name.toUpperCase()===item.name.toUpperCase())){
+    toast('Ya existe una cuenta con ese nombre.','error');return;
+  }
+  const saved=await updateData(data=>{
+    const list=data.settings.accounts||[];
+    const i=list.findIndex(a=>a.id===item.id);
+    if(i>=0)list[i]=item;else list.push(item);
+    data.settings.accounts=list;
+  },'Cuenta receptora guardada.');
+  if(saved){modalOriginal='';document.querySelector('#form-dialog').close();}
+}
+function refreshPaymentFields(form){
+  if(!form||form.dataset.kind!=='payment')return;
+  const electronic=ELECTRONIC_METHODS.includes(form.elements.namedItem('method')?.value);
+  const area=form.querySelector('#payment-destination'),account=form.elements.namedItem('accountId');
+  area.hidden=!electronic;
+  account.disabled=!electronic;
+  if(!electronic)account.value='';
+  else if(!account.value)account.value=account.querySelector('option[value="new"]')?'new':'';
+  const newFields=form.querySelector('#payment-new-account');
+  const create=electronic&&account.value==='new';
+  newFields.hidden=!create;
+  for(const input of newFields.querySelectorAll('input, select')){
+    input.disabled=!create;
+    if(input.name==='accountName')input.required=create;
+  }
+}
 function paymentForm(id){
   const o=findOrder(id);if(!o)return;
   const pending=pendingAmount(o);if(!pending){toast('Este trabajo no tiene saldo pendiente.');return;}
+  const accounts=db.settings.accounts||[];
+  const methodChoices=Object.entries(PAYMENT_METHODS).map(([value,label])=>({value,label}));
+  const accountChoices=accounts.map(a=>({value:a.id,label:a.name+(a.alias?' · '+a.alias:'')}));
+  accountChoices.push({value:'new',label:'+ Agregar nueva cuenta ahora'});
   showModal('Registrar cobro',`Saldo pendiente: ${money(pending)} · ${o.title}`,'payment',[
-    input('Importe recibido','payment',pending,{required:true,type:'number',min:'.01',max:pending,step:'.01',full:true,hint:'Se sumará a los pagos anteriores del trabajo.'})
+    input('Importe recibido','payment',pending,{required:true,type:'number',min:'.01',max:pending,step:'.01',full:true}),
+    input('Fecha de cobro','paymentDate',isoDate(new Date()),{required:true,type:'date'}),
+    input('Medio de pago','method','cash',{required:true,select:methodChoices}),
+    '<div id="payment-destination" class="field span-2" hidden><label for="f-accountId">Cuenta que recibió el pago *</label>'+
+      '<select id="f-accountId" name="accountId">'+accountChoices.map(c=>'<option value="'+esc(c.value)+'">'+esc(c.label)+'</option>').join('')+'</select>'+
+      '<small>Cuenta real que recibió la transferencia, tarjeta o QR; no es necesariamente la del cliente.</small></div>',
+    '<div id="payment-new-account" class="span-2" hidden>'+
+      input('Nombre de la nueva cuenta','accountName','',{required:true,maxlength:120,full:true,placeholder:'Ej. Banco Nación - Caja de ahorro'})+
+      input('Tipo de cuenta','accountKind','bank',{required:true,select:[{value:'bank',label:'Banco'},{value:'wallet',label:'Billetera virtual'},{value:'other',label:'Otro'}]})+
+      input('Alias / identificador (opcional)','accountAlias','',{maxlength:120})+'</div>',
+    input('Referencia de operación (opcional)','paymentReference','',{maxlength:160,full:true,placeholder:'Comprobante, ID de transacción…'})
   ].join(''),id);
+  refreshPaymentFields(document.querySelector('#entity-form'));
 }
 async function saveForm(form){
   if(!form.reportValidity())return;
   const fd=new FormData(form);const get=k=>String(fd.get(k)||'').trim();
   const kind=form.dataset.kind,id=form.dataset.id,existing=!!id;
+  if(kind==='account')return saveAccountForm(form);
   const baseId=id||uid();
+  let newPaymentAccount=null;
   let next,routeTo,message;
   if(kind==='legacy'){return saveLegacyWizard(form);
   }else if(kind==='client'){
@@ -513,24 +616,40 @@ async function saveForm(form){
     routeTo=['vehiculo',baseId];message=existing?'Vehículo actualizado.':'Vehículo agregado.';
   }else if(kind==='order'){
     if(!get('vehicleId')||!findVehicle(get('vehicleId'))){toast('Primero buscá y seleccioná un vehículo de la lista.','error');form.querySelector('#vehicle-lookup')?.focus();return;}
-    const price=amount(get('charged')),paid=amount(get('paid'));
-    if(paid>price){toast('El total pagado no puede superar el importe acordado.','error');return;}
-    if(!get('openedAt')){toast('Ingresá la fecha del trabajo.','error');return;}
+    const price=amount(get('charged'));
     const previous=findOrder(id);
+    if((previous?.paid??0)>price){toast('El importe acordado no puede ser menor a lo ya cobrado.','error');return;}
+    if(!get('openedAt')){toast('Ingresá la fecha del trabajo.','error');return;}
     let items;try{items=formOrderLines(form);}catch(error){toast(error.message,'error');return;}
     if(items.length&&Math.abs(lineAmount(items)-price)>0.011){
       toast('El importe acordado debe coincidir con los renglones.','error');return;
     }
     const status=get('status');
     const wasClosed=previous&&['done','delivered'].includes(previous.status);
-    next={id:baseId,vehicleId:get('vehicleId'),title:get('title'),category:get('category'),status,openedAt:get('openedAt'),completedAt:['done','delivered'].includes(status)?(wasClosed?previous.completedAt||isoDate(new Date()):isoDate(new Date())):'',mileage:amount(get('mileage')),description:get('description'),partsCost:amount(get('partsCost')),laborCost:amount(get('laborCost')),charged:price,paid,notes:get('notes'),createdAt:previous?.createdAt||isoDate(new Date()),...(items.length?{items}:{}),...(previous?.documentKind?{documentKind:previous.documentKind}:{}),...(previous?.documentNumber?{documentNumber:previous.documentNumber}:{}),...(previous?.sourceFingerprint?{sourceFingerprint:previous.sourceFingerprint}:{})};
+    next={id:baseId,vehicleId:get('vehicleId'),title:get('title'),category:get('category'),status,openedAt:get('openedAt'),completedAt:['done','delivered'].includes(status)?(wasClosed?previous.completedAt||isoDate(new Date()):isoDate(new Date())):'',mileage:amount(get('mileage')),description:get('description'),partsCost:amount(get('partsCost')),laborCost:amount(get('laborCost')),charged:price,paid:previous?.paid??0,notes:get('notes'),createdAt:previous?.createdAt||isoDate(new Date()),...(items.length?{items}:{}),...(previous?.documentKind?{documentKind:previous.documentKind}:{}),...(previous?.documentNumber?{documentNumber:previous.documentNumber}:{}),...(previous?.sourceFingerprint?{sourceFingerprint:previous.sourceFingerprint}:{}),...(previous?.payments?.length?{payments:previous.payments}:{})};
     routeTo=['trabajo',baseId];message=existing?'Trabajo actualizado.':'Trabajo registrado.';
   }else if(kind==='payment'){
     const o=findOrder(id);const payment=Number(get('payment'));
     if(!o||!Number.isFinite(payment)||payment<=0||payment>pendingAmount(o)+.00001){toast('Ingresá un importe válido, que no supere el saldo.','error');return;}
-    next={...o,paid:amount(Number(o.paid)+payment)};routeTo=['trabajo',id];message='Cobro registrado.';
+    const method=get('method'),electronic=ELECTRONIC_METHODS.includes(method),date=get('paymentDate');
+    if(!Object.hasOwn(PAYMENT_METHODS,method)){toast('Seleccioná un medio de pago válido.','error');return;}
+    let accountId='';
+    if(electronic){
+      accountId=get('accountId');
+      if(accountId==='new'){
+        const name=get('accountName');
+        if(!name){toast('Ingresá el nombre de la cuenta receptora.','error');return;}
+        if((db.settings.accounts||[]).some(a=>a.name.toUpperCase()===name.toUpperCase())){toast('La cuenta ya existe. Seleccionala.','error');return;}
+        newPaymentAccount={id:uid(),name,kind:get('accountKind'),alias:get('accountAlias')};
+        accountId=newPaymentAccount.id;
+      }else if(!(db.settings.accounts||[]).some(a=>a.id===accountId)){toast('Seleccioná la cuenta que recibió el dinero.','error');return;}
+    }
+    const entry={id:uid(),date,amount:Math.round(payment*100)/100,method,accountId,reference:get('paymentReference')};
+    next={...o,paid:amount(Number(o.paid)+payment),payments:[...(o.payments||[]),entry]};
+    routeTo=['trabajo',id];message='Cobro registrado con medio y destino.';
   }else return;
   const saved=await updateData(data=>{
+    if(newPaymentAccount)(data.settings.accounts??=[]).push(newPaymentAccount);
     const key=kind==='client'?'clients':kind==='vehicle'?'vehicles':'orders';
     const index=data[key].findIndex(item=>item.id===baseId);
     if(index>=0)data[key][index]=next;else data[key].push(next);
@@ -804,8 +923,8 @@ async function scheduleDesktopBackups(){
 }
 function exportJSON(){const backup={format:'autotrace-backup',version:1,exportedAt:new Date().toISOString(),data:db};saveAsFile(JSON.stringify(backup,null,2),`autotrace-respaldo-${isoDate(new Date())}.json`,'application/json;charset=utf-8');toast('Respaldo JSON descargado.');}
 function exportCSV(){
-  const headers=['Fecha','Estado','Categoría','Trabajo','Cliente','Teléfono','Patente','Vehículo','Kilometraje','Costo repuestos','Costo mano de obra','Importe','Pagado','Pendiente','Margen'];
-  const rows=db.orders.filter(o=>o.documentKind!=='quote').map(o=>{const v=findVehicle(o.vehicleId),c=vehicleClient(v);return [o.openedAt,STATUSES[o.status],o.category,o.title,c?.name||'',c?.phone||'',v?.plate||'',fullVehicle(v),o.mileage,o.partsCost,o.laborCost,o.charged,o.paid,pendingAmount(o),margin(o)];});
+  const headers=['Fecha','Estado','Categoría','Trabajo','Cliente','Teléfono','Patente','Vehículo','Kilometraje','Costo repuestos','Costo mano de obra','Importe','Pagado','Pendiente','Resultado estimado','Mano de obra neta (si detallada)'];
+  const rows=db.orders.filter(o=>o.documentKind!=='quote').map(o=>{const v=findVehicle(o.vehicleId),c=vehicleClient(v);return [o.openedAt,STATUSES[o.status],o.category,o.title,c?.name||'',c?.phone||'',v?.plate||'',fullVehicle(v),o.mileage,o.partsCost,o.laborCost,o.charged,o.paid,pendingAmount(o),margin(o),laborContribution(o)??''];});
   saveAsFile('\ufeff'+[headers,...rows].map(r=>r.map(csvCell).join(';')).join('\r\n'),`autotrace-trabajos-${isoDate(new Date())}.csv`,'text/csv;charset=utf-8');toast('CSV de trabajos descargado.');
 }
 async function importJSON(file){
@@ -852,6 +971,8 @@ document.addEventListener('click',async event=>{
     case 'show-active-orders':activeFilter='active';listPages.trabajos=1;navigate('trabajos');break;
     case 'show-unpaid-orders':activeFilter='unpaid';listPages.trabajos=1;navigate('trabajos');break;
     case 'show-due-vehicles':vehicleFilter='due';listPages.vehiculos=1;navigate('vehiculos');break;
+    case 'new-account':accountForm();break;
+    case 'edit-account':accountForm(id);break;
     case 'new-client':clientForm();break;
     case 'edit-client':clientForm(id);break;
     case 'view-client':navigate('cliente',id);break;
@@ -930,7 +1051,19 @@ document.addEventListener('click',async event=>{
   }
 });
 document.addEventListener('submit',async event=>{
-  if(event.target.id==='entity-form'){event.preventDefault();await saveForm(event.target);}
+  if(event.target.id==='entity-form'){
+    event.preventDefault();
+    const form=event.target;
+    if(savingForms.has(form))return;
+    savingForms.add(form);
+    const submit=form.querySelector('button[type="submit"]');
+    if(submit)submit.disabled=true;
+    try { await saveForm(form); }
+    finally {
+      savingForms.delete(form);
+      if(submit?.isConnected)submit.disabled=false;
+    }
+  }
   if(event.target.id==='settings-form'){
     event.preventDefault();const fd=new FormData(event.target);const name=String(fd.get('garageName')||'').trim();const currency=String(fd.get('currency')||'');
     if(!name||!['ARS','USD','EUR'].includes(currency)){toast('Verificá las preferencias.','error');return;}
@@ -938,6 +1071,7 @@ document.addEventListener('submit',async event=>{
   }
 });
 document.addEventListener('change',async event=>{
+  if(event.target.name==='method'||event.target.name==='accountId'){refreshPaymentFields(event.target.form);return;}
   if(event.target.id==='legacy-client-select'){refreshLegacyWizard(event.target.form,true);return;}
   if(event.target.id==='legacy-vehicle-select'){refreshLegacyWizard(event.target.form);return;}
   if(event.target.id==='import-file')await importJSON(event.target.files?.[0]);

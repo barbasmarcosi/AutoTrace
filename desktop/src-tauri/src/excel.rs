@@ -13,6 +13,8 @@ const ORDERS: &[(&str,&str)] = &[("id","id"),("vehiculo_id","vehicleId"),("titul
 const ORDERS_V2: &[(&str,&str)] = &[("id","id"),("vehiculo_id","vehicleId"),("titulo","title"),("categoria","category"),("estado","status"),("fecha_apertura","openedAt"),("fecha_cierre","completedAt"),("kilometraje","mileage"),("descripcion","description"),("costo_repuestos","partsCost"),("costo_mano_obra","laborCost"),("importe_acordado","charged"),("total_pagado","paid"),("notas","notes"),("creado_el","createdAt"),("tipo_documento","documentKind"),("numero_documento","documentNumber"),("huella_origen","sourceFingerprint")];
 const LINES: &[(&str,&str)] = &[("trabajo_id","orderId"),("renglon_id","id"),("tipo","kind"),("descripcion","description"),("cantidad","quantity"),("valor_unitario","unitPrice")];
 const SETTINGS: &[(&str,&str)] = &[("nombre_taller","garageName"),("moneda","currency"),("datos_demostracion","demo")];
+const ACCOUNTS: &[(&str,&str)] = &[("id","id"),("nombre","name"),("tipo","kind"),("alias","alias")];
+const PAYMENTS: &[(&str,&str)] = &[("trabajo_id","orderId"),("cobro_id","id"),("fecha","date"),("importe","amount"),("medio","method"),("cuenta_id","accountId"),("referencia","reference")];
 
 pub(crate) fn canonical_bytes(data: &AppData) -> Result<Vec<u8>, String> {
     let mut v = serde_json::to_value(data).map_err(|e| e.to_string())?;
@@ -56,7 +58,16 @@ pub(crate) fn to_xlsx(data: &AppData) -> Result<Vec<u8>, String> {
     let mut wb = Workbook::new();
     let digest = checksum(data)?;
     let mut lines=Vec::new();
+    let mut payments=Vec::new();
+    let accounts=v["settings"]["accounts"].as_array().cloned().unwrap_or_default();
     for order in v["orders"].as_array().ok_or("Trabajos inválidos")?{
+        if let Some(receipts)=order.get("payments").and_then(Value::as_array){
+            for payment in receipts {
+                let mut record=payment.as_object().ok_or("Cobro inválido")?.clone();
+                record.insert("orderId".into(),order["id"].clone());
+                payments.push(Value::Object(record));
+            }
+        }
         if let Some(items)=order.get("items").and_then(Value::as_array){
             for item in items {
                 let mut record=item.as_object().ok_or("Renglón inválido")?.clone();
@@ -67,7 +78,7 @@ pub(crate) fn to_xlsx(data: &AppData) -> Result<Vec<u8>, String> {
     }
     let manifest = vec![
         ("format","autotrace-backup-xlsx".to_string()),
-        ("schema_version","2".to_string()),
+        ("schema_version","3".to_string()),
         ("created_at_utc",chrono::Utc::now().to_rfc3339()),
         ("snapshot_id",uuid::Uuid::new_v4().to_string()),
         ("app_version",env!("CARGO_PKG_VERSION").to_string()),
@@ -79,6 +90,8 @@ pub(crate) fn to_xlsx(data: &AppData) -> Result<Vec<u8>, String> {
         ("count_vehicles",data_count(&v,"vehicles")?.to_string()),
         ("count_orders",data_count(&v,"orders")?.to_string()),
         ("count_lines",lines.len().to_string()),
+        ("count_accounts",accounts.len().to_string()),
+        ("count_payments",payments.len().to_string()),
     ];
     let ws = wb.add_worksheet(); ws.set_name("Manifest").map_err(xlsx_err)?;
     ws.set_column_width(0,25).map_err(xlsx_err)?; ws.set_column_width(1,72).map_err(xlsx_err)?;
@@ -92,6 +105,8 @@ pub(crate) fn to_xlsx(data: &AppData) -> Result<Vec<u8>, String> {
     emit_sheet(&mut wb,"Vehiculos",VEHICLES,v["vehicles"].as_array().ok_or("Falta Vehiculos")?)?;
     emit_sheet(&mut wb,"Trabajos",ORDERS_V2,v["orders"].as_array().ok_or("Falta Trabajos")?)?;
     emit_sheet(&mut wb,"DetalleTrabajos",LINES,&lines)?;
+    emit_sheet(&mut wb,"Cuentas",ACCOUNTS,&accounts)?;
+    emit_sheet(&mut wb,"Cobros",PAYMENTS,&payments)?;
     emit_sheet(&mut wb,"Configuracion",SETTINGS,&[v["settings"].clone()])?;
     wb.save_to_buffer().map_err(xlsx_err)
 }
@@ -125,7 +140,7 @@ fn read_rows(excel: &mut Xlsx<Cursor<&[u8]>>, name:&str, cols:&[(&str,&str)], ma
         for (col, (_,field)) in cols.iter().enumerate() {
             let cell = cells.get(col).unwrap_or(&Data::Empty);
             let v = match *field {
-                "mileage" | "partsCost" | "laborCost" | "charged" | "paid" | "quantity" | "unitPrice" => cell_as_number(cell, field)?,
+                "mileage" | "partsCost" | "laborCost" | "charged" | "paid" | "quantity" | "unitPrice" | "amount" => cell_as_number(cell, field)?,
                 "year" => match cell {
                     Data::Empty => Value::String(String::new()),
                     Data::String(s) if s.is_empty() => Value::String(String::new()),
@@ -144,7 +159,7 @@ fn read_rows(excel: &mut Xlsx<Cursor<&[u8]>>, name:&str, cols:&[(&str,&str)], ma
 }
 fn manifest(excel:&mut Xlsx<Cursor<&[u8]>>)->Result<std::collections::HashMap<String,String>,String>{
     let rows=excel.worksheet_range("Manifest").map_err(xlsx_err)?;
-    if !(rows.height()==13||rows.height()==14) || rows.width()!=2 {return Err("Manifest incompleto".into());}
+    if !(rows.height()==13||rows.height()==14||rows.height()==16) || rows.width()!=2 {return Err("Manifest incompleto".into());}
     let mut lines=rows.rows();
     let h=lines.next().ok_or("Manifest sin encabezado")?;
     if h[0].get_string()!=Some("clave") || h[1].get_string()!=Some("valor") {return Err("Manifest inválido".into());}
@@ -157,14 +172,16 @@ pub(crate) fn from_xlsx(bytes:&[u8])->Result<AppData,String>{
     let mut wb:Xlsx<_> = Xlsx::new(Cursor::new(bytes)).map_err(xlsx_err)?;
     let meta=manifest(&mut wb)?;
     let ver=meta.get("schema_version").map(String::as_str).ok_or("Versión faltante")?;
-    if meta.get("format").map(String::as_str)!=Some("autotrace-backup-xlsx") || !matches!(ver,"1"|"2") || meta.get("export_kind").map(String::as_str)!=Some("full") {return Err("Formato o versión de respaldo no admitidos".into());}
-    let required=if ver=="2"{vec!["Manifest","Clientes","Vehiculos","Trabajos","DetalleTrabajos","Configuracion"]}else{vec!["Manifest","Clientes","Vehiculos","Trabajos","Configuracion"]};
+    if meta.get("format").map(String::as_str)!=Some("autotrace-backup-xlsx") || !matches!(ver,"1"|"2"|"3") || meta.get("export_kind").map(String::as_str)!=Some("full") {return Err("Formato o versión de respaldo no admitidos".into());}
+    let required=if ver=="3" {vec!["Manifest","Clientes","Vehiculos","Trabajos","DetalleTrabajos","Cuentas","Cobros","Configuracion"]}
+        else if ver=="2"{vec!["Manifest","Clientes","Vehiculos","Trabajos","DetalleTrabajos","Configuracion"]}
+        else{vec!["Manifest","Clientes","Vehiculos","Trabajos","Configuracion"]};
     let names=wb.sheet_names();
     if names.len()!=required.len()||required.iter().any(|s|!names.iter().any(|n|n==s)){return Err("Hojas XLSX incompatibles con respaldo AutoTrace".into());}
     let clients=read_rows(&mut wb,"Clientes",CLIENTS,15_000)?;
     let vehicles=read_rows(&mut wb,"Vehiculos",VEHICLES,30_000)?;
-    let mut orders=read_rows(&mut wb,"Trabajos",if ver=="2"{ORDERS_V2}else{ORDERS},100_000)?;
-    if ver=="2"{
+    let mut orders=read_rows(&mut wb,"Trabajos",if ver=="1"{ORDERS}else{ORDERS_V2},100_000)?;
+    if ver!="1"{
         let lines=read_rows(&mut wb,"DetalleTrabajos",LINES,100_000)?;
         if meta.get("count_lines")!=Some(&lines.len().to_string()){return Err("Cantidad de renglones alterada".into());}
         let mut grouped=std::collections::HashMap::<String,Vec<Value>>::new();
@@ -179,8 +196,31 @@ pub(crate) fn from_xlsx(bytes:&[u8])->Result<AppData,String>{
         }
         if !grouped.is_empty(){return Err("Renglones vinculados a trabajos inexistentes".into());}
     }
-    let config=read_rows(&mut wb,"Configuracion",SETTINGS,1)?;
+    let mut config=read_rows(&mut wb,"Configuracion",SETTINGS,1)?;
     if config.len()!=1 {return Err("La configuración debe tener una fila".into());}
+    if ver=="3" {
+        let accounts=read_rows(&mut wb,"Cuentas",ACCOUNTS,100)?;
+        let payments=read_rows(&mut wb,"Cobros",PAYMENTS,200_000)?;
+        if meta.get("count_accounts")!=Some(&accounts.len().to_string())||meta.get("count_payments")!=Some(&payments.len().to_string()){
+            return Err("Cantidad de cuentas o cobros alterada".into());
+        }
+        if !accounts.is_empty() {
+            config[0].as_object_mut().ok_or("Configuración inválida")?.insert("accounts".into(),Value::Array(accounts));
+        }
+        let mut grouped=std::collections::HashMap::<String,Vec<Value>>::new();
+        for mut payment in payments {
+            let reference=payment["orderId"].as_str().ok_or("Cobro sin trabajo")?.to_string();
+            payment.as_object_mut().ok_or("Cobro inválido")?.remove("orderId");
+            grouped.entry(reference).or_default().push(payment);
+        }
+        for order in &mut orders {
+            let id=order["id"].as_str().ok_or("Trabajo sin ID")?.to_string();
+            if let Some(receipts)=grouped.remove(&id){
+                order.as_object_mut().ok_or("Trabajo inválido")?.insert("payments".into(),Value::Array(receipts));
+            }
+        }
+        if !grouped.is_empty(){return Err("Cobros asociados a trabajos inexistentes".into());}
+    }
     for (k,len) in [("count_clients",clients.len()),("count_vehicles",vehicles.len()),("count_orders",orders.len())]{if meta.get(k)!=Some(&len.to_string()){return Err(format!("Cantidad de registros alterada: {k}"));}}
     let data:AppData = serde_json::from_value(serde_json::json!({"clients":clients,"vehicles":vehicles,"orders":orders,"settings":config[0]})).map_err(xlsx_err)?;
     validate(&data)?;
@@ -219,6 +259,27 @@ mod tests {
         let bytes=to_xlsx(&data).unwrap();
         let restored=from_xlsx(&bytes).unwrap();
         assert_eq!(canonical_bytes(&data).unwrap(),canonical_bytes(&restored).unwrap());
+    }
+    #[test]
+    fn v3_roundtrip_accounts_payments_preserves_history_and_destinations(){
+        let value=serde_json::json!({
+            "clients":[{"id":"c1","name":"Cliente prueba","phone":"","email":"","notes":"","createdAt":""}],
+            "vehicles":[{"id":"v1","clientId":"c1","plate":"AF012BC","make":"Toyota","model":"Hilux","year":"","mileage":200,"vin":"","color":"","nextServiceDate":"","notes":"","createdAt":""}],
+            "orders":[{"id":"o1","vehicleId":"v1","title":"Service","category":"Mecánica","status":"done","openedAt":"2026-10-23","completedAt":"2026-10-23",
+                       "mileage":200,"description":"","partsCost":500.0,"laborCost":200.0,"charged":3000.0,"paid":1500.0,"notes":"","createdAt":"2026-10-23",
+                       "payments":[{"id":"p1","date":"2026-10-23","amount":1000.0,"method":"transfer","accountId":"bank-1","reference":"AB123"}]}],
+            "settings":{"garageName":"Taller","currency":"ARS","demo":false,
+                        "accounts":[{"id":"bank-1","name":"Banco principal","kind":"bank","alias":"taller.test"}]}
+        });
+        let data:AppData=serde_json::from_value(value).unwrap();
+        validate(&data).unwrap();
+        let bytes=to_xlsx(&data).unwrap();
+        let restored=from_xlsx(&bytes).unwrap();
+        assert_eq!(canonical_bytes(&data).unwrap(),canonical_bytes(&restored).unwrap());
+        let mut invalid=serde_json::to_value(restored).unwrap();
+        invalid["settings"]["accounts"]=serde_json::json!([]);
+        let invalid:AppData=serde_json::from_value(invalid).unwrap();
+        assert!(validate(&invalid).is_err());
     }
     #[test]
     fn rejects_unknown_workbook_and_corruption(){

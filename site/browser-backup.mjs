@@ -11,7 +11,9 @@ const ORDERS_V1=[['id','id'],['vehiculo_id','vehicleId'],['titulo','title'],['ca
 const ORDERS_V2=[...ORDERS_V1,['tipo_documento','documentKind'],['numero_documento','documentNumber'],['huella_origen','sourceFingerprint']];
 const LINES=[['trabajo_id','orderId'],['renglon_id','id'],['tipo','kind'],['descripcion','description'],['cantidad','quantity'],['valor_unitario','unitPrice']];
 const SETTINGS=[['nombre_taller','garageName'],['moneda','currency'],['datos_demostracion','demo']];
-const FLOAT_KEYS=new Set(['mileage','partsCost','laborCost','charged','paid','quantity','unitPrice']);
+const ACCOUNTS=[['id','id'],['nombre','name'],['tipo','kind'],['alias','alias']];
+const PAYMENTS=[['trabajo_id','orderId'],['cobro_id','id'],['fecha','date'],['importe','amount'],['medio','method'],['cuenta_id','accountId'],['referencia','reference']];
+const FLOAT_KEYS=new Set(['mileage','partsCost','laborCost','charged','paid','quantity','unitPrice','amount']);
 const numericKeys=new Set([...FLOAT_KEYS]);
 const headers=cols=>cols.map(c=>c[0]);
 function canonicalEncode(value,key=''){
@@ -46,14 +48,16 @@ function emit(book,lib,name,cols,data){
 export async function writeBackupXlsx(data,lib){
   const XLSX=getLib(lib),state=validateData(data),book=XLSX.utils.book_new();
   const lines=state.orders.flatMap(o=>(o.items||[]).map(item=>({orderId:o.id,...item})));
+  const accounts=state.settings.accounts||[];
+  const payments=state.orders.flatMap(o=>(o.payments||[]).map(payment=>({orderId:o.id,...payment})));
   const meta=[
-    ['format','autotrace-backup-xlsx'],['schema_version','2'],
+    ['format','autotrace-backup-xlsx'],['schema_version','3'],
     ['created_at_utc',new Date().toISOString()],['snapshot_id',crypto.randomUUID()],
     ['app_version','0.1.0-pwa'],['source_schema_version','1'],
     ['timezone','America/Argentina/Buenos_Aires'],['export_kind','full'],
     ['canonical_sha256',await digestData(state)],['count_clients',String(state.clients.length)],
     ['count_vehicles',String(state.vehicles.length)],['count_orders',String(state.orders.length)],
-    ['count_lines',String(lines.length)]
+    ['count_lines',String(lines.length)],['count_accounts',String(accounts.length)],['count_payments',String(payments.length)]
   ];
   const manifest=XLSX.utils.aoa_to_sheet([['clave','valor'],...meta]);
   XLSX.utils.book_append_sheet(book,manifest,'Manifest');
@@ -61,6 +65,8 @@ export async function writeBackupXlsx(data,lib){
   emit(book,XLSX,'Vehiculos',VEHICLES,state.vehicles);
   emit(book,XLSX,'Trabajos',ORDERS_V2,state.orders);
   emit(book,XLSX,'DetalleTrabajos',LINES,lines);
+  emit(book,XLSX,'Cuentas',ACCOUNTS,accounts);
+  emit(book,XLSX,'Cobros',PAYMENTS,payments);
   emit(book,XLSX,'Configuracion',SETTINGS,[state.settings]);
   return new Uint8Array(XLSX.write(book,{type:'array',bookType:'xlsx',compression:true}));
 }
@@ -122,16 +128,17 @@ export async function readBackupXlsx(input,lib){
     meta.set(k,v);
   }
   const version=meta.get('schema_version');
-  if(meta.get('format')!=='autotrace-backup-xlsx'||meta.get('export_kind')!=='full'||!['1','2'].includes(version))
+  if(meta.get('format')!=='autotrace-backup-xlsx'||meta.get('export_kind')!=='full'||!['1','2','3'].includes(version))
     throw Error('El Excel no es un respaldo completo AutoTrace compatible.');
-  const required=version==='2'?['Manifest','Clientes','Vehiculos','Trabajos','DetalleTrabajos','Configuracion']:
+  const required=version==='3'?['Manifest','Clientes','Vehiculos','Trabajos','DetalleTrabajos','Cuentas','Cobros','Configuracion']:
+    version==='2'?['Manifest','Clientes','Vehiculos','Trabajos','DetalleTrabajos','Configuracion']:
     ['Manifest','Clientes','Vehiculos','Trabajos','Configuracion'];
   if(book.SheetNames.length!==required.length||required.some(n=>!book.SheetNames.includes(n)))
     throw Error('El respaldo no contiene todas sus hojas.');
   const clients=readSheet(book,XLSX,'Clientes',CLIENTS,15000);
   const vehicles=readSheet(book,XLSX,'Vehiculos',VEHICLES,30000);
-  const orders=readSheet(book,XLSX,'Trabajos',version==='2'?ORDERS_V2:ORDERS_V1,100000);
-  if(version==='2'){
+  const orders=readSheet(book,XLSX,'Trabajos',version==='1'?ORDERS_V1:ORDERS_V2,100000);
+  if(version!=='1'){
     const lines=readSheet(book,XLSX,'DetalleTrabajos',LINES,100000);
     if(meta.get('count_lines')!==String(lines.length))throw Error('Cantidad de renglones incorrecta.');
     const byOrder=new Map(orders.map(o=>[o.id,o]));
@@ -142,6 +149,18 @@ export async function readBackupXlsx(input,lib){
   }
   const settings=readSheet(book,XLSX,'Configuracion',SETTINGS,1);
   if(settings.length!==1)throw Error('Configuración faltante.');
+  if(version==='3'){
+    const accounts=readSheet(book,XLSX,'Cuentas',ACCOUNTS,100);
+    const payments=readSheet(book,XLSX,'Cobros',PAYMENTS,200000);
+    if(meta.get('count_accounts')!==String(accounts.length)||meta.get('count_payments')!==String(payments.length))
+      throw Error('Cantidad de cuentas/cobros incorrecta.');
+    if(accounts.length)settings[0].accounts=accounts;
+    const byOrder=new Map(orders.map(o=>[o.id,o]));
+    for(const {orderId,...payment} of payments){
+      const order=byOrder.get(orderId);if(!order)throw Error('Cobro sin trabajo.');
+      (order.payments??=[]).push(payment);
+    }
+  }
   for(const [k,n] of [['count_clients',clients.length],['count_vehicles',vehicles.length],['count_orders',orders.length]])
     if(meta.get(k)!==String(n))throw Error('Cantidad alterada: '+k);
   const state=validateData({clients,vehicles,orders,settings:settings[0]});
