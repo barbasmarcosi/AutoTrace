@@ -43,6 +43,10 @@
 | D-B09 | Nube solo se considera destino externo al verificar artefacto cifrado y recuperación; no confiar en icono sync | Opcional D6 |
 | D-B10 | Copia con app cerrada solo si Task Scheduler/servicio complementario está **instalado y probado** | Opcional D6 |
 | D-B11 | Restauración abortada preserva base actual y copia previa sin corrupción | Obligatorio |
+| D-B12 | Archivo `.atbackup.age` no expone datos, cifrado con frase fuerte; contraseña errónea y manipulación fallan sin tocar datos actuales | D6 obligatorio para nube |
+| D-B13 | Nueva PC sin originales locales importa backup descargado de Google Drive y recupera SQLite, XLSX, cuentas y cobros | D6 obligatorio para nube |
+| D-B14 | Drive apagado/sin conexión/carpeta no disponible informa que solo hay copia local; **no** declara subida remota confirmada | D6 obligatorio para nube |
+| D-B15 | Al reiniciar se requiere desbloquear clave; no guardar frase de recuperación en disco, configuraciones, CI ni logs | D6 obligatorio para nube |
 
 ## D. Experiencia, build y soporte
 
