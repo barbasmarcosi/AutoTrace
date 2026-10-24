@@ -288,11 +288,13 @@ pub(crate) fn backup_now(app:tauri::AppHandle)->Result<BackupResult,String>{
     let mut backup=backup_pair(&src,&backup_dir(&app)?,&id)?;
     if let Some(folder)=configured_folder(&app)?{
         let main=backup_dir(&app)?;
-        let copy=if drive_backup::overlaps_encrypted_destination(&app,&folder)?{
-            Err("Se bloqueó una copia sin cifrar a la carpeta configurada para Google Drive.".into())
-        }else{
-            check_distinct_volume(&main,&folder).and_then(|()|mirror_pair(&backup,&folder))
-        };
+        let copy=drive_backup::overlaps_encrypted_destination(&app,&folder).and_then(|overlap|{
+            if overlap{
+                Err("Se bloqueó una copia sin cifrar a la carpeta configurada para Google Drive.".into())
+            }else{
+                check_distinct_volume(&main,&folder).and_then(|()|mirror_pair(&backup,&folder))
+            }
+        });
         match copy{
             Ok(())=>{
                 backup.external_copy_ok=true;
