@@ -87,6 +87,20 @@ fn listed(client:&Client,token:&str)->Result<Vec<CloudFile>,String>{
     Ok(files)
 }
 pub(crate) fn list(token:&str)->Result<Vec<CloudFile>,String>{listed(&http()?,token)}
+/// A remote name alone is not an identity. Ambiguous names are not a verified
+/// backup and must be reconciled manually rather than silently accepted.
+fn already_uploaded(files:&[CloudFile],name:&str,size:u64,checksum:&str)->Result<Option<String>,String>{
+    let matches:Vec<_>=files.iter().filter(|f|f.name==name).collect();
+    if matches.len()>1{
+        return Err("Hay varias copias de igual nombre en Drive. No se puede verificar unívocamente; revisalas antes de reintentar.".into());
+    }
+    let Some(existing)=matches.first() else{return Ok(None)};
+    if existing.size.as_deref()==Some(size.to_string().as_str())&&
+       existing.md5_checksum.as_deref()==Some(checksum){
+        return Ok(Some(existing.id.clone()));
+    }
+    Err("Ya existe un backup remoto de igual nombre y distinto contenido. No se sobrescribe.".into())
+}
 fn next_offset(range:Option<&str>,size:u64)->Result<u64,String>{
     let Some(r)=range else {return Ok(0)};
     let v=r.strip_prefix("bytes=0-").ok_or("Google devolvió un rango inesperado")?
@@ -102,13 +116,7 @@ pub(crate) fn upload(token:&str,path:&Path)->Result<String,String>{
     if size==0||size>MAX{return Err("Archivo cifrado fuera del tamaño permitido".into());}
     let checksum=file_md5(path)?;
     // Retry idempotently, including a completed request whose local acknowledgement was lost.
-    if let Some(existing)=listed(&client,token)?.into_iter().find(|x|x.name==name){
-        if existing.size.as_deref()==Some(size.to_string().as_str())&&
-           existing.md5_checksum.as_deref()==Some(checksum.as_str()){
-            return Ok(existing.id);
-        }
-        return Err("Ya existe un backup remoto de igual nombre y distinto contenido. No se sobrescribe.".into());
-    }
+    if let Some(id)=already_uploaded(&listed(&client,token)?,name,size,&checksum)?{return Ok(id);}
     let parent=folder(&client,token)?;
     let info=serde_json::json!({
         "name":name,"mimeType":"application/octet-stream","parents":[parent],
@@ -200,14 +208,37 @@ pub(crate) fn download(token:&str,id:&str,destination:&Path)->Result<(),String>{
     let response=client.get(format!("{API}/{id}?alt=media")).bearer_auth(token).send()
         .map_err(|_|"Error descargando desde Google Drive")?;
     if !response.status().is_success(){return Err(format!("Drive rechazó descarga (HTTP {})",response.status()));}
-    let mut file=fs::File::create_new(destination).map_err(|e|e.to_string())?;
-    let copied=std::io::copy(&mut response.take(size+1),&mut file).map_err(|e|e.to_string())?;
-    if copied!=size{return Err("Copia descargada incompleta".into());}
-    file.sync_all().map_err(|e|e.to_string())?;drop(file);
-    let checksum=file_md5(destination)?;
-    if selected.md5_checksum.as_deref()!=Some(checksum.as_str()){
+    let expected_md5=selected.md5_checksum.as_deref().ok_or("Drive no devolvió checksum del archivo")?;
+    receive_verified(response,size,expected_md5,destination)
+}
+/// Write only to an exclusive staging file; publish the downloaded ciphertext
+/// after comparing the exact remote size and checksum. Any network or integrity
+/// failure removes the temporary file and leaves the destination unchanged.
+fn receive_verified<R:Read>(stream:R,size:u64,expected_md5:&str,destination:&Path)->Result<(),String>{
+    if size==0||size>MAX{return Err("Tamaño de descarga fuera de los límites".into());}
+    if expected_md5.len()!=32||!expected_md5.bytes().all(|c|c.is_ascii_hexdigit()){
+        return Err("Checksum remoto ausente o inválido".into());
+    }
+    if destination.exists(){return Err("Ya existe un archivo en destino: no se sobrescribió".into());}
+    let parent=destination.parent().ok_or("Destino de descarga inválido")?;
+    let stage=parent.join(format!(".autotrace-download-{}.partial",uuid::Uuid::new_v4()));
+    struct RemoveStage(std::path::PathBuf);
+    impl Drop for RemoveStage{
+        fn drop(&mut self){let _=fs::remove_file(&self.0);}
+    }
+    let guard=RemoveStage(stage.clone());
+    let mut file=fs::OpenOptions::new().write(true).create_new(true)
+        .open(&stage).map_err(|e|e.to_string())?;
+    let copied=std::io::copy(&mut stream.take(size+1),&mut file).map_err(|_|"Descarga interrumpida")?;
+    if copied!=size{return Err("Copia descargada incompleta o fuera de tamaño".into());}
+    file.sync_all().map_err(|e|e.to_string())?;
+    drop(file);
+    if file_md5(&stage)?.to_ascii_lowercase()!=expected_md5.to_ascii_lowercase(){
         return Err("Google devolvió una copia con checksum distinto".into());
     }
+    if destination.exists(){return Err("Otro proceso creó el archivo destino: no se sobrescribió".into());}
+    fs::rename(&stage,destination).map_err(|e|e.to_string())?;
+    drop(guard);
     Ok(())
 }
 #[cfg(test)]
@@ -320,6 +351,37 @@ mod tests{
         assert!(result.is_err(),"an impossible Range must never complete the upload");
         server.join().unwrap();
         fs::remove_dir_all(&dir).unwrap();
+    }
+    #[test] fn interrupted_and_corrupt_downloads_never_publish_files(){
+        let dir=std::env::temp_dir().join(format!("autotrace-download-{}",uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let destination=dir.join("download.atbackup.age");
+        let data=b"encrypted synthetic content only";
+        let md5=format!("{:x}",md5::compute(data));
+        for (bytes,size,checksum) in [
+            (&data[..data.len()-1],data.len() as u64,md5.as_str()),
+            (&data[..],(data.len()-1) as u64,md5.as_str()),
+            (&data[..],data.len() as u64,"00000000000000000000000000000000")
+        ] {
+            assert!(receive_verified(bytes,size,checksum,&destination).is_err());
+            assert!(!destination.exists(),"a failed transfer must not publish ciphertext");
+            assert_eq!(fs::read_dir(&dir).unwrap().count(),0,"failed downloads must clean staging");
+        }
+        receive_verified(&data[..],data.len() as u64,&md5,&destination).unwrap();
+        assert_eq!(fs::read(&destination).unwrap(),data);
+        assert!(receive_verified(b"overwrite",9,&md5,&destination).is_err());
+        assert_eq!(fs::read(&destination).unwrap(),data);
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test] fn only_one_matching_remote_backup_may_be_reused(){
+        let good=CloudFile{
+            id:"validRemoteId_123".into(),name:"AutoTrace_123.atbackup.age".into(),
+            size:Some("123".into()),md5_checksum:Some("a".repeat(32)),created_time:None
+        };
+        assert_eq!(already_uploaded(&[],&good.name,123,&"a".repeat(32)).unwrap(),None);
+        assert_eq!(already_uploaded(&[good.clone()],&good.name,123,&"a".repeat(32)).unwrap(),Some(good.id.clone()));
+        assert!(already_uploaded(&[good.clone()],&good.name,124,&"a".repeat(32)).is_err());
+        assert!(already_uploaded(&[good.clone(),good.clone()],&good.name,123,&"a".repeat(32)).is_err());
     }
     #[test] fn ranges_and_ids_are_checked(){
         assert_eq!(next_offset(None,20).unwrap(),0);
