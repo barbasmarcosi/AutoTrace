@@ -4,10 +4,8 @@ on:
   pull_request:
     paths:
       - 'desktop/**'
-      - 'tests/desktop-adapter.test.mjs'
-      - 'tests/desktop-excel-ui.test.mjs'
-      - 'tests/test_desktop_schema.py'
-      - 'site/app.js'
+      - 'tests/**'
+      - 'site/**'
       - '.github/workflows/desktop-foundation.yml'
   workflow_dispatch:
 
