@@ -767,7 +767,8 @@ function driveApiForm(kind){
   const fields=kind==='client'?
     input('OAuth Client ID de Google Cloud','clientId','',{required:true,full:true,maxlength:300,placeholder:'...apps.googleusercontent.com'}):
     (remote?input('Copia cifrada disponible','remoteFile','',{select:directDriveFiles.map(x=>({value:x.id,label:x.name+' · '+(x.createdTime||'')})),required:true,full:true}):'')+
-    input('Frase de recuperación','drivePassphrase','',{type:'password',required:true,full:true,maxlength:256});
+    input('Frase de recuperación','drivePassphrase','',{type:'password',required:true,full:true,maxlength:256})+
+    (kind==='auto'?input('Repetir frase de recuperación','drivePassphraseRepeat','',{type:'password',required:true,full:true,maxlength:256}):'');
   showModal(kind==='client'?'Identidad OAuth (solo desarrollo)':kind==='unlock'?'Desbloquear cifrado':kind==='auto'?'Proteger clave en Windows':
     kind==='test'?'Probar recuperación remota':'Recuperar directamente desde Drive',
     kind==='client'?'Este campo técnico solo existe en compilaciones de desarrollo.':kind==='auto'?'Windows protegerá tu frase para hacer copias cifradas sin volver a pedirla cada día. Guardá la frase fuera de la PC para recuperarla en caso de pérdida.':
@@ -785,6 +786,9 @@ async function saveDriveApiForm(form){
       await desktopInvoke('drive_api_unlock',{passphrase:phrase});
       toast('Frase desbloqueada en esta sesión; no se almacena.');
     }else if(kind==='auto'){
+      if(phrase.length<16||phrase!==String(fd.get('drivePassphraseRepeat')||'')){
+        toast('Las frases no coinciden o tienen menos de 16 caracteres.','error');return;
+      }
       if(!await confirmAction('Guardar clave protegida por Windows',
         'Autorizás que AutoTrace guarde la frase cifrada por el almacén seguro de tu usuario Windows. Debés guardar la frase de recuperación fuera de esta computadora: no podrá recuperarse de Windows si perdés el equipo.','Activar'))return;
       await desktopInvoke('drive_api_enable_auto_unlock',{passphrase:phrase});
