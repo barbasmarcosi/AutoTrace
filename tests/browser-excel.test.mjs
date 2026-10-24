@@ -67,15 +67,38 @@ test('real-style formula caches and description continuation are not counted as 
 });
 test('browser full-backup XLSX v3 roundtrips all IDs, amounts, accounts and receipts',async()=>{
   const before=fixture();
-  before.settings.accounts=[{id:'acct-1',name:'Banco taller',kind:'bank',alias:'taller.ejemplo'}];
-  before.orders[0].payments=[{id:'payment-1',date:'2026-10-20',amount:15000,method:'transfer',accountId:'acct-1',reference:'OPERACION_PRIVADA_789'}];
+  before.settings.accounts=[
+    {id:'acct-1',name:'Banco taller',kind:'bank',alias:'taller.ejemplo'},
+    {id:'acct-2',name:'Billetera',kind:'wallet',alias:'billetera.prueba'}
+  ];
+  before.orders[0].payments=[
+    {id:'payment-1',date:'2026-10-20',amount:15000,method:'transfer',accountId:'acct-1',reference:'OPERACION_PRIVADA_789'},
+    {id:'payment-2',date:'2026-10-21',amount:3000,method:'qr',accountId:'acct-2',reference:'QR-001'},
+    {id:'payment-3',date:'2026-10-22',amount:2000,method:'cash',accountId:'',reference:''}
+  ];
   const encoded=await writeBackupXlsx(before,XLSX);
   const after=await readBackupXlsx(encoded,XLSX);
   assert.deepEqual(after,before);
   assert.equal(pendingAmount(after.orders[1]),0);
+  assert.equal(after.orders[0].payments.reduce((sum,p)=>sum+p.amount,0),after.orders[0].paid);
   const wb=XLSX.read(encoded,{type:'array'});
   assert.deepEqual(wb.SheetNames,['Manifest','Clientes','Vehiculos','Trabajos','DetalleTrabajos','Cuentas','Cobros','Configuracion']);
 });
+test('changing a payment receiver in an otherwise well-formed backup fails integrity',async()=>{
+  const data=fixture();
+  data.settings.accounts=[
+    {id:'acct-A',name:'Principal',kind:'bank',alias:''},
+    {id:'acct-B',name:'Otra cuenta',kind:'wallet',alias:''}
+  ];
+  data.orders[0].payments=[{id:'payment-A',date:'2026-10-20',amount:1000,method:'transfer',accountId:'acct-A',reference:'TRX'}];
+  const original=await writeBackupXlsx(data,XLSX);
+  const wb=XLSX.read(original,{type:'array'});
+  const ws=wb.Sheets.Cobros;
+  ws['F2'].v='acct-B'; // Existing destination: a malicious change is still rejected by SHA.
+  const altered=new Uint8Array(XLSX.write(wb,{type:'array',bookType:'xlsx'}));
+  await assert.rejects(()=>readBackupXlsx(altered,XLSX),/checksum|modificado/i);
+});
+
 test('tampered workbook is rejected before import',async()=>{
   const bytes=await writeBackupXlsx(fixture(),XLSX);
   const wb=XLSX.read(bytes,{type:'array'});
