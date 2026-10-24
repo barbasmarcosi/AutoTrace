@@ -343,43 +343,100 @@ pub(crate) fn read(conn: &Connection) -> Result<Snapshot, String> {
     Ok(Snapshot { data, revision: current_revision(conn)? })
 }
 
+/// Remove records absent from the submitted snapshot. Deletion is ordered from
+/// child to parent to preserve FK integrity, while existing IDs retain their rowid.
+fn remove_deleted(conn:&Connection,table:&str,expected:&HashSet<&str>)->Result<(),String>{
+    let (select,remove)=match table{
+        "orders"=>("SELECT id FROM orders","DELETE FROM orders WHERE id=?1"),
+        "vehicles"=>("SELECT id FROM vehicles","DELETE FROM vehicles WHERE id=?1"),
+        "clients"=>("SELECT id FROM clients","DELETE FROM clients WHERE id=?1"),
+        _=>return Err("Entidad de persistencia no soportada".into()),
+    };
+    let existing={
+        let mut stmt=conn.prepare(select).map_err(sqlite_error)?;
+        let rows=stmt.query_map([],|r|r.get::<_,String>(0)).map_err(sqlite_error)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(sqlite_error)?
+    };
+    let mut delete=conn.prepare(remove).map_err(sqlite_error)?;
+    for id in existing{
+        if !expected.contains(id.as_str()){delete.execute([id]).map_err(sqlite_error)?;}
+    }
+    Ok(())
+}
+
+/// Transactional incremental persistence: avoid DELETE ALL / INSERT ALL on
+/// each phone edit or payment. The complete submitted model is still validated,
+/// and revision checking prevents concurrent overwrites from other windows.
 pub(crate) fn write(conn: &mut Connection, data: &AppData, expected_revision: u64) -> Result<SaveResult, String> {
     validate(data)?;
-    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(sqlite_error)?;
-    let existing = current_revision(&tx)?;
-    if existing != expected_revision {
+    let tx=conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(sqlite_error)?;
+    let existing=current_revision(&tx)?;
+    if existing!=expected_revision {
         return Err("Otra ventana modificó los registros. Cerrá y volvé a abrir antes de guardar.".into());
     }
-    tx.execute("DELETE FROM orders", []).map_err(sqlite_error)?;
-    tx.execute("DELETE FROM vehicles", []).map_err(sqlite_error)?;
-    tx.execute("DELETE FROM clients", []).map_err(sqlite_error)?;
+    let client_ids:HashSet<&str>=data.clients.iter().map(|c|c.id.as_str()).collect();
+    let vehicle_ids:HashSet<&str>=data.vehicles.iter().map(|v|v.id.as_str()).collect();
+    let order_ids:HashSet<&str>=data.orders.iter().map(|o|o.id.as_str()).collect();
+    remove_deleted(&tx,"orders",&order_ids)?;
+    remove_deleted(&tx,"vehicles",&vehicle_ids)?;
+    remove_deleted(&tx,"clients",&client_ids)?;
     {
-        let mut stmt = tx.prepare("INSERT INTO clients(id,name,record_json) VALUES (?1,?2,?3)").map_err(sqlite_error)?;
-        for c in &data.clients {
-            stmt.execute(params![c.id, c.name, serde_json::to_string(c).map_err(sqlite_error)?]).map_err(sqlite_error)?;
+        let mut stmt=tx.prepare(
+            "INSERT INTO clients(id,name,record_json) VALUES (?1,?2,?3)
+             ON CONFLICT(id) DO UPDATE SET name=excluded.name,record_json=excluded.record_json
+             WHERE clients.record_json!=excluded.record_json OR clients.name!=excluded.name"
+        ).map_err(sqlite_error)?;
+        for c in &data.clients{
+            stmt.execute(params![c.id,c.name,serde_json::to_string(c).map_err(sqlite_error)?])
+                .map_err(sqlite_error)?;
         }
     }
     {
-        let mut stmt = tx.prepare("INSERT INTO vehicles(id,client_id,plate,record_json) VALUES (?1,?2,?3,?4)").map_err(sqlite_error)?;
-        for v in &data.vehicles {
-            stmt.execute(params![v.id, v.client_id, v.plate, serde_json::to_string(v).map_err(sqlite_error)?]).map_err(sqlite_error)?;
+        let mut stmt=tx.prepare(
+            "INSERT INTO vehicles(id,client_id,plate,record_json) VALUES (?1,?2,?3,?4)
+             ON CONFLICT(id) DO UPDATE SET
+               client_id=excluded.client_id,plate=excluded.plate,record_json=excluded.record_json
+             WHERE vehicles.record_json!=excluded.record_json OR
+               vehicles.client_id!=excluded.client_id OR vehicles.plate!=excluded.plate"
+        ).map_err(sqlite_error)?;
+        for v in &data.vehicles{
+            stmt.execute(params![v.id,v.client_id,v.plate,serde_json::to_string(v).map_err(sqlite_error)?])
+                .map_err(sqlite_error)?;
         }
     }
     {
-        let mut stmt = tx.prepare("INSERT INTO orders(id,vehicle_id,status,charged_cents,paid_cents,parts_cents,labor_cents,record_json) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)").map_err(sqlite_error)?;
-        for o in &data.orders {
-            stmt.execute(params![o.id, o.vehicle_id, o.status,
-                cents(o.charged, "importe")?, cents(o.paid, "pagado")?,
-                cents(o.parts_cost, "repuestos")?, cents(o.labor_cost, "mano de obra")?,
-                serde_json::to_string(o).map_err(sqlite_error)?]).map_err(sqlite_error)?;
+        let mut stmt=tx.prepare(
+            "INSERT INTO orders(id,vehicle_id,status,charged_cents,paid_cents,parts_cents,labor_cents,record_json)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8)
+             ON CONFLICT(id) DO UPDATE SET
+               vehicle_id=excluded.vehicle_id,status=excluded.status,charged_cents=excluded.charged_cents,
+               paid_cents=excluded.paid_cents,parts_cents=excluded.parts_cents,labor_cents=excluded.labor_cents,
+               record_json=excluded.record_json
+             WHERE orders.record_json!=excluded.record_json OR
+               orders.vehicle_id!=excluded.vehicle_id OR orders.status!=excluded.status OR
+               orders.charged_cents!=excluded.charged_cents OR orders.paid_cents!=excluded.paid_cents OR
+               orders.parts_cents!=excluded.parts_cents OR orders.labor_cents!=excluded.labor_cents"
+        ).map_err(sqlite_error)?;
+        for o in &data.orders{
+            stmt.execute(params![
+                o.id,o.vehicle_id,o.status,cents(o.charged,"importe")?,
+                cents(o.paid,"pagado")?,cents(o.parts_cost,"repuestos")?,
+                cents(o.labor_cost,"mano de obra")?,serde_json::to_string(o).map_err(sqlite_error)?
+            ]).map_err(sqlite_error)?;
         }
     }
-    tx.execute("INSERT INTO app_settings(id,record_json) VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET record_json=excluded.record_json", [serde_json::to_string(&data.settings).map_err(sqlite_error)?]).map_err(sqlite_error)?;
-    let next = existing.checked_add(1).ok_or("Se agotó la revisión de datos")?;
-    let sql_next = i64::try_from(next).map_err(|_| "Revisión fuera del rango de SQLite")?;
-    tx.execute("UPDATE app_meta SET int_value=?1 WHERE key='revision'", [sql_next]).map_err(sqlite_error)?;
+    tx.execute(
+        "INSERT INTO app_settings(id,record_json) VALUES(1,?1)
+         ON CONFLICT(id) DO UPDATE SET record_json=excluded.record_json
+         WHERE app_settings.record_json!=excluded.record_json",
+        [serde_json::to_string(&data.settings).map_err(sqlite_error)?]
+    ).map_err(sqlite_error)?;
+    let next=existing.checked_add(1).ok_or("Se agotó la revisión de datos")?;
+    let sql_next=i64::try_from(next).map_err(|_|"Revisión fuera del rango de SQLite")?;
+    tx.execute("UPDATE app_meta SET int_value=?1 WHERE key='revision'",[sql_next])
+        .map_err(sqlite_error)?;
     tx.commit().map_err(sqlite_error)?;
-    Ok(SaveResult { revision: next })
+    Ok(SaveResult{revision:next})
 }
 
 #[tauri::command]
