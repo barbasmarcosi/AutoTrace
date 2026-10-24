@@ -36,7 +36,21 @@ fn backup_dir(app:&tauri::AppHandle)->Result<PathBuf,String>{
     fs::create_dir_all(&dir).map_err(err)?;
     Ok(dir)
 }
-fn sha(path:&Path)->Result<String,String>{let bytes=fs::read(path).map_err(err)?;Ok(format!("{:x}",Sha256::digest(bytes)))}
+fn sha(path:&Path)->Result<String,String>{
+    use std::io::Read;
+    let mut file=fs::File::open(path).map_err(err)?;
+    let mut digest=Sha256::new();
+    let mut buf=[0u8;128*1024];
+    loop {
+        let n=file.read(&mut buf).map_err(err)?;
+        if n==0{break;}
+        digest.update(&buf[..n]);
+    }
+    Ok(format!("{:x}",digest.finalize()))
+}
+fn flush_verified_file(path:&Path)->Result<(),String>{
+    fs::File::open(path).map_err(err)?.sync_all().map_err(err)
+}
 fn verify_db(conn:&Connection)->Result<(),String>{
     let v:String=conn.query_row("PRAGMA integrity_check",[],|r|r.get(0)).map_err(err)?;
     if v!="ok"{return Err(format!("SQLite integrity_check: {v}"));}
@@ -74,6 +88,9 @@ pub(crate) fn backup_pair(src:&Connection, dest:&Path, id:&str)->Result<BackupRe
         let metadata=serde_json::json!({"kind":"autotrace-dual-backup","version":1,"snapshotId":id,"revision":s.revision,"clients":s.data.clients_count(),"vehicles":s.data.vehicles_count(),"orders":s.data.orders_count(),"sqliteSha256":sha(&temp_db)?,"excelSha256":sha(&temp_xlsx)?});
         let temp_manifest=staging.join("manifest.json");
         fs::write(&temp_manifest,serde_json::to_vec_pretty(&metadata).map_err(err)?).map_err(err)?;
+        // Ensure file contents reach the OS before publishing the completion marker.
+        // A power-loss test on real hardware remains a separate acceptance gate.
+        for file in [&temp_db,&temp_xlsx,&temp_manifest]{flush_verified_file(file)?;}
         // Manifest acts as completion marker and is always promoted last.
         fs::rename(&temp_db,&db).map_err(err)?;
         fs::rename(&temp_xlsx,&excel).map_err(err)?;
@@ -116,7 +133,7 @@ pub(crate) fn verify_pair_marker(path:&Path)->Result<(),String>{
 }
 /// Conservatively reject a "secondary" backup on the same filesystem/volume.
 /// A separate volume does NOT itself prove another physical device.
-fn check_distinct_volume(primary:&Path,secondary:&Path)->Result<(),String>{
+pub(crate) fn check_distinct_volume(primary:&Path,secondary:&Path)->Result<(),String>{
     #[cfg(windows)]
     {
         use std::path::Component;
