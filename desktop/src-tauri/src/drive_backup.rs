@@ -48,6 +48,18 @@ pub(crate) fn overlaps_encrypted_destination(app:&tauri::AppHandle,folder:&Path)
     let cloud=fs::canonicalize(&cloud).unwrap_or(cloud);
     Ok(paths_overlap(&local,&cloud))
 }
+fn is_plain_workshop_backup_name(name:&str)->bool{
+    name.starts_with("AutoTrace_")&&[".sqlite3",".xlsx",".manifest.json"].iter().any(|ext|name.ends_with(ext))
+}
+fn reject_plaintext_in_sync_folder(folder:&Path)->Result<(),String>{
+    for entry in fs::read_dir(folder).map_err(|e|e.to_string())?{
+        let filename=entry.map_err(|e|e.to_string())?.file_name();
+        if filename.to_str().is_some_and(is_plain_workshop_backup_name){
+            return Err("Hay respaldos AutoTrace SIN CIFRAR en la carpeta elegida. Movelos fuera de Google Drive antes de activar esta función.".into());
+        }
+    }
+    Ok(())
+}
 fn archives_in(folder:&Path)->Result<Vec<PathBuf>,String>{
     if !folder.is_dir(){return Err("Carpeta sincronizada no disponible".into());}
     let mut paths=Vec::new();
@@ -104,6 +116,8 @@ pub(crate) fn configure_drive_backup(app:tauri::AppHandle,passphrase:String)->Re
             return Err("Ya existe una copia externa sin cifrar en esta carpeta o una carpeta superior. Elegí otro destino seguro para no subir SQLite/Excel sin cifrar.".into());
         }
     }
+    // Do not activate this destination if old cleartext backups already exist here.
+    reject_plaintext_in_sync_folder(&directory)?;
     // An already-populated destination cannot silently start using a different key.
     let existing=archives_in(&directory)?;
     if let Some(first)=existing.last(){
@@ -239,6 +253,7 @@ fn read_archive(path:&Path,passphrase:&str)->Result<RestoredArchive,String>{
 pub(crate) fn replicate_if_unlocked(app:&tauri::AppHandle,result:&backup::BackupResult)->Result<Option<String>,String>{
     let Some(dir)=configured_directory(app)? else {return Ok(None)};
     if !dir.is_dir(){return Err("No se encuentra la carpeta de Google Drive configurada".into());}
+    reject_plaintext_in_sync_folder(&dir)?;
     let pass=active_secret()?.ok_or("La copia de Google Drive está bloqueada: desbloqueala en Ajustes.")?;
     seal(result,&dir,&pass).map(|p|Some(p.display().to_string()))
 }
@@ -261,6 +276,14 @@ mod tests {
     use super::*;
     use crate::store;
     use rusqlite::Connection;
+    #[test]
+    fn plaintext_backup_names_are_blocked_in_a_sync_directory(){
+        assert!(is_plain_workshop_backup_name("AutoTrace_2026-01.sqlite3"));
+        assert!(is_plain_workshop_backup_name("AutoTrace_2026-01.xlsx"));
+        assert!(is_plain_workshop_backup_name("AutoTrace_2026-01.manifest.json"));
+        assert!(!is_plain_workshop_backup_name("AutoTrace_2026-01.atbackup.age"));
+        assert!(!is_plain_workshop_backup_name("Comprobante_cliente.xlsx"));
+    }
     #[test]
     fn plain_and_encrypted_backup_folders_cannot_overlap(){
         assert!(paths_overlap(Path::new("G:/Mi unidad/AutoTrace"),Path::new("G:/Mi unidad/AutoTrace")));
