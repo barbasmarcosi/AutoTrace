@@ -13,7 +13,8 @@ test('Portable backup creates a fresh verified dual snapshot and seals it before
   assert.match(native,/backup::backup_pair\(&crate::store::open_app\(app\)\?/);
   assert.match(native,/seal\(&pair,&cipher_dir,/);
   assert.match(native,/std::io::copy\(&mut from,&mut out\)/);
-  assert.match(native,/if hash\(&temp\)\?!=hash\(&cipher\)\?/);
+  assert.match(native,/if hash\(&temp\)\?!=hash\(cipher\)\?/);
+  assert.match(native,/copy_verified_cipher\(&cipher,destination\)/);
   assert.match(native,/El archivo de destino ya existe/);
   assert.match(backup,/sqliteSha256/);
   assert.match(backup,/excelSha256/);
