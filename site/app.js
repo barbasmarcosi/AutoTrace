@@ -382,7 +382,7 @@ function renderDriveSettings(){
     '<div class="info-grid">'+
       descView('Carpeta local sincronizada',esc(folder||'Sin configurar'))+
       descView('Clave de recuperación',!folder?'Sin configurar':st?.unlocked?'Desbloqueada en esta sesión':'Bloqueada. Ingresá tu frase al abrir Desktop.')+
-      descView('Último archivo cifrado local',st?.lastEncryptedFileUnixMs?new Date(Number(st.lastEncryptedFileUnixMs)).toLocaleString('es-AR'):'Sin copias cifradas verificadas aquí')+
+      descView('Último archivo cifrado local',st?.lastEncryptedFileUnixMs?new Date(Number(st.lastEncryptedFileUnixMs)).toLocaleString('es-AR'):'Sin archivos cifrados detectados')+
       descView('Estado en la nube','No comprobado; verificá en Google Drive')+'</div>'+
     '<div class="settings-actions" style="margin-top:14px">'+
       button('Configurar carpeta cifrada','configure-drive-backup','btn-primary')+
@@ -710,7 +710,8 @@ async function createDesktopBackup(silent=false){
   try{
     const completed=await desktopInvoke('backup_now');
     lastDesktopBackup=await desktopInvoke('backup_status');
-    lastDriveStatus=await desktopInvoke('drive_backup_status');
+    try{lastDriveStatus=await desktopInvoke('drive_backup_status');}
+    catch(e){console.warn('No se pudo consultar el estado de la carpeta cifrada:',String(e));lastDriveStatus=null;}
     if(completed.driveCopyError)toast('Respaldo local correcto, pero Google Drive cifrado no recibió la copia: '+completed.driveCopyError,'error');
     if(completed.externalCopyError)toast('Copia local correcta, pero falló la copia secundaria: '+completed.externalCopyError,'error');
     else if(!silent)toast(completed.driveCopyOk?'Respaldo cifrado creado en carpeta sincronizada. Verificá que Google Drive termine de subirlo.':completed.externalCopyOk?'Respaldo verificado también en la carpeta secundaria.':'Respaldo local creado. Elegí otra unidad o una carpeta cifrada sincronizada para protegerte.');
@@ -990,7 +991,8 @@ async function scheduleDesktopBackups(){
   if(!desktopInvoke)return;
   try{
     lastDesktopBackup=await desktopInvoke('backup_status');
-    lastDriveStatus=await desktopInvoke('drive_backup_status');
+    try{lastDriveStatus=await desktopInvoke('drive_backup_status');}
+    catch(e){console.warn('No se pudo consultar el estado de la carpeta cifrada:',String(e));lastDriveStatus=null;}
     if(route().page==='ajustes')render();
     const stale=!lastDesktopBackup.lastBackupUnixMs || Date.now()-Number(lastDesktopBackup.lastBackupUnixMs)>=4*60*60*1000;
     if(stale)await createDesktopBackup(true);
