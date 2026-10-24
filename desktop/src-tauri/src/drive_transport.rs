@@ -49,12 +49,20 @@ fn json_post(client:&Client,token:&str,url:&str,data:&serde_json::Value)->Result
     r.json().map_err(|_|"La respuesta de Drive no es válida".into())
 }
 fn list_query(client:&Client,token:&str,q:&str,fields:&str)->Result<Vec<serde_json::Value>,String>{
-    let mut url=Url::parse(API).map_err(|e|e.to_string())?;
-    url.query_pairs_mut().append_pair("q",q).append_pair("fields",fields)
-        .append_pair("page_size","100");
-    let doc=json_get(client,token,url.as_str())?;
-    if doc["nextPageToken"].is_string(){return Err("La lista superó 100 elementos; es necesaria paginación para esta cuenta.".into());}
-    doc["files"].as_array().cloned().ok_or("Google no devolvió una lista de archivos".into())
+    let mut all=Vec::new();
+    let mut cursor:Option<String>=None;
+    for _page in 0..20 {
+        let mut url=Url::parse(API).map_err(|e|e.to_string())?;
+        url.query_pairs_mut().append_pair("q",q).append_pair("fields",fields)
+            .append_pair("pageSize","1000");
+        if let Some(ref token)=cursor{url.query_pairs_mut().append_pair("pageToken",token);}
+        let doc=json_get(client,token,url.as_str())?;
+        let page=doc["files"].as_array().ok_or("Google no devolvió una lista de archivos")?;
+        all.extend(page.iter().cloned());
+        cursor=doc["nextPageToken"].as_str().filter(|v|!v.is_empty()).map(str::to_owned);
+        if cursor.is_none(){return Ok(all);}
+    }
+    Err("Se alcanzó el límite de paginación de Drive. Se conservarán todas las copias; revisá la política de retención remota.".into())
 }
 fn folder(client:&Client,token:&str)->Result<String,String>{
     let q="trashed = false and mimeType = 'application/vnd.google-apps.folder' and appProperties has { key='autotraceKind' and value='backups' }";
