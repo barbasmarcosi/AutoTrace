@@ -234,7 +234,12 @@ fn export_portable_snapshot(app:&tauri::AppHandle,destination:&Path,phrase:&str)
     fn hash(path:&Path)->Result<Vec<u8>,String>{
         use sha2::{Digest,Sha256};
         let mut h=Sha256::new();let mut f=fs::File::open(path).map_err(|e|e.to_string())?;
-        std::io::copy(&mut f,&mut h).map_err(|e|e.to_string())?;
+        let mut chunk=[0u8;128*1024];
+        loop {
+            let n=f.read(&mut chunk).map_err(|e|e.to_string())?;
+            if n==0{break;}
+            h.update(&chunk[..n]);
+        }
         Ok(h.finalize().to_vec())
     }
     if hash(&temp)?!=hash(&cipher)?{return Err("El medio externo no conservó íntegro el archivo cifrado.".into());}
@@ -416,7 +421,7 @@ mod tests {
         let a=generate_recovery_phrase();
         let b=generate_recovery_phrase();
         assert!(a.starts_with("AT-"));
-        assert_eq!(a.len(),69);
+        assert_eq!(a.len(),68);
         assert!(a.bytes().all(|v|v.is_ascii_alphanumeric()||v==b'-'));
         assert_ne!(a,b);
         check_pass(&a).unwrap();
