@@ -48,6 +48,18 @@
 | D-B14 | Drive apagado/sin conexión/carpeta no disponible informa que solo hay copia local; **no** declara subida remota confirmada | D6 obligatorio para nube |
 | D-B15 | Al reiniciar se requiere desbloquear clave; no guardar frase de recuperación en disco, configuraciones, CI ni logs | D6 obligatorio para nube |
 
+## C.1. Drive API directa (D7)
+
+| ID | Prueba observable | Gate |
+|---|---|---|
+| D-G01 | Consentimiento OAuth Desktop en navegador real con PKCE S256, `state` y scope solo `drive.file` | Obligatorio D7 |
+| D-G02 | Token de renovación exclusivamente en Windows Credential Manager; sobreviven reinicio y desconexión, se eliminan al desconectar | Obligatorio D7 |
+| D-G03 | No se envía ningún SQLite/Excel sin cifrar: carga age, verificada con `size`, MD5 y origen de aplicación mediante Drive API | Obligatorio D7 |
+| D-G04 | Sin red se conserva cola cifrada; se reintenta sin duplicar ni sobrescribir archivos remotos | Obligatorio D7 |
+| D-G05 | Otra PC y otra instalación pueden listar y recuperar copias de la misma cuenta Google con el mismo OAuth Client ID | Obligatorio D7 |
+| D-G06 | Archivo manipulado, frase equivocada o backup truncado: importación rechazada, base vigente preservada | Obligatorio D7 |
+| D-G07 | Indicar por separado backup local generado, copia cloud pendiente y cloud confirmada; no simular éxito por solo entrar en Drive | Obligatorio D7 |
+
 ## D. Experiencia, build y soporte
 
 | ID | Prueba observable | Gate |
