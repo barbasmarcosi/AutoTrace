@@ -396,27 +396,34 @@ function renderDriveSettings(){
 }
 function renderDirectDrive(){
   if(!desktopInvoke)return '';
-  const st=lastDirectDrive||{},connected=!!st.connected;
-  const last=st.lastVerifiedUploadAt?new Date(st.lastVerifiedUploadAt).toLocaleString('es-AR'):'Sin subidas confirmadas';
+  const st=lastDirectDrive||{};
+  const ready=st.identityStatus==='ready',connected=!!st.connected;
+  const last=st.lastVerifiedUploadAt?new Date(st.lastVerifiedUploadAt).toLocaleString('es-AR'):'Sin copias remotas confirmadas';
+  const health=st.identityStatus==='migration_required'?'La identidad OAuth de AutoTrace cambió. Hay que migrar tus copias anteriores sin perderlas.':
+    !ready?'La conexión con Google todavía no está activada en esta edición de prueba. Los respaldos locales continúan funcionando.':
+    connected?'Autorización guardada en Windows (Google confirmará su validez al conectarse).':'La conexión está disponible; falta autorizar tu cuenta de Google.';
   return '<section class="card card-pad detail-section" style="margin-top:18px">'+
-    '<h3>Google Drive · Conexión directa</h3>'+
-    '<p>Copias cifradas directamente mediante la API oficial de Google Drive. No necesitás instalar Google Drive para escritorio. Acceso OAuth limitado a archivos de la aplicación.</p>'+
+    '<h3>Copias de seguridad · Google Drive</h3>'+
+    '<p>Protegé los datos del taller con copias cifradas en tu propia cuenta de Google. Sin instalar Drive ni configurar APIs.</p>'+
+    '<p class="muted-sm">'+esc(health)+'</p>'+
     '<div class="info-grid">'+
-      descView('Autorización Google',connected?'Cuenta conectada':st.clientConfigured?'Client ID listo · Falta conectar':'Configurar OAuth Client ID')+
-      descView('Última subida verificada',esc(last))+
-      descView('Copias pendientes',String(st.pendingCount??0))+
-      descView('Copias listadas',String(directDriveFiles.length))+
-    '</div><div class="settings-actions" style="margin-top:14px">'+
-      button('Configurar Client ID','set-drive-client','btn-secondary')+
-      (!connected?button('Conectar Google','connect-drive-api','btn-primary'):'')+
-      (connected?button('Desbloquear cifrado','unlock-drive-api','btn-secondary'):'')+
-      (connected?button('Crear y subir copia ahora','upload-drive-api','btn-primary'):'')+
+      descView('Última copia remota comprobada',esc(last))+
+      descView('Cifrado automático con Windows',st.autoUnlockEnabled?'Habilitado · clave protegida por Windows':'No habilitado')+
+      descView('Copias cifradas pendientes',String(st.pendingCount??0))+
+      descView('Respaldos remotos listados',String(directDriveFiles.length))+'</div>'+
+    '<div class="settings-actions" style="margin-top:14px">'+
+      (!connected&&ready?button('Conectar con Google','connect-drive-api','btn-primary'):'')+
+      (st.developerMode&&!ready?button('Configurar identidad OAuth (desarrollo)','set-drive-client','btn-secondary'):'')+
+      (connected?button('Desbloquear con frase de recuperación','unlock-drive-api','btn-secondary'):'')+
+      (connected&&!st.autoUnlockEnabled?button('Activar copias cifradas automáticas','enable-drive-auto','btn-primary'):'')+
+      (connected&&st.autoUnlockEnabled?button('Desactivar desbloqueo automático','disable-drive-auto','btn-secondary'):'')+
+      (connected?button('Crear copia ahora','upload-drive-api','btn-primary'):'')+
       (connected?button('Reintentar pendientes','retry-drive-api','btn-secondary'):'')+
-      (connected?button('Ver copias en Drive','refresh-drive-api','btn-secondary'):'')+
-      (connected&&directDriveFiles.length?button('Probar copia remota','test-drive-api','btn-secondary'):'')+
-      (connected&&directDriveFiles.length?button('Recuperar desde Drive','restore-drive-api','btn-secondary'):'')+
+      (connected?button('Ver respaldos','refresh-drive-api','btn-secondary'):'')+
+      (connected&&directDriveFiles.length?button('Probar recuperación','test-drive-api','btn-secondary'):'')+
+      (connected&&directDriveFiles.length?button('Recuperar desde Google Drive','restore-drive-api','btn-secondary'):'')+
       (connected?button('Desconectar Google','disconnect-drive-api','btn-secondary'):'')+
-    '</div><p class="muted-sm" style="margin-top:12px">La autorización se guarda en el gestor seguro de Windows. La frase de recuperación queda solamente en memoria durante la sesión. El estado de subida se confirma con Google Drive y checksum remoto.</p></section>';
+    '</div><p class="muted-sm" style="margin-top:12px">La contraseña de Google nunca pasa por AutoTrace. El desbloqueo automático es opcional: Windows protege la clave local, pero para recuperar los datos tras perder la PC necesitás conservar tu frase fuera de ella. Nunca se sincronizan archivos SQLite o Excel sin cifrar.</p></section>';
 }
 function renderSettings(){
   return `${sectionHead('Configuración y respaldos','Personalizá AutoTrace y administrá tu información.')}
@@ -761,9 +768,9 @@ function driveApiForm(kind){
     input('OAuth Client ID de Google Cloud','clientId','',{required:true,full:true,maxlength:300,placeholder:'...apps.googleusercontent.com'}):
     (remote?input('Copia cifrada disponible','remoteFile','',{select:directDriveFiles.map(x=>({value:x.id,label:x.name+' · '+(x.createdTime||'')})),required:true,full:true}):'')+
     input('Frase de recuperación','drivePassphrase','',{type:'password',required:true,full:true,maxlength:256});
-  showModal(kind==='client'?'Configurar Google Drive API':kind==='unlock'?'Desbloquear cifrado':
+  showModal(kind==='client'?'Identidad OAuth (solo desarrollo)':kind==='unlock'?'Desbloquear cifrado':kind==='auto'?'Proteger clave en Windows':
     kind==='test'?'Probar recuperación remota':'Recuperar directamente desde Drive',
-    kind==='client'?'Creá un Client ID OAuth de tipo Desktop y habilitá Google Drive API en Google Cloud.':
+    kind==='client'?'Este campo técnico solo existe en compilaciones de desarrollo.':kind==='auto'?'Windows protegerá tu frase para hacer copias cifradas sin volver a pedirla cada día. Guardá la frase fuera de la PC para recuperarla en caso de pérdida.':
     'Google Drive guardará solamente archivos cifrados. La frase no se envía a Google.',
     'drive-api-'+kind,fields);
 }
@@ -777,6 +784,11 @@ async function saveDriveApiForm(form){
     }else if(kind==='unlock'){
       await desktopInvoke('drive_api_unlock',{passphrase:phrase});
       toast('Frase desbloqueada en esta sesión; no se almacena.');
+    }else if(kind==='auto'){
+      if(!await confirmAction('Guardar clave protegida por Windows',
+        'Autorizás que AutoTrace guarde la frase cifrada por el almacén seguro de tu usuario Windows. Debés guardar la frase de recuperación fuera de esta computadora: no podrá recuperarse de Windows si perdés el equipo.','Activar'))return;
+      await desktopInvoke('drive_api_enable_auto_unlock',{passphrase:phrase});
+      toast('Copias automáticas activadas. Windows protege la clave del taller.');
     }else if(kind==='test'){
       modalOriginal='';document.querySelector('#form-dialog').close();
       const report=await desktopInvoke('drive_api_test',{fileId:String(fd.get('remoteFile')),passphrase:phrase});
@@ -1212,6 +1224,18 @@ document.addEventListener('click',async event=>{
     case 'test-drive-recovery':driveSetupForm('test');break;
     case 'set-drive-client':driveApiForm('client');break;
     case 'unlock-drive-api':driveApiForm('unlock');break;
+    case 'enable-drive-auto':driveApiForm('auto');break;
+    case 'disable-drive-auto':{
+      try{
+        if(await confirmAction('Desactivar desbloqueo automático',
+          'A partir de ahora AutoTrace volverá a pedir la frase para crear respaldos cifrados. Tus archivos anteriores permanecen intactos.')){
+          await desktopInvoke('drive_api_disable_auto_unlock');
+          lastDirectDrive=await desktopInvoke('drive_api_status');
+          render();toast('El desbloqueo automático fue desactivado.');
+        }
+      }catch(e){toast(String(e),'error');}
+      break;
+    }
     case 'test-drive-api':driveApiForm('test');break;
     case 'restore-drive-api':driveApiForm('restore');break;
     case 'connect-drive-api':{
