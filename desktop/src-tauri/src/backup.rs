@@ -284,7 +284,11 @@ fn prune_verified(dir:&Path)->Result<usize,String>{
 }
 
 #[tauri::command]
-pub(crate) fn backup_now(app:tauri::AppHandle)->Result<BackupResult,String>{
+pub(crate) async fn backup_now(app:tauri::AppHandle)->Result<BackupResult,String>{
+    tauri::async_runtime::spawn_blocking(move ||backup_now_blocking(app))
+        .await.map_err(|_|"Falló la ejecución del respaldo".to_string())?
+}
+fn backup_now_blocking(app:tauri::AppHandle)->Result<BackupResult,String>{
     let src=store::open_app(&app)?;
     let id=format!("{}-{}",now_ms()?,uuid::Uuid::new_v4().simple());
     let mut backup=backup_pair(&src,&backup_dir(&app)?,&id)?;
