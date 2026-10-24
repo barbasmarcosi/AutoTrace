@@ -30,7 +30,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           # Pinned to PR #7 for reproducible QA; stable site remains checked out from main.
-          ref: 9127319d5c957f3dea471812e61c0283516c1fe3
+          ref: 1e8d03cb9c3d49281820f9e9880d35acab368681
           path: _lab
       - name: Test both applications
         run: |
@@ -44,7 +44,7 @@ jobs:
           set -euo pipefail
           echo "Stable SHA: $(git -C _stable rev-parse HEAD)"
           echo "LAB SHA:    $(git -C _lab rev-parse HEAD)"
-          test "$(git -C _lab rev-parse HEAD)" = "9127319d5c957f3dea471812e61c0283516c1fe3"
+          test "$(git -C _lab rev-parse HEAD)" = "1e8d03cb9c3d49281820f9e9880d35acab368681"
       - name: Build isolated lab and stable root
         run: python3 _lab/scripts/build-pages-preview.py _stable/site _lab/site dist
       - name: Publish LAB release marker and invalidate only its service-worker cache
@@ -56,11 +56,11 @@ jobs:
           original = sw.read_text(encoding='utf-8')
           needle = "const CACHE = 'autotrace-lab-shell-v8';"
           assert original.count(needle) == 1, "Unexpected LAB service worker version"
-          sw.write_text(original.replace(needle, "const CACHE = 'autotrace-lab-shell-finance-v9';"), encoding='utf-8')
+          sw.write_text(original.replace(needle, "const CACHE = 'autotrace-lab-shell-finance-v10';"), encoding='utf-8')
           manifest = {
               "environment": "lab",
               "source": "AutoTrace PR #7",
-              "commit": "9127319d5c957f3dea471812e61c0283516c1fe3",
+              "commit": "1e8d03cb9c3d49281820f9e9880d35acab368681",
               "features": ["labor-contribution", "payment-methods", "payment-destinations", "excel-backup-v3"]
           }
           Path('dist/lab/release.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + chr(10), encoding='utf-8')
