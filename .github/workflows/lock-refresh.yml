@@ -1,0 +1,32 @@
+name: Temporary review-only Cargo lock regeneration
+
+on:
+  push:
+    branches: [security/rustsec-calamine-037-20261024]
+    paths:
+      - '.github/workflows/lock-refresh.yml'
+      - 'desktop/src-tauri/Cargo.toml'
+
+permissions:
+  contents: read
+
+jobs:
+  regenerate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+      - name: Solve dependencies with Cargo (no repository write token)
+        run: cargo update --manifest-path desktop/src-tauri/Cargo.toml -p calamine --precise 0.37.0
+      - name: Print lockfile as reviewable transport chunks
+        run: |
+          python3 - <<'PY'
+          import base64
+          from pathlib import Path
+          s=base64.b64encode(Path('desktop/src-tauri/Cargo.lock').read_bytes()).decode('ascii')
+          print('AT_LOCK_BEGIN')
+          for i in range(0,len(s),4096):
+              print('AT_LOCK:'+s[i:i+4096])
+          print('AT_LOCK_END')
+          PY
