@@ -9,6 +9,17 @@ const API:&str="https://www.googleapis.com/drive/v3/files";
 const UPLOAD:&str="https://www.googleapis.com/upload/drive/v3/files";
 const MAX:u64=600_000_000;
 const CHUNK:u64=8*1024*1024;
+fn file_md5(path:&Path)->Result<String,String>{
+    let mut file=fs::File::open(path).map_err(|e|e.to_string())?;
+    let mut digest=md5::Context::new();
+    let mut buf=[0u8;128*1024];
+    loop{
+        let n=file.read(&mut buf).map_err(|e|e.to_string())?;
+        if n==0{break;}
+        digest.consume(&buf[..n]);
+    }
+    Ok(format!("{:x}",digest.compute()))
+}
 #[derive(Debug,Clone,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
 pub(crate) struct CloudFile {
@@ -81,7 +92,7 @@ pub(crate) fn upload(token:&str,path:&Path)->Result<String,String>{
     if !name.starts_with("AutoTrace_")||!name.ends_with(".atbackup.age"){return Err("Solo se admiten archivos AutoTrace cifrados".into());}
     let size=fs::metadata(path).map_err(|e|e.to_string())?.len();
     if size==0||size>MAX{return Err("Archivo cifrado fuera del tamaño permitido".into());}
-    let checksum=format!("{:x}",md5::compute(fs::read(path).map_err(|e|e.to_string())?));
+    let checksum=file_md5(path)?;
     // Retry idempotently, including a completed request whose local acknowledgement was lost.
     if let Some(existing)=listed(&client,token)?.into_iter().find(|x|x.name==name){
         if existing.size.as_deref()==Some(size.to_string().as_str())&&
@@ -173,7 +184,7 @@ pub(crate) fn download(token:&str,id:&str,destination:&Path)->Result<(),String>{
     let copied=std::io::copy(&mut response.take(size+1),&mut file).map_err(|e|e.to_string())?;
     if copied!=size{return Err("Copia descargada incompleta".into());}
     file.sync_all().map_err(|e|e.to_string())?;drop(file);
-    let checksum=format!("{:x}",md5::compute(fs::read(destination).map_err(|e|e.to_string())?));
+    let checksum=file_md5(destination)?;
     if selected.md5_checksum.as_deref()!=Some(checksum.as_str()){
         return Err("Google devolvió una copia con checksum distinto".into());
     }
