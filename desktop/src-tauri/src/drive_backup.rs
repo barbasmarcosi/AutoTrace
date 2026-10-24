@@ -41,6 +41,12 @@ fn configured_directory(app:&tauri::AppHandle)->Result<Option<PathBuf>,String>{
     if directory.is_empty(){return Err("Carpeta cifrada no configurada".into());}
     Ok(Some(PathBuf::from(directory)))
 }
+pub(crate) fn overlaps_encrypted_destination(app:&tauri::AppHandle,folder:&Path)->Result<bool,String>{
+    let Some(cloud)=configured_directory(app)? else {return Ok(false)};
+    let local=fs::canonicalize(folder).unwrap_or_else(|_|folder.to_path_buf());
+    let cloud=fs::canonicalize(&cloud).unwrap_or(cloud);
+    Ok(local.starts_with(&cloud)||cloud.starts_with(&local))
+}
 fn archives_in(folder:&Path)->Result<Vec<PathBuf>,String>{
     if !folder.is_dir(){return Err("Carpeta sincronizada no disponible".into());}
     let mut paths=Vec::new();
@@ -89,6 +95,13 @@ pub(crate) fn configure_drive_backup(app:tauri::AppHandle,passphrase:String)->Re
     let local=fs::canonicalize(local).map_err(|e|e.to_string())?;
     if directory.starts_with(&local)||local.starts_with(&directory){
         return Err("No se permite usar la carpeta de datos originales como destino cifrado.".into());
+    }
+    // Prevent accidental replication of UNENCRYPTED external backups into the same Drive tree.
+    if let Some(external)=backup::configured_folder(&app)? {
+        let external=fs::canonicalize(&external).unwrap_or(external);
+        if external.starts_with(&directory)||directory.starts_with(&external){
+            return Err("Ya existe una copia externa sin cifrar en esta carpeta o una carpeta superior. Elegí otro destino seguro para no subir SQLite/Excel sin cifrar.".into());
+        }
     }
     // An already-populated destination cannot silently start using a different key.
     let existing=archives_in(&directory)?;
