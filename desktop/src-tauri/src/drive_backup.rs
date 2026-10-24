@@ -264,9 +264,18 @@ fn export_portable_snapshot(app:&tauri::AppHandle,destination:&Path,phrase:&str)
     struct DeleteOnDrop(PathBuf);
     impl Drop for DeleteOnDrop { fn drop(&mut self){let _=fs::remove_file(&self.0);} }
     let _cipher_cleanup=DeleteOnDrop(cipher.clone());
+    copy_verified_cipher(&cipher,destination)
+}
+/// Copy only already-encrypted bytes. Publish the final name after a durable,
+/// checksum-verified copy. Failure leaves no new final file.
+fn copy_verified_cipher(cipher:&Path,destination:&Path)->Result<(),String>{
+    if destination.exists(){return Err("El archivo de destino ya existe: no se sobrescribió ningún respaldo.".into());}
+    let parent=destination.parent().ok_or("Destino de exportación inválido")?;
+    struct DeleteOnDrop(PathBuf);
+    impl Drop for DeleteOnDrop {fn drop(&mut self){let _=fs::remove_file(&self.0);}}
     let temp=parent.join(format!(".autotrace-export-{}.partial",uuid::Uuid::new_v4()));
     let _temp_cleanup=DeleteOnDrop(temp.clone());
-    let mut from=fs::File::open(&cipher).map_err(|e|e.to_string())?;
+    let mut from=fs::File::open(cipher).map_err(|e|e.to_string())?;
     let mut out=fs::File::create_new(&temp).map_err(|e|e.to_string())?;
     std::io::copy(&mut from,&mut out).map_err(|e|e.to_string())?;
     out.sync_all().map_err(|e|e.to_string())?;
@@ -283,7 +292,7 @@ fn export_portable_snapshot(app:&tauri::AppHandle,destination:&Path,phrase:&str)
         }
         Ok(h.finalize().to_vec())
     }
-    if hash(&temp)?!=hash(&cipher)?{return Err("El medio externo no conservó íntegro el archivo cifrado.".into());}
+    if hash(&temp)?!=hash(cipher)?{return Err("El medio externo no conservó íntegro el archivo cifrado.".into());}
     if destination.exists(){return Err("Otro proceso creó el archivo de destino: no se sobrescribió.".into());}
     fs::rename(&temp,destination).map_err(|e|e.to_string())?;
     Ok(())
@@ -466,6 +475,24 @@ mod tests {
         assert!(a.bytes().all(|v|v.is_ascii_alphanumeric()||v==b'-'));
         assert_ne!(a,b);
         check_pass(&a).unwrap();
+    }
+    #[test]
+    fn portable_copy_is_atomic_no_overwrite_and_keeps_cipher_source(){
+        let folder=std::env::temp_dir().join(format!("autotrace-portable-test-{}",uuid::Uuid::new_v4()));
+        fs::create_dir_all(&folder).unwrap();
+        let source=folder.join("sealed.age");
+        let destination=folder.join("Backup.atbackup.age");
+        let payload=vec![0x5a;128*1024+133];
+        fs::write(&source,&payload).unwrap();
+        copy_verified_cipher(&source,&destination).unwrap();
+        assert_eq!(fs::read(&destination).unwrap(),payload);
+        assert_eq!(fs::read(&source).unwrap(),payload);
+        assert!(copy_verified_cipher(&source,&destination).is_err(),"no overwrite of prior backup");
+        assert_eq!(fs::read(&destination).unwrap(),payload);
+        let partials=fs::read_dir(&folder).unwrap()
+            .filter_map(Result::ok).filter(|f|f.file_name().to_string_lossy().ends_with(".partial")).count();
+        assert_eq!(partials,0,"no partial files after successful or rejected export");
+        fs::remove_dir_all(folder).unwrap();
     }
     #[test]
     fn plain_and_encrypted_backup_folders_cannot_overlap(){
