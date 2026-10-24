@@ -49,7 +49,10 @@ fn sha(path:&Path)->Result<String,String>{
     Ok(format!("{:x}",digest.finalize()))
 }
 fn flush_verified_file(path:&Path)->Result<(),String>{
-    fs::File::open(path).map_err(err)?.sync_all().map_err(err)
+    // On Windows File::open grants read-only access; FlushFileBuffers requires
+    // a writable handle, otherwise it fails with os error 5 (Access denied).
+    fs::OpenOptions::new().write(true).open(path).map_err(err)?
+        .sync_all().map_err(err)
 }
 fn verify_db(conn:&Connection)->Result<(),String>{
     let v:String=conn.query_row("PRAGMA integrity_check",[],|r|r.get(0)).map_err(err)?;
