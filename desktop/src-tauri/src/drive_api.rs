@@ -10,6 +10,7 @@ struct Settings{
     client_id:String,
     last_verified_upload_at:Option<String>,
     last_verified_file_id:Option<String>,
+    last_sync_state:Option<String>,
 }
 #[derive(Serialize)]
 #[serde(rename_all="camelCase")]
@@ -23,6 +24,7 @@ pub(crate) struct ApiStatus{
     pub identity_status:&'static str,
     pub developer_mode:bool,
     pub auto_unlock_enabled:bool,
+    pub last_sync_state:Option<String>,
 }
 fn home(app:&tauri::AppHandle)->Result<PathBuf,String>{
     let p=app.path().app_local_data_dir().map_err(|e|e.to_string())?;
@@ -91,6 +93,7 @@ pub(crate) fn drive_api_status(app:tauri::AppHandle)->Result<ApiStatus,String>{
         identity_status:identity,
         developer_mode:cfg!(debug_assertions),
         auto_unlock_enabled:drive_backup::auto_unlock_enabled(),
+        last_sync_state:cfg.last_sync_state,
     })
 }
 #[tauri::command]
@@ -105,6 +108,7 @@ pub(crate) fn drive_api_set_client(app:tauri::AppHandle,client_id:String)->Resul
         if !pending(&app)?.is_empty(){return Err("Hay respaldos cifrados pendientes. Subilos o descargalos antes de cambiar la aplicación OAuth.".into());}
         drive_oauth::forget()?;
         cfg.last_verified_file_id=None;cfg.last_verified_upload_at=None;
+        cfg.last_sync_state=None;
     }
     cfg.client_id=id.to_string();
     save(&app,&cfg)
@@ -122,7 +126,8 @@ pub(crate) async fn drive_api_connect(app:tauri::AppHandle)->Result<bool,String>
 pub(crate) fn drive_api_disconnect(app:tauri::AppHandle)->Result<(),String>{
     drive_oauth::forget()?;
     let mut cfg=config(&app)?;
-    cfg.last_verified_upload_at=None;cfg.last_verified_file_id=None;save(&app,&cfg)
+    cfg.last_verified_upload_at=None;cfg.last_verified_file_id=None;
+    cfg.last_sync_state=None;save(&app,&cfg)
 }
 #[tauri::command]
 pub(crate) async fn drive_api_unlock(app:tauri::AppHandle,passphrase:String)->Result<bool,String>{
@@ -155,21 +160,42 @@ pub(crate) async fn drive_api_list(app:tauri::AppHandle)->Result<Vec<drive_trans
     tauri::async_runtime::spawn_blocking(move ||drive_transport::list(&access(&app)?))
         .await.map_err(|_|"No se pudo consultar Google Drive".to_string())?
 }
+fn classify_sync_failure(error:&str)->&'static str{
+    if error.contains("HTTP 401")||error.contains("OAuth rechazó")||
+       error.contains("Google no entregó acceso"){return "reconnect_required";}
+    if error.contains("HTTP 403")||error.contains("cuota"){return "quota_or_permission";}
+    if error.contains("HTTP 429"){return "rate_limited";}
+    if error.contains("HTTP 5"){return "provider_unavailable";}
+    if error.contains("checksum")||error.contains("integridad"){return "integrity_failed";}
+    if error.contains("frase")||error.contains("cifrado bloqueado"){return "key_required";}
+    "retry_required"
+}
 fn flush(app:&tauri::AppHandle)->Result<usize,String>{
     let _guard=UPLOAD_LOCK.get_or_init(||Mutex::new(())).try_lock()
         .map_err(|_|"Ya hay una sincronización con Drive en curso. Intentá nuevamente.".to_string())?;
-    let token=access(app)?;
-    let mut count=0;
-    for path in pending(app)?{
-        let id=drive_transport::upload(&token,&path)?;
-        let mut cfg=config(app)?;
-        cfg.last_verified_file_id=Some(id);
-        cfg.last_verified_upload_at=Some(chrono::Utc::now().to_rfc3339());
-        save(app,&cfg)?;
-        fs::remove_file(&path).map_err(|_|"Google verificó la copia pero no se pudo eliminar el archivo pendiente local")?;
-        count+=1;
+    let result=(||->Result<usize,String>{
+        let token=access(app)?;
+        let mut count=0;
+        for path in pending(app)?{
+            let id=drive_transport::upload(&token,&path)?;
+            let mut cfg=config(app)?;
+            cfg.last_verified_file_id=Some(id);
+            cfg.last_verified_upload_at=Some(chrono::Utc::now().to_rfc3339());
+            save(app,&cfg)?;
+            fs::remove_file(&path).map_err(|_|"Google verificó la copia pero no se pudo eliminar el archivo pendiente local")?;
+            count+=1;
+        }
+        Ok(count)
+    })();
+    // Only persist coarse reason codes, never OAuth responses, URLs, tokens or file contents.
+    if let Ok(mut cfg)=config(app){
+        cfg.last_sync_state=Some(match &result {
+            Ok(_)=>"remote_verified",
+            Err(error)=>classify_sync_failure(error)
+        }.to_string());
+        let _=save(app,&cfg);
     }
-    Ok(count)
+    result
 }
 pub(crate) fn replicate_if_connected(app:&tauri::AppHandle,result:&backup::BackupResult)->Result<Option<usize>,String>{
     let cfg=config(app)?;
@@ -224,6 +250,21 @@ mod tests{
             if cfg.client_id!=bundled{assert_eq!(super::identity_status(&cfg),"migration_required");}
         }else{
             assert_eq!(super::identity_status(&cfg),if cfg!(debug_assertions){"ready"}else{"not_configured"});
+        }
+    }
+    #[test] fn errors_are_categorized_without_persisting_private_provider_responses(){
+        let cases=[
+            ("Google Drive devolvió HTTP 401. No autorizado.","reconnect_required"),
+            ("Google OAuth rechazó el acceso","reconnect_required"),
+            ("Google Drive devolvió HTTP 403","quota_or_permission"),
+            ("Google Drive devolvió HTTP 429","rate_limited"),
+            ("Google Drive devolvió HTTP 503","provider_unavailable"),
+            ("La copia falló por checksum","integrity_failed"),
+            ("Google Drive conectado, pero cifrado bloqueado","key_required"),
+            ("red desconectada","retry_required")
+        ];
+        for (input,expected) in cases{
+            assert_eq!(super::classify_sync_failure(input),expected);
         }
     }
     #[test] fn cloud_api_never_needs_google_secret_on_disk(){
