@@ -109,6 +109,21 @@ pub(crate) fn overlaps_encrypted_destination(app:&tauri::AppHandle,folder:&Path)
     let cloud=fs::canonicalize(&cloud).unwrap_or(cloud);
     Ok(paths_overlap(&local,&cloud))
 }
+/// Validate that an existing synced folder is compatible with the phrase
+/// BEFORE storing a new auto-unlock credential. This protects historical copies
+/// even when Google's direct-API pending queue is empty.
+pub(crate) fn check_existing_archives(app:&tauri::AppHandle,passphrase:&str)->Result<(),String>{
+    ensure_phrase_consistent(passphrase)?;
+    if let Some(folder)=configured_directory(app)?{
+        let archives=archives_in(&folder)?;
+        // Both ends are checked: oldest and newest can have different legacy phrases.
+        if let Some(oldest)=archives.first(){let _=read_archive(oldest,passphrase)?;}
+        if let Some(newest)=archives.last(){
+            if archives.first()!=Some(newest){let _=read_archive(newest,passphrase)?;}
+        }
+    }
+    Ok(())
+}
 fn is_plain_workshop_backup_name(name:&str)->bool{
     name.starts_with("AutoTrace_")&&[".sqlite3",".xlsx",".manifest.json"].iter().any(|ext|name.ends_with(ext))
 }
