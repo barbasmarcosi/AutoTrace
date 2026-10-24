@@ -33,6 +33,21 @@ class ReleasePolicyTests(unittest.TestCase):
                                   "https://www.googleapis.com/auth/drive"), encoding="utf-8")
         self.assertTrue(any("scope" in e for e in failures(self.root)))
 
+    def test_rejects_plaintext_sqlite_in_installer_artifacts(self):
+        p = self.root / ".github/workflows/desktop-installer.yml"
+        text = p.read_text(encoding="utf-8")
+        self.assertIn("*.sha256.txt", text)
+        p.write_text(text.replace("*.sha256.txt", "*.sqlite3"), encoding="utf-8")
+        problems = failures(self.root)
+        self.assertTrue(any("private workshop data" in e for e in problems))
+
+    def test_rejects_unsafe_eval_in_tauri_csp(self):
+        p = self.root / "desktop/src-tauri/tauri.conf.json"
+        config = json.loads(p.read_text(encoding="utf-8"))
+        config["app"]["security"]["csp"] += "; script-src 'unsafe-eval'"
+        p.write_text(json.dumps(config), encoding="utf-8")
+        self.assertTrue(any("unsafe-eval" in e for e in failures(self.root)))
+
     def test_rejects_unprotected_ci_secrets(self):
         p = self.root / ".github/workflows/desktop-installer.yml"
         p.write_text(p.read_text(encoding="utf-8")+"\n# secrets.USER_TOKEN\n",encoding="utf-8")
