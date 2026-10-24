@@ -369,7 +369,7 @@ mod tests{
         }
         receive_verified(&data[..],data.len() as u64,&md5,&destination).unwrap();
         assert_eq!(fs::read(&destination).unwrap(),data);
-        assert!(receive_verified(b"overwrite",9,&md5,&destination).is_err());
+        assert!(receive_verified(&b"overwrite"[..],9,&md5,&destination).is_err());
         assert_eq!(fs::read(&destination).unwrap(),data);
         fs::remove_dir_all(dir).unwrap();
     }
