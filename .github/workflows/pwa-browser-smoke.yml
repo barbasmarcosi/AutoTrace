@@ -1,7 +1,13 @@
 name: Browser startup smoke for Excel LAB
 on:
+  pull_request:
+    paths:
+      - '.github/workflows/pwa-browser-smoke.yml'
+      - 'site/**'
+      - 'scripts/build-pages-preview.py'
+      - 'tests/**'
   push:
-    branches: [plan/desktop-sqlite-excel-backups-20261021, 'feature/**']
+    branches: [plan/desktop-sqlite-excel-backups-20261021, 'feature/**', 'fix/**']
     paths:
       - '.github/workflows/pwa-browser-smoke.yml'
       - 'site/**'
