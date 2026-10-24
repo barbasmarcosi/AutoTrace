@@ -77,10 +77,12 @@ pub(crate) fn drive_api_set_client(app:tauri::AppHandle,client_id:String)->Resul
     save(&app,&cfg)
 }
 #[tauri::command]
-pub(crate) fn drive_api_connect(app:tauri::AppHandle)->Result<bool,String>{
-    let cfg=config(&app)?;
-    drive_oauth::connect(&cfg.client_id)?;
-    Ok(true)
+pub(crate) async fn drive_api_connect(app:tauri::AppHandle)->Result<bool,String>{
+    tauri::async_runtime::spawn_blocking(move ||{
+        let cfg=config(&app)?;
+        drive_oauth::connect(&cfg.client_id)?;
+        Ok(true)
+    }).await.map_err(|_|"Falló el proceso de autorización Google".to_string())?
 }
 #[tauri::command]
 pub(crate) fn drive_api_disconnect(app:tauri::AppHandle)->Result<(),String>{
@@ -89,10 +91,12 @@ pub(crate) fn drive_api_disconnect(app:tauri::AppHandle)->Result<(),String>{
     cfg.last_verified_upload_at=None;cfg.last_verified_file_id=None;save(&app,&cfg)
 }
 #[tauri::command]
-pub(crate) fn drive_api_unlock(app:tauri::AppHandle,passphrase:String)->Result<bool,String>{
-    let files=pending(&app)?;
-    drive_backup::unlock_for_api(passphrase,&files)?;
-    Ok(true)
+pub(crate) async fn drive_api_unlock(app:tauri::AppHandle,passphrase:String)->Result<bool,String>{
+    tauri::async_runtime::spawn_blocking(move ||{
+        let files=pending(&app)?;
+        drive_backup::unlock_for_api(passphrase,&files)?;
+        Ok(true)
+    }).await.map_err(|_|"Falló el desbloqueo cifrado".to_string())?
 }
 fn access(app:&tauri::AppHandle)->Result<String,String>{
     let id=config(app)?.client_id;
@@ -100,8 +104,9 @@ fn access(app:&tauri::AppHandle)->Result<String,String>{
     drive_oauth::token(&id)
 }
 #[tauri::command]
-pub(crate) fn drive_api_list(app:tauri::AppHandle)->Result<Vec<drive_transport::CloudFile>,String>{
-    drive_transport::list(&access(&app)?)
+pub(crate) async fn drive_api_list(app:tauri::AppHandle)->Result<Vec<drive_transport::CloudFile>,String>{
+    tauri::async_runtime::spawn_blocking(move ||drive_transport::list(&access(&app)?))
+        .await.map_err(|_|"No se pudo consultar Google Drive".to_string())?
 }
 fn flush(app:&tauri::AppHandle)->Result<usize,String>{
     let _guard=UPLOAD_LOCK.get_or_init(||Mutex::new(())).try_lock()
@@ -131,7 +136,10 @@ pub(crate) fn replicate_if_connected(app:&tauri::AppHandle,result:&backup::Backu
     flush(app).map(Some)
 }
 #[tauri::command]
-pub(crate) fn drive_api_retry(app:tauri::AppHandle)->Result<usize,String>{flush(&app)}
+pub(crate) async fn drive_api_retry(app:tauri::AppHandle)->Result<usize,String>{
+    tauri::async_runtime::spawn_blocking(move ||flush(&app))
+        .await.map_err(|_|"Falló el reintento de subida".to_string())?
+}
 struct Downloaded(PathBuf);
 impl Drop for Downloaded{fn drop(&mut self){let _=fs::remove_file(&self.0);}}
 fn download(app:&tauri::AppHandle,file_id:&str)->Result<Downloaded,String>{
@@ -143,14 +151,18 @@ fn download(app:&tauri::AppHandle,file_id:&str)->Result<Downloaded,String>{
     Ok(guard)
 }
 #[tauri::command]
-pub(crate) fn drive_api_test(app:tauri::AppHandle,file_id:String,passphrase:String)->Result<backup::RecoveryTestResult,String>{
-    let archive=download(&app,&file_id)?;
-    drive_backup::test_archive_at(&archive.0,&passphrase)
+pub(crate) async fn drive_api_test(app:tauri::AppHandle,file_id:String,passphrase:String)->Result<backup::RecoveryTestResult,String>{
+    tauri::async_runtime::spawn_blocking(move ||{
+        let archive=download(&app,&file_id)?;
+        drive_backup::test_archive_at(&archive.0,&passphrase)
+    }).await.map_err(|_|"Falló la prueba de recuperación desde Drive".to_string())?
 }
 #[tauri::command]
-pub(crate) fn drive_api_preview(app:tauri::AppHandle,file_id:String,passphrase:String)->Result<backup::SqlitePreview,String>{
-    let archive=download(&app,&file_id)?;
-    drive_backup::preview_archive_at(&archive.0,&passphrase)
+pub(crate) async fn drive_api_preview(app:tauri::AppHandle,file_id:String,passphrase:String)->Result<backup::SqlitePreview,String>{
+    tauri::async_runtime::spawn_blocking(move ||{
+        let archive=download(&app,&file_id)?;
+        drive_backup::preview_archive_at(&archive.0,&passphrase)
+    }).await.map_err(|_|"Falló la vista previa de Drive".to_string())?
 }
 #[cfg(test)]
 mod tests{
