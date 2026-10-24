@@ -790,7 +790,6 @@ async function createRecoveryKit(){
     'Generar frase segura'))return;
   try{
     const phrase=await desktopInvoke('generate_recovery_phrase');
-    const suffix=phrase.slice(-8);
     showModal('Kit de recuperación del taller',
       'Copiá esta frase y guardala físicamente fuera de esta PC. Se requiere para restaurar tus datos si se pierde el equipo. Solo se muestra ahora.',
       'drive-recovery-kit',
@@ -800,8 +799,7 @@ async function createRecoveryKit(){
       input('Escribí los últimos ocho caracteres de la frase','recoverySuffix','',
         {required:true,full:true,maxlength:8,placeholder:'Confirmación de lectura'})+
       '<div class="field span-2"><label><input type="checkbox" name="savedOutside" value="yes" required /> Confirmo que guardé la frase en un lugar independiente de esta computadora.</label></div>');
-    // Remove the secret from comparison state on close, including form cancellation.
-    window.__autotraceRecoveryKitSuffix=suffix;
+    // The recovery phrase stays only in the temporary Desktop dialog.
   }catch(e){toast('No se pudo generar la frase: '+String(e),'error');}
 }
 function portableExportForm(){
@@ -823,7 +821,6 @@ async function saveRecoveryKitForm(form){
     await desktopInvoke('drive_api_enable_auto_unlock',{passphrase:phrase});
     modalOriginal='';document.querySelector('#form-dialog').close();
     document.querySelector('#modal-content').textContent='';
-    window.__autotraceRecoveryKitSuffix=null;
     lastDirectDrive=await desktopInvoke('drive_api_status');
     render();
     toast('Kit preparado. Windows protege la frase para respaldos automáticos. Guardá tu copia física.');
@@ -1427,10 +1424,23 @@ document.addEventListener('input',event=>{
   if(event.target.id==='finance-search'){financeQuery=event.target.value;financePage=1;refreshFinanceResults();}
   if(event.target.dataset.listSearch){const section=event.target.dataset.listSearch;if(!Object.hasOwn(listQueries,section))return;listQueries[section]=event.target.value;listPages[section]=1;refreshListResults();}
 });
+function eraseRecoveryFields(dialog){
+  const form=dialog?.querySelector('#entity-form');
+  if(!['drive-recovery-kit','drive-portable-export'].includes(form?.dataset.kind))return;
+  for(const field of form.querySelectorAll('textarea,input')){
+    if(field.type!=='checkbox')field.value='';
+  }
+  const content=dialog.querySelector('#modal-content');
+  if(content)content.textContent='';
+}
 async function closeFormSafely(){
   const dialog=document.querySelector('#form-dialog');const form=dialog.querySelector('#entity-form');
-  if(!form || modalOriginal===modalSnapshot(form)){modalOriginal='';dialog.close();return;}
-  if(await confirmAction('¿Descartar los cambios?','Modificaste datos del formulario que todavía no se guardaron.','Descartar cambios')){modalOriginal='';dialog.close();}
+  if(!form || modalOriginal===modalSnapshot(form)){
+    modalOriginal='';eraseRecoveryFields(dialog);dialog.close();return;
+  }
+  if(await confirmAction('¿Descartar los cambios?','Modificaste datos del formulario que todavía no se guardaron.','Descartar cambios')){
+    modalOriginal='';eraseRecoveryFields(dialog);dialog.close();
+  }
 }
 document.querySelector('#form-dialog').addEventListener('cancel',event=>{event.preventDefault();void closeFormSafely();});
 document.addEventListener('keydown',event=>{
