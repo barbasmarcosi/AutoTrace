@@ -427,6 +427,7 @@ function renderDirectDrive(){
       (!st.autoUnlockEnabled&&!st.lastVerifiedUploadAt&&!(st.pendingCount>0)?button('Crear kit de recuperación','generate-recovery-kit','btn-primary'):'')+
       button('Exportar copia cifrada a USB','export-portable-backup','btn-secondary')+
       button('Probar copia cifrada portátil','test-drive-recovery','btn-secondary')+
+      button('Recuperar copia portátil','restore-drive-backup','btn-secondary')+
     '</div>'+
     '<div class="settings-actions" style="margin-top:14px">'+
       (!connected&&ready?button('Conectar con Google','connect-drive-api','btn-primary'):'')+
