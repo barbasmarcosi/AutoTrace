@@ -378,7 +378,7 @@ fn release_changed_vehicle_plates(conn:&Connection,data:&AppData)->Result<(),Str
     let mut reserved:HashSet<String>=rows.iter().map(|(_,p)|p.clone()).collect();
     reserved.extend(data.vehicles.iter().map(|v|v.plate.clone()));
     for (id,old_plate) in rows{
-        if target.get(id.as_str()).is_some_and(|wanted|*wanted!=old_plate){
+        if target.get(id.as_str()).is_some_and(|wanted|*wanted!=old_plate.as_str()){
             let placeholder=loop{
                 let id=uuid::Uuid::new_v4().simple().to_string();
                 let token=format!("TMP{}",id[..8].to_ascii_uppercase());
@@ -577,6 +577,45 @@ mod tests {
         assert_eq!(write(&mut db,&data,3).unwrap().revision,4);
         let empty=read(&db).unwrap().data;
         assert!(empty.clients.is_empty()&&empty.vehicles.is_empty()&&empty.orders.is_empty());
+    }
+    #[test]
+    fn swapping_unique_vehicle_plates_is_atomic_and_does_not_break_foreign_keys(){
+        let mut conn=Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        let doc=serde_json::json!({
+            "clients":[{"id":"c","name":"Dueño","phone":"","email":"","notes":"","createdAt":""}],
+            "vehicles":[
+                {"id":"v1","clientId":"c","plate":"AF123BC","make":"Auto","model":"Uno","year":2021,"mileage":0,"vin":"","color":"","nextServiceDate":"","notes":"","createdAt":""},
+                {"id":"v2","clientId":"c","plate":"AG234CD","make":"Auto","model":"Dos","year":2021,"mileage":0,"vin":"","color":"","nextServiceDate":"","notes":"","createdAt":""}
+            ],
+            "orders":[],
+            "settings":{"garageName":"Taller","currency":"ARS","demo":false}
+        });
+        let mut data:AppData=serde_json::from_value(doc).unwrap();
+        write(&mut conn,&data,0).unwrap();
+        let old=data.vehicles[0].plate.clone();
+        data.vehicles[0].plate=data.vehicles[1].plate.clone();
+        data.vehicles[1].plate=old;
+        write(&mut conn,&data,1).unwrap();
+        let saved=read(&conn).unwrap();
+        assert_eq!(saved.revision,2);
+        assert_eq!(saved.data.vehicles[0].plate,"AG234CD");
+        assert_eq!(saved.data.vehicles[1].plate,"AF123BC");
+        let fk:i64=conn.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check",[],|r|r.get(0)).unwrap();
+        assert_eq!(fk,0);
+        // Fail while performing the provisional plate release: SQLite must roll
+        // back all work and leave the previous state and revision unchanged.
+        conn.execute_batch("
+          CREATE TRIGGER fail_plate_release BEFORE UPDATE OF plate ON vehicles
+          WHEN new.plate LIKE 'TMP%'
+          BEGIN SELECT RAISE(ABORT,'injected failure'); END;
+        ").unwrap();
+        data.vehicles[0].plate="AH345DE".into();
+        assert!(write(&mut conn,&data,2).is_err());
+        let still=read(&conn).unwrap();
+        assert_eq!(still.revision,2);
+        assert_eq!(still.data.vehicles[0].plate,"AG234CD");
     }
     #[test]
     fn rejects_foreign_keys_before_mutation() {
