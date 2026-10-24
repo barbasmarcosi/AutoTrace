@@ -18,7 +18,7 @@ concurrency:
 jobs:
   windows-nsis:
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -34,8 +34,8 @@ jobs:
         working-directory: desktop/src-tauri
         shell: pwsh
         run: |
-          cargo install tauri-cli --version "^2" --locked
-          cargo tauri build --bundles nsis
+          # Prebuilt cross-platform CLI avoids compiling tauri-cli on the runner.
+          npm exec --yes --package="@tauri-apps/cli@^2" -- tauri build --bundles nsis
       - name: Inspect produced installer (no production data)
         shell: pwsh
         run: |
@@ -44,7 +44,9 @@ jobs:
           foreach ($exe in $exes) {
             Write-Output "Installer: $($exe.Name)"
             Write-Output "Size: $($exe.Length) bytes"
-            Get-FileHash -Algorithm SHA256 $exe.FullName | Format-Table -HideTableHeaders
+            $sha = (Get-FileHash -Algorithm SHA256 $exe.FullName).Hash.ToLowerInvariant()
+            Write-Output "SHA256: $sha"
+            "$sha *$($exe.Name)" | Out-File -FilePath "$($exe.FullName).sha256.txt" -Encoding ascii
           }
       - name: Silent installation and uninstallation smoke (ephemeral runner)
         shell: pwsh
@@ -53,6 +55,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: autotrace-desktop-windows-preview-unsigned
-          path: desktop/src-tauri/target/release/bundle/nsis/*.exe
+          path: |
+            desktop/src-tauri/target/release/bundle/nsis/*.exe
+            desktop/src-tauri/target/release/bundle/nsis/*.sha256.txt
           retention-days: 7
           if-no-files-found: error
