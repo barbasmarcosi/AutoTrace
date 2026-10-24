@@ -1,7 +1,7 @@
 //! Direct Google Drive API orchestrator: local-first, no plaintext uploads.
 use crate::{backup,drive_backup,drive_oauth,drive_transport};
 use serde::{Serialize,Deserialize};
-use std::{fs,path::{Path,PathBuf},sync::{Mutex,OnceLock}};
+use std::{fs,path::PathBuf,sync::{Mutex,OnceLock}};
 static UPLOAD_LOCK:OnceLock<Mutex<()>>=OnceLock::new();
 use tauri::Manager;
 #[derive(Default,Serialize,Deserialize)]
@@ -141,7 +141,9 @@ pub(crate) async fn drive_api_unlock(app:tauri::AppHandle,passphrase:String)->Re
 pub(crate) async fn drive_api_enable_auto_unlock(app:tauri::AppHandle,passphrase:String)->Result<(),String>{
     tauri::async_runtime::spawn_blocking(move ||{
         let existing=pending(&app)?;
-        // Refuse persistence if previously queued snapshots use a different phrase.
+        // Refuse persistence if previously queued or synced historical snapshots
+        // use a different phrase, even if the direct-API queue is currently empty.
+        drive_backup::check_existing_archives(&app,&passphrase)?;
         drive_backup::unlock_for_api(passphrase.clone(),&existing)?;
         drive_backup::enable_auto_unlock(passphrase)
     }).await.map_err(|_|"Falló la protección de la clave en Windows".to_string())?
