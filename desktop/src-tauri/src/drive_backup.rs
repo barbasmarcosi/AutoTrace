@@ -12,6 +12,44 @@ const MAX_EXCEL: u64 = 25_000_000;
 const MAX_MANIFEST: u64 = 16_384;
 const MIN_PASSPHRASE_CHARS: usize = 16;
 static UNLOCKED: OnceLock<Mutex<Option<SecretString>>> = OnceLock::new();
+const WINDOWS_KEY_SERVICE:&str="AutoTrace-Backup-Age";
+const WINDOWS_KEY_ACCOUNT:&str="local-auto-unlock";
+fn windows_key()->Result<keyring::Entry,String>{
+    keyring::Entry::new(WINDOWS_KEY_SERVICE,WINDOWS_KEY_ACCOUNT)
+      .map_err(|_|"El almacén seguro de claves de Windows no está disponible.".into())
+}
+pub(crate) fn auto_unlock_enabled()->bool{
+    windows_key().is_ok_and(|entry|entry.get_password().is_ok())
+}
+pub(crate) fn phrase_for_backup()->Result<Option<SecretString>,String>{
+    if let Some(in_session)=active_secret()?{return Ok(Some(in_session));}
+    match windows_key()?.get_password(){
+        Ok(value)=>{
+            check_pass(&value)?;
+            Ok(Some(SecretString::from(value)))
+        },
+        Err(keyring::Error::NoEntry)=>Ok(None),
+        Err(_)=>Err("No se pudo desbloquear la clave protegida por Windows. Usá tu frase de recuperación en Ajustes.".into())
+    }
+}
+#[tauri::command]
+pub(crate) fn enable_auto_unlock(passphrase:String)->Result<(),String>{
+    check_pass(&passphrase)?;
+    // This is an explicit opt-in. Windows Credential Manager protects the secret
+    // for the current Windows account; the portable phrase is still needed on a new PC.
+    windows_key()?.set_password(&passphrase)
+      .map_err(|_|"Windows no pudo proteger la clave de respaldos.".to_string())?;
+    set_secret(Some(SecretString::from(passphrase)))
+}
+#[tauri::command]
+pub(crate) fn disable_auto_unlock()->Result<(),String>{
+    let key=windows_key()?;
+    match key.delete_credential(){
+        Ok(())|Err(keyring::Error::NoEntry)=>{},
+        Err(_)=>return Err("Windows no pudo eliminar la clave automática.".into())
+    }
+    set_secret(None)
+}
 
 fn active_secret() -> Result<Option<SecretString>,String> {
     let guard=UNLOCKED.get_or_init(||Mutex::new(None)).lock().map_err(|_|"Bloqueo de clave no disponible")?;
@@ -142,7 +180,7 @@ pub(crate) fn unlock_drive_backup(app:tauri::AppHandle,passphrase:String)->Resul
 }
 #[tauri::command]
 pub(crate) fn lock_drive_backup()->Result<(),String>{set_secret(None)}
-pub(crate) fn unlocked_phrase()->Result<Option<SecretString>,String>{active_secret()}
+pub(crate) fn unlocked_phrase()->Result<Option<SecretString>,String>{phrase_for_backup()}
 pub(crate) fn unlock_for_api(passphrase:String,files:&[PathBuf])->Result<(),String>{
     check_pass(&passphrase)?;
     // An existing encrypted pending queue MUST decrypt with the supplied phrase.
@@ -276,7 +314,7 @@ pub(crate) fn replicate_if_unlocked(app:&tauri::AppHandle,result:&backup::Backup
     let Some(dir)=configured_directory(app)? else {return Ok(None)};
     if !dir.is_dir(){return Err("No se encuentra la carpeta de Google Drive configurada".into());}
     reject_plaintext_in_sync_folder(&dir)?;
-    let pass=active_secret()?.ok_or("La copia de Google Drive está bloqueada: desbloqueala en Ajustes.")?;
+    let pass=phrase_for_backup()?.ok_or("La copia de Google Drive está bloqueada: desbloqueala en Ajustes.")?;
     seal(result,&dir,&pass).map(|p|Some(p.display().to_string()))
 }
 /// Verify a downloaded encrypted archive against both fresh SQLite and Excel stores,
