@@ -32,9 +32,27 @@ pub(crate) fn phrase_for_backup()->Result<Option<SecretString>,String>{
         Err(_)=>Err("No se pudo desbloquear la clave protegida por Windows. Usá tu frase de recuperación en Ajustes.".into())
     }
 }
+/// Reusing a different recovery phrase would make the user's historical
+/// encrypted archives unreadable with the recorded recovery kit.
+fn ensure_phrase_consistent(passphrase:&str)->Result<(),String>{
+    check_pass(passphrase)?;
+    match windows_key()?.get_password(){
+        Ok(existing) if existing!=passphrase=>
+            return Err("Esta frase es distinta de la clave ya protegida en Windows. Para cambiarla se necesita un proceso explícito de rotación, no sobrescribirla.".into()),
+        Ok(_)|Err(keyring::Error::NoEntry)=>{},
+        Err(_)=>return Err("No se pudo comprobar la clave protegida por Windows. No se modificó el kit de recuperación.".into()),
+    }
+    if let Some(active)=active_secret()?{
+        use age::secrecy::ExposeSecret;
+        if active.expose_secret()!=passphrase {
+            return Err("La frase no coincide con la clave desbloqueada en esta sesión. No se mezclaron respaldos con claves diferentes.".into());
+        }
+    }
+    Ok(())
+}
 #[tauri::command]
 pub(crate) fn enable_auto_unlock(passphrase:String)->Result<(),String>{
-    check_pass(&passphrase)?;
+    ensure_phrase_consistent(&passphrase)?;
     // This is an explicit opt-in. Windows Credential Manager protects the secret
     // for the current Windows account; the portable phrase is still needed on a new PC.
     windows_key()?.set_password(&passphrase)
@@ -187,7 +205,7 @@ pub(crate) fn unlock_drive_backup(app:tauri::AppHandle,passphrase:String)->Resul
 pub(crate) fn lock_drive_backup()->Result<(),String>{set_secret(None)}
 pub(crate) fn unlocked_phrase()->Result<Option<SecretString>,String>{phrase_for_backup()}
 pub(crate) fn unlock_for_api(passphrase:String,files:&[PathBuf])->Result<(),String>{
-    check_pass(&passphrase)?;
+    ensure_phrase_consistent(&passphrase)?;
     // An existing encrypted pending queue MUST decrypt with the supplied phrase.
     if let Some(first)=files.first(){let _=read_archive(first,&passphrase)?;}
     set_secret(Some(SecretString::from(passphrase)))
@@ -212,6 +230,13 @@ fn export_portable_snapshot(app:&tauri::AppHandle,destination:&Path,phrase:&str)
     check_pass(phrase)?;
     if destination.exists(){return Err("El archivo de destino ya existe: elegí otro nombre para no sobrescribir respaldos.".into());}
     let local=app.path().app_local_data_dir().map_err(|e|e.to_string())?;
+    fs::create_dir_all(&local).map_err(|e|e.to_string())?;
+    let local=fs::canonicalize(&local).map_err(|e|e.to_string())?;
+    let parent=destination.parent().ok_or("Destino de exportación inválido")?;
+    let parent=fs::canonicalize(parent).map_err(|e|e.to_string())?;
+    // A local file on the same volume does not protect against failure of the PC.
+    backup::check_distinct_volume(&local,&parent)?;
+    ensure_phrase_consistent(phrase)?;
     let private=local.join("backups");
     fs::create_dir_all(&private).map_err(|e|e.to_string())?;
     let id=format!("portable-{}-{}",chrono::Utc::now().timestamp_millis(),uuid::Uuid::new_v4().simple());
@@ -222,7 +247,6 @@ fn export_portable_snapshot(app:&tauri::AppHandle,destination:&Path,phrase:&str)
     struct DeleteOnDrop(PathBuf);
     impl Drop for DeleteOnDrop { fn drop(&mut self){let _=fs::remove_file(&self.0);} }
     let _cipher_cleanup=DeleteOnDrop(cipher.clone());
-    let parent=destination.parent().ok_or("Destino de exportación inválido")?;
     let temp=parent.join(format!(".autotrace-export-{}.partial",uuid::Uuid::new_v4()));
     let _temp_cleanup=DeleteOnDrop(temp.clone());
     let mut from=fs::File::open(&cipher).map_err(|e|e.to_string())?;
