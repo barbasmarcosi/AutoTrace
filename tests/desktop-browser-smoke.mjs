@@ -14,7 +14,10 @@ try{
   await page.addInitScript(({phrase})=>{
     const callLog=[];
     let autoUnlock=false;
-    const data={clients:[],vehicles:[],orders:[],settings:{garageName:'Mi taller',currency:'ARS',demo:false}};
+    const data={
+      clients:[{id:'c-test',name:'Cliente sintético',phone:'2230000000',email:'',notes:'',createdAt:'2026-10-24'}],
+      vehicles:[],orders:[],settings:{garageName:'Mi taller',currency:'ARS',demo:false}
+    };
     window.__AUTOTRACE_TEST_CALLS__=callLog;
     window.__TAURI__={core:{invoke:async(cmd,args={})=>{
       callLog.push({cmd,args});
@@ -36,6 +39,11 @@ try{
   },{phrase});
   await page.goto(base+'#ajustes',{waitUntil:'domcontentloaded'});
   await page.locator('[data-action="generate-recovery-kit"]').waitFor({timeout:25000});
+  await page.goto(base+'#inicio',{waitUntil:'domcontentloaded'});
+  await page.getByText('No consta una copia externa o subida a Drive verificada').waitFor({timeout:10000});
+  assert.equal(await page.getByRole('button',{name:'Proteger mis datos'}).count(),1);
+  await page.getByRole('button',{name:'Proteger mis datos'}).click();
+  await page.locator('[data-action="generate-recovery-kit"]').waitFor({timeout:10000});
   assert.equal(await page.getByRole('button',{name:'Conectar con Google'}).count(),0,'Cannot offer OAuth if app identity absent');
   // The safe offline recovery workflow must remain available without Google Cloud.
   await page.locator('[data-action="generate-recovery-kit"]').click();

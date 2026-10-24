@@ -172,6 +172,15 @@ fn classify_sync_failure(error:&str)->&'static str{
     if error.contains("frase")||error.contains("cifrado bloqueado"){return "key_required";}
     "retry_required"
 }
+/// A successful no-op cannot be recorded as remote verification; preserve
+/// the previous status and date until bytes are confirmed by the provider.
+fn sync_outcome(result:&Result<usize,String>)->Option<&'static str>{
+    match result {
+        Ok(0)=>None,
+        Ok(_)=>Some("remote_verified"),
+        Err(e)=>Some(classify_sync_failure(e)),
+    }
+}
 fn flush(app:&tauri::AppHandle)->Result<usize,String>{
     let _guard=UPLOAD_LOCK.get_or_init(||Mutex::new(())).try_lock()
         .map_err(|_|"Ya hay una sincronización con Drive en curso. Intentá nuevamente.".to_string())?;
@@ -190,12 +199,12 @@ fn flush(app:&tauri::AppHandle)->Result<usize,String>{
         Ok(count)
     })();
     // Only persist coarse reason codes, never OAuth responses, URLs, tokens or file contents.
+    // IMPORTANT: an empty queue is NOT a successfully uploaded backup.
     if let Ok(mut cfg)=config(app){
-        cfg.last_sync_state=Some(match &result {
-            Ok(_)=>"remote_verified",
-            Err(error)=>classify_sync_failure(error)
-        }.to_string());
-        let _=save(app,&cfg);
+        if let Some(outcome)=sync_outcome(&result){
+            cfg.last_sync_state=Some(outcome.to_string());
+            let _=save(app,&cfg);
+        }
     }
     result
 }
@@ -268,6 +277,12 @@ mod tests{
         for (input,expected) in cases{
             assert_eq!(super::classify_sync_failure(input),expected);
         }
+    }
+    #[test] fn empty_queue_does_not_fabricate_success_or_reset_a_provider_failure(){
+        assert_eq!(super::sync_outcome(&Ok(0)),None);
+        assert_eq!(super::sync_outcome(&Ok(1)),Some("remote_verified"));
+        assert_eq!(super::sync_outcome(&Err("Google Drive devolvió HTTP 401".into())),Some("reconnect_required"));
+        assert_eq!(super::sync_outcome(&Err("Google Drive devolvió HTTP 503".into())),Some("provider_unavailable"));
     }
     #[test] fn cloud_api_never_needs_google_secret_on_disk(){
         assert!(super::drive_oauth::client_id_valid("012345678901-abc.apps.googleusercontent.com"));
