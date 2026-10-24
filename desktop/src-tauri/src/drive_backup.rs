@@ -146,7 +146,10 @@ fn seal(result:&backup::BackupResult,dest:&Path,pass:&SecretString)->Result<Path
             let copied=std::io::copy(&mut fs::File::open(path).map_err(|e|e.to_string())?,&mut out).map_err(|e|e.to_string())?;
             if copied!=size{return Err("No se pudo leer el archivo completo".into());}
         }
-        out.finish().map_err(|e|e.to_string())?;
+        let mut file=out.finish().map_err(|e|e.to_string())?;
+        file.flush().map_err(|e|e.to_string())?;
+        file.get_ref().sync_all().map_err(|e|e.to_string())?;
+        drop(file);
         // Never claim success for a ciphertext we cannot recover.
         let recovered=read_archive(&staged,pass.expose_secret_for_restore())?;
         drop(recovered);
