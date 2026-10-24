@@ -1,6 +1,6 @@
 [package]
 name = "autotrace-desktop"
-version = "0.1.0"
+version = "0.1.1"
 description = "AutoTrace local-first desktop"
 authors = ["AutoTrace contributors"]
 edition = "2021"
