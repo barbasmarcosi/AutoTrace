@@ -217,7 +217,7 @@ mod tests{
                 socket.set_read_timeout(Some(std::time::Duration::from_secs(4))).unwrap();
                 let mut request=[0u8;8192];
                 let _=socket.read(&mut request).unwrap();
-                let response=format!("HTTP/1.1 {status} MOCK\\r\\nContent-Length: 2\\r\\nConnection: close\\r\\n\\r\\n{{}}");
+                let response=format!("HTTP/1.1 {status} MOCK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}");
                 socket.write_all(response.as_bytes()).unwrap();
             });
             let endpoint=format!("http://{addr}/drive/v3/files");
