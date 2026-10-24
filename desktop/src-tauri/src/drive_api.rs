@@ -20,6 +20,9 @@ pub(crate) struct ApiStatus{
     pub last_verified_upload_at:Option<String>,
     pub last_verified_file_id:Option<String>,
     pub note:&'static str,
+    pub identity_status:&'static str,
+    pub developer_mode:bool,
+    pub auto_unlock_enabled:bool,
 }
 fn home(app:&tauri::AppHandle)->Result<PathBuf,String>{
     let p=app.path().app_local_data_dir().map_err(|e|e.to_string())?;
@@ -30,6 +33,29 @@ fn config(app:&tauri::AppHandle)->Result<Settings,String>{
     let p=config_path(app)?;
     if !p.exists(){return Ok(Settings::default());}
     serde_json::from_slice(&fs::read(p).map_err(|e|e.to_string())?).map_err(|_|"Configuración de Google Drive API corrupta".into())
+}
+// The Desktop OAuth Client ID is PUBLIC. It may be injected at build time;
+// neither an OAuth client secret nor a user's token may be embedded in releases.
+const PACKAGED_CLIENT_ID:Option<&str>=option_env!("AUTOTRACE_GOOGLE_OAUTH_CLIENT_ID");
+fn packaged_identity()->Option<&'static str>{
+    PACKAGED_CLIENT_ID.filter(|id|drive_oauth::client_id_valid(id))
+}
+fn identity_status(settings:&Settings)->&'static str{
+    if let Some(bundled)=packaged_identity(){
+        if !settings.client_id.is_empty()&&settings.client_id!=bundled{
+            return "migration_required";
+        }
+        "ready"
+    }else if cfg!(debug_assertions)&&drive_oauth::client_id_valid(&settings.client_id){
+        "ready"
+    }else{"not_configured"}
+}
+fn effective_client_id(settings:&Settings)->Result<String,String>{
+    match identity_status(settings){
+        "ready"=>Ok(packaged_identity().unwrap_or(&settings.client_id).to_owned()),
+        "migration_required"=>Err("La identidad OAuth cambió. Exportá las copias existentes y completá la migración antes de conectar la nueva versión.".into()),
+        _=>Err("Google Drive directo todavía no está activado en esta edición de AutoTrace. Los respaldos locales siguen funcionando.".into())
+    }
 }
 fn save(app:&tauri::AppHandle,state:&Settings)->Result<(),String>{
     let p=config_path(app)?;
@@ -54,17 +80,24 @@ fn pending(app:&tauri::AppHandle)->Result<Vec<PathBuf>,String>{
 #[tauri::command]
 pub(crate) fn drive_api_status(app:tauri::AppHandle)->Result<ApiStatus,String>{
     let cfg=config(&app)?;
+    let identity=identity_status(&cfg);
     Ok(ApiStatus{
-        client_configured:!cfg.client_id.is_empty(),
-        connected:!cfg.client_id.is_empty()&&drive_oauth::authorized(),
+        client_configured:identity=="ready",
+        connected:identity=="ready"&&drive_oauth::authorized(),
         pending_count:pending(&app)?.len(),
         last_verified_upload_at:cfg.last_verified_upload_at,
         last_verified_file_id:cfg.last_verified_file_id,
-        note:"La copia remota se marca verificada solo al recibir confirmación de Google Drive API y checksum/tamaño coincidentes.",
+        note:"Un token local guardado no confirma que Google siga autorizándolo; una copia solo cuenta tras verificar tamaño y checksum remotos.",
+        identity_status:identity,
+        developer_mode:cfg!(debug_assertions),
+        auto_unlock_enabled:drive_backup::auto_unlock_enabled(),
     })
 }
 #[tauri::command]
 pub(crate) fn drive_api_set_client(app:tauri::AppHandle,client_id:String)->Result<(),String>{
+    if !cfg!(debug_assertions){
+        return Err("El Client ID se incorpora a AutoTrace durante la compilación; el usuario no debe configurarlo.".into());
+    }
     let id=client_id.trim();
     if !drive_oauth::client_id_valid(id){return Err("Ingresá un OAuth Client ID tipo Desktop válido de Google Cloud.".into());}
     let mut cfg=config(&app)?;
@@ -80,7 +113,8 @@ pub(crate) fn drive_api_set_client(app:tauri::AppHandle,client_id:String)->Resul
 pub(crate) async fn drive_api_connect(app:tauri::AppHandle)->Result<bool,String>{
     tauri::async_runtime::spawn_blocking(move ||{
         let cfg=config(&app)?;
-        drive_oauth::connect(&cfg.client_id)?;
+        let id=effective_client_id(&cfg)?;
+        drive_oauth::connect(&id)?;
         Ok(true)
     }).await.map_err(|_|"Falló el proceso de autorización Google".to_string())?
 }
@@ -99,8 +133,8 @@ pub(crate) async fn drive_api_unlock(app:tauri::AppHandle,passphrase:String)->Re
     }).await.map_err(|_|"Falló el desbloqueo cifrado".to_string())?
 }
 fn access(app:&tauri::AppHandle)->Result<String,String>{
-    let id=config(app)?.client_id;
-    if !drive_oauth::client_id_valid(&id){return Err("Primero configurá Google Drive API desde Ajustes.".into());}
+    let cfg=config(app)?;
+    let id=effective_client_id(&cfg)?;
     drive_oauth::token(&id)
 }
 #[tauri::command]
@@ -126,7 +160,7 @@ fn flush(app:&tauri::AppHandle)->Result<usize,String>{
 }
 pub(crate) fn replicate_if_connected(app:&tauri::AppHandle,result:&backup::BackupResult)->Result<Option<usize>,String>{
     let cfg=config(app)?;
-    if cfg.client_id.is_empty()||!drive_oauth::authorized(){return Ok(None);}
+    if identity_status(&cfg)!="ready"||!drive_oauth::authorized(){return Ok(None);}
     // Fail closed: never upload plaintext, never silently persist a recovery phrase.
     let phrase=drive_backup::unlocked_phrase()?.ok_or(
         "Google Drive conectado, pero cifrado bloqueado. Desbloqueá la frase en Ajustes para subir.")?;
@@ -166,6 +200,19 @@ pub(crate) async fn drive_api_preview(app:tauri::AppHandle,file_id:String,passph
 }
 #[cfg(test)]
 mod tests{
+    #[test] fn identity_selection_fails_closed_without_packaged_id(){
+        let state=super::Settings::default();
+        if super::packaged_identity().is_none(){
+            assert_eq!(super::identity_status(&state),"not_configured");
+            assert!(super::effective_client_id(&state).is_err());
+        }
+        let cfg=super::Settings{client_id:"012345678901-valid.apps.googleusercontent.com".to_string(),..Default::default()};
+        if let Some(bundled)=super::packaged_identity(){
+            if cfg.client_id!=bundled{assert_eq!(super::identity_status(&cfg),"migration_required");}
+        }else{
+            assert_eq!(super::identity_status(&cfg),if cfg!(debug_assertions){"ready"}else{"not_configured"});
+        }
+    }
     #[test] fn cloud_api_never_needs_google_secret_on_disk(){
         assert!(super::drive_oauth::client_id_valid("012345678901-abc.apps.googleusercontent.com"));
     }
