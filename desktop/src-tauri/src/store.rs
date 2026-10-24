@@ -495,6 +495,62 @@ mod tests {
         assert_eq!(serde_json::to_value(restored).unwrap()["orders"][0]["items"][0]["quantity"],1.25);
     }
     #[test]
+    fn incremental_write_preserves_existing_rows_and_updates_only_changed_entities(){
+        let mut db=Connection::open_in_memory().unwrap();
+        db.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        db.execute_batch(SCHEMA).unwrap();
+        let fixture=serde_json::json!({
+            "clients":[{"id":"c1","name":"Cliente Uno","phone":"223000","email":"","notes":"","createdAt":"2026-10-24"}],
+            "vehicles":[{"id":"v1","clientId":"c1","plate":"AF123BC","make":"Toyota","model":"Corolla",
+                         "year":2021,"mileage":2500,"vin":"","color":"","nextServiceDate":"","notes":"","createdAt":"2026-10-24"}],
+            "orders":[{"id":"o1","vehicleId":"v1","title":"Diagnóstico","category":"Mecánica","status":"received",
+                       "openedAt":"2026-10-24","completedAt":"","mileage":2500,"description":"","partsCost":100,
+                       "laborCost":50,"charged":300,"paid":100,"notes":"","createdAt":"2026-10-24"}],
+            "settings":{"garageName":"Taller de prueba","currency":"ARS","demo":false}
+        });
+        let mut data:AppData=serde_json::from_value(fixture).unwrap();
+        assert_eq!(write(&mut db,&data,0).unwrap().revision,1);
+        let original_row_ids:(i64,i64,i64)=(
+            db.query_row("SELECT rowid FROM clients WHERE id='c1'",[],|r|r.get(0)).unwrap(),
+            db.query_row("SELECT rowid FROM vehicles WHERE id='v1'",[],|r|r.get(0)).unwrap(),
+            db.query_row("SELECT rowid FROM orders WHERE id='o1'",[],|r|r.get(0)).unwrap()
+        );
+        // An unchanged snapshot must neither DELETE nor UPDATE any business row.
+        db.execute_batch("
+            CREATE TRIGGER deny_client_delete BEFORE DELETE ON clients
+            BEGIN SELECT RAISE(ABORT,'unexpected client delete'); END;
+            CREATE TRIGGER deny_vehicle_delete BEFORE DELETE ON vehicles
+            BEGIN SELECT RAISE(ABORT,'unexpected vehicle delete'); END;
+            CREATE TRIGGER deny_order_delete BEFORE DELETE ON orders
+            BEGIN SELECT RAISE(ABORT,'unexpected order delete'); END;
+            CREATE TRIGGER deny_vehicle_update BEFORE UPDATE ON vehicles
+            BEGIN SELECT RAISE(ABORT,'unexpected vehicle update'); END;
+            CREATE TRIGGER deny_order_update BEFORE UPDATE ON orders
+            BEGIN SELECT RAISE(ABORT,'unexpected order update'); END;
+        ").unwrap();
+        assert_eq!(write(&mut db,&data,1).unwrap().revision,2);
+        // Editing a client MUST NOT touch a vehicle or its order.
+        data.clients[0].name="Cliente Renombrado".into();
+        assert_eq!(write(&mut db,&data,2).unwrap().revision,3);
+        let row_ids:(i64,i64,i64)=(
+            db.query_row("SELECT rowid FROM clients WHERE id='c1'",[],|r|r.get(0)).unwrap(),
+            db.query_row("SELECT rowid FROM vehicles WHERE id='v1'",[],|r|r.get(0)).unwrap(),
+            db.query_row("SELECT rowid FROM orders WHERE id='o1'",[],|r|r.get(0)).unwrap()
+        );
+        assert_eq!(original_row_ids,row_ids);
+        assert_eq!(read(&db).unwrap().data.clients[0].name,"Cliente Renombrado");
+        assert!(write(&mut db,&data,2).is_err(),"stale optimistic revision must fail");
+        assert_eq!(read(&db).unwrap().revision,3);
+        // Targeted deletions still obey child-before-parent order under active FK checks.
+        db.execute_batch("DROP TRIGGER deny_client_delete; DROP TRIGGER deny_vehicle_delete;
+                          DROP TRIGGER deny_order_delete; DROP TRIGGER deny_vehicle_update;
+                          DROP TRIGGER deny_order_update;").unwrap();
+        data.orders.clear();data.vehicles.clear();data.clients.clear();
+        assert_eq!(write(&mut db,&data,3).unwrap().revision,4);
+        let empty=read(&db).unwrap().data;
+        assert!(empty.clients.is_empty()&&empty.vehicles.is_empty()&&empty.orders.is_empty());
+    }
+    #[test]
     fn rejects_foreign_keys_before_mutation() {
         let mut db = Connection::open_in_memory().unwrap();
         db.execute_batch(SCHEMA).unwrap();
