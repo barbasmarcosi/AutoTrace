@@ -16,6 +16,8 @@ AutoTrace usa Tauri v2 y SQLite local, sin servidor y sin cuotas mensuales oblig
 
 En **Ajustes → Google Drive · Conexión directa** se puede configurar un OAuth Client ID de tipo Desktop, autorizar una cuenta Google mediante PKCE y guardar el token de renovación en **Windows Credential Manager**. Tras desbloquear la frase `age`, las copias SQLite + Excel + manifiesto se cifran y se suben por la **Google Drive API v3** a una carpeta propia visible (`AutoTrace Backups`), con confirmación remota de tamaño y MD5. Una cola cifrada retiene copias cuando falla la red; se reintenta mientras la aplicación está abierta. Se pueden listar, probar sin destruir datos y restaurar copias remotas.
 
+**Siguiente etapa de producto:** [D8 — Google Drive en un clic](../docs/desktop/D8_GOOGLE_DRIVE_ONE_CLICK_PLAN.md). El Client ID visible en Ajustes es una solución provisoria de desarrollo, no un requisito para el cliente final. D8 también resuelve el desbloqueo automático del cifrado y las pruebas de error sin Google Cloud.
+
 La configuración OAuth externa, prueba de subida y recuperación desde otra PC **NO** están verificadas todavía. La PWA Pages y el instalador anterior a este PR no incluyen estos comandos nativos. Consultar [guía de activación D7](../docs/desktop/D7_GOOGLE_DRIVE_API_DIRECT.md).
 
 ## Instalación y pruebas
