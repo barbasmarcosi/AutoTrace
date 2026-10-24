@@ -4,11 +4,9 @@ on:
   pull_request:
     paths:
       - '.github/workflows/desktop-installer.yml'
-      - 'desktop/src-tauri/tauri.conf.json'
-      - 'desktop/src-tauri/src/**'
-      - 'desktop/src-tauri/Cargo.toml'
-      - 'site/app.js'
-      - 'desktop/scripts/smoke-installer.ps1'
+      - 'desktop/**'
+      - 'tests/**'
+      - 'site/**'
   workflow_dispatch:
 
 permissions:
