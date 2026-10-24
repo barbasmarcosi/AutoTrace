@@ -141,7 +141,7 @@ fn external_config_path(app:&tauri::AppHandle)->Result<PathBuf,String>{
     fs::create_dir_all(&folder).map_err(err)?;
     Ok(folder.join("external-backup-destination.json"))
 }
-fn configured_folder(app:&tauri::AppHandle)->Result<Option<PathBuf>,String>{
+pub(crate) fn configured_folder(app:&tauri::AppHandle)->Result<Option<PathBuf>,String>{
     let cfg=external_config_path(app)?;
     if !cfg.exists(){return Ok(None);}
     let doc:serde_json::Value=serde_json::from_slice(&fs::read(cfg).map_err(err)?).map_err(err)?;
@@ -160,6 +160,9 @@ pub(crate) fn configure_external_backup(app:tauri::AppHandle)->Result<Option<Str
         return Err("La carpeta elegida no puede contener los datos de AutoTrace".into());
     }
     check_distinct_volume(&local,&destination)?;
+    if drive_backup::overlaps_encrypted_destination(&app,&destination)?{
+        return Err("La carpeta de Google Drive cifrada debe estar aislada: no se puede usar también como destino de respaldos SIN CIFRAR.".into());
+    }
     let config=external_config_path(&app)?;
     fs::write(&config,serde_json::to_vec(&serde_json::json!({"directory":destination})).map_err(err)?).map_err(err)?;
     Ok(Some(destination.display().to_string()))
@@ -285,7 +288,11 @@ pub(crate) fn backup_now(app:tauri::AppHandle)->Result<BackupResult,String>{
     let mut backup=backup_pair(&src,&backup_dir(&app)?,&id)?;
     if let Some(folder)=configured_folder(&app)?{
         let main=backup_dir(&app)?;
-        let copy=check_distinct_volume(&main,&folder).and_then(|()|mirror_pair(&backup,&folder));
+        let copy=if drive_backup::overlaps_encrypted_destination(&app,&folder)?{
+            Err("Se bloqueó una copia sin cifrar a la carpeta configurada para Google Drive.".into())
+        }else{
+            check_distinct_volume(&main,&folder).and_then(|()|mirror_pair(&backup,&folder))
+        };
         match copy{
             Ok(())=>{
                 backup.external_copy_ok=true;
