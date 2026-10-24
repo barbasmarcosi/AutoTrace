@@ -402,6 +402,28 @@ fn unpack<R:Read>(mut reader:R,location:&Path)->Result<PathBuf,String>{
     backup::verify_pair_marker(&marker)?;
     Ok(location.join(format!("{base}.sqlite3")))
 }
+/// On a sudden crash Windows may leave temporarily decrypted customer
+/// records on disk. At the next Desktop startup, delete only stale directories
+/// with our exact generated UUID pattern; never recurse into arbitrary paths.
+fn is_owned_decrypt_dir(path:&Path)->bool{
+    let Some(name)=path.file_name().and_then(|s|s.to_str()) else {return false;};
+    let Some(id)=name.strip_prefix("autotrace-drive-decrypt-") else {return false;};
+    uuid::Uuid::parse_str(id).is_ok()
+}
+pub(crate) fn cleanup_stale_decrypt_directories(){
+    let Ok(entries)=fs::read_dir(std::env::temp_dir()) else {return};
+    for entry in entries.flatten(){
+        let path=entry.path();
+        if !is_owned_decrypt_dir(&path){continue;}
+        let Ok(metadata)=fs::symlink_metadata(&path) else {continue};
+        if !metadata.is_dir() || metadata.file_type().is_symlink(){continue;}
+        let Ok(changed)=metadata.modified() else {continue};
+        let Ok(age)=std::time::SystemTime::now().duration_since(changed) else {continue};
+        // Active restore processes should finish well before one day.
+        if age.as_secs()<24*60*60{continue;}
+        let _=fs::remove_dir_all(&path);
+    }
+}
 fn read_archive(path:&Path,passphrase:&str)->Result<RestoredArchive,String>{
     let meta=fs::metadata(path).map_err(|e|e.to_string())?;
     if !meta.is_file()||meta.len()>600_000_000||meta.len()<100 {
@@ -465,6 +487,16 @@ mod tests {
         assert!(is_plain_workshop_backup_name("AutoTrace_2026-01.manifest.json"));
         assert!(!is_plain_workshop_backup_name("AutoTrace_2026-01.atbackup.age"));
         assert!(!is_plain_workshop_backup_name("Comprobante_cliente.xlsx"));
+    }
+    #[test]
+    fn temp_cleanup_only_targets_our_strict_uuid_directory_names(){
+        let owned=std::env::temp_dir().join(format!("autotrace-drive-decrypt-{}",uuid::Uuid::new_v4()));
+        assert!(is_owned_decrypt_dir(&owned));
+        for forbidden in ["autotrace-drive-decrypt-", "autotrace-drive-decrypt-garbage",
+            "autotrace-drive-decrypt-bad/path", "autotrace-test-drive-decrypt-customer",
+            "AutoTrace_secret_customer","some-other-temp-directory"]{
+            assert!(!is_owned_decrypt_dir(&std::env::temp_dir().join(forbidden)));
+        }
     }
     #[test]
     fn generated_recovery_key_is_high_entropy_and_portable(){
