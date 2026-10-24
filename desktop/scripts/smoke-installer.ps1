@@ -68,6 +68,27 @@ if ($builtInfo.FileVersion -and $installedInfo.FileVersion -and $builtInfo.FileV
     throw "La versión instalada difiere de la compilación"
 }
 Write-Host "Instalado correctamente: $($exe.FullName)"
+# Regression smoke: a re-install on the same machine must not wipe the
+# dedicated application data directory. This is NOT an old-version migration test.
+$dataDir = Join-Path $env:LOCALAPPDATA "ar.com.autotrace.desktop"
+New-Item -Path $dataDir -ItemType Directory -Force | Out-Null
+$sentinel = Join-Path $dataDir "nsis-acceptance-sentinel.txt"
+if (Test-Path $sentinel) { throw "El marcador de prueba ya existe: runner no limpio" }
+$sentinelContents = "NSIS-DO-NOT-DELETE-$(New-Guid)"
+[System.IO.File]::WriteAllText($sentinel, $sentinelContents)
+Write-Host "Reinstalando NSIS para verificar preservación de datos de usuario..."
+$upgrade = Start-Process -FilePath $installer.FullName -ArgumentList "/S" -PassThru
+if (-not $upgrade.WaitForExit(180000)) {
+    Stop-Process -Id $upgrade.Id -Force -ErrorAction SilentlyContinue
+    throw "La reinstalación NSIS excedió 180 segundos"
+}
+if ($upgrade.ExitCode -ne 0) { throw "La reinstalación devolvió $($upgrade.ExitCode)" }
+if (-not (Test-Path $exe.FullName)) { throw "La reinstalación eliminó el ejecutable" }
+if (-not (Test-Path $sentinel) -or [System.IO.File]::ReadAllText($sentinel) -ne $sentinelContents) {
+    throw "La reinstalación NSIS alteró los datos persistentes del usuario"
+}
+Write-Host "SMOKE PASS: reinstalación conservó el marcador en AppData."
+
 
 $uninstall = Join-Path $exe.Directory.FullName "uninstall.exe"
 if (-not (Test-Path $uninstall)) { throw "No se encontró uninstall.exe" }
@@ -81,4 +102,9 @@ for ($retry=0; $retry -lt 10 -and (Test-Path $exe.FullName); $retry++) {
     Start-Sleep -Milliseconds 500
 }
 if (Test-Path $exe.FullName) { throw "El ejecutable sigue instalado luego de desinstalar" }
-Write-Host "SMOKE PASS: NSIS instala y desinstala en el runner Windows."
+if (-not (Test-Path $sentinel) -or [System.IO.File]::ReadAllText($sentinel) -ne $sentinelContents) {
+    throw "El desinstalador eliminó datos persistentes del usuario"
+}
+Remove-Item -LiteralPath $sentinel -Force
+Write-Host "SMOKE PASS: instalación, reinstalación y desinstalación preservan AppData sintético (runner)."
+
