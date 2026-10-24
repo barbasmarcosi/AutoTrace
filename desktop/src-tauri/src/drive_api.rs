@@ -1,7 +1,8 @@
 //! Direct Google Drive API orchestrator: local-first, no plaintext uploads.
 use crate::{backup,drive_backup,drive_oauth,drive_transport};
 use serde::{Serialize,Deserialize};
-use std::{fs,path::{Path,PathBuf}};
+use std::{fs,path::{Path,PathBuf},sync::{Mutex,OnceLock}};
+static UPLOAD_LOCK:OnceLock<Mutex<()>>=OnceLock::new();
 use tauri::Manager;
 #[derive(Default,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
@@ -103,6 +104,8 @@ pub(crate) fn drive_api_list(app:tauri::AppHandle)->Result<Vec<drive_transport::
     drive_transport::list(&access(&app)?)
 }
 fn flush(app:&tauri::AppHandle)->Result<usize,String>{
+    let _guard=UPLOAD_LOCK.get_or_init(||Mutex::new(())).try_lock()
+        .map_err(|_|"Ya hay una sincronización con Drive en curso. Intentá nuevamente.".to_string())?;
     let token=access(app)?;
     let mut count=0;
     for path in pending(app)?{
