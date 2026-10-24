@@ -41,7 +41,6 @@ pub(crate) fn enable_auto_unlock(passphrase:String)->Result<(),String>{
       .map_err(|_|"Windows no pudo proteger la clave de respaldos.".to_string())?;
     set_secret(Some(SecretString::from(passphrase)))
 }
-#[tauri::command]
 /// 244 bits of OS-backed UUIDv4 randomness across two independent values.
 /// The phrase is returned ONCE to the Desktop recovery-kit dialog; never logged or saved.
 #[tauri::command]
