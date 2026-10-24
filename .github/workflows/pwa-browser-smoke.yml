@@ -1,7 +1,13 @@
 name: Browser startup smoke for Excel LAB
 on:
+  pull_request:
+    paths:
+      - '.github/workflows/pwa-browser-smoke.yml'
+      - 'site/**'
+      - 'scripts/build-pages-preview.py'
+      - 'tests/**'
   push:
-    branches: [plan/desktop-sqlite-excel-backups-20261021, 'feature/**']
+    branches: [plan/desktop-sqlite-excel-backups-20261021, 'feature/**', 'fix/**']
     paths:
       - '.github/workflows/pwa-browser-smoke.yml'
       - 'site/**'
@@ -37,3 +43,6 @@ jobs:
           trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
           sleep 2
           CHROME_PATH="$(command -v google-chrome || command -v chromium || command -v chromium-browser)" node tests/pwa-browser-smoke.mjs
+          # Exercise Desktop recovery dialogs with a synthetic Tauri bridge,
+          # without making OAuth requests or touching real customer files.
+          CHROME_PATH="$(command -v google-chrome || command -v chromium || command -v chromium-browser)" node tests/desktop-browser-smoke.mjs
