@@ -35,7 +35,7 @@ jobs:
         run: |
           node --test tests/*.test.mjs
           python -m unittest discover -s tests -p test_desktop_schema.py -v
-          cargo test --manifest-path desktop/src-tauri/Cargo.toml --all-targets
+          cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml --all-targets
       - name: Build unsigned Windows installer (NSIS)
         working-directory: desktop/src-tauri
         shell: pwsh
