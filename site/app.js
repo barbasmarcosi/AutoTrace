@@ -382,7 +382,7 @@ function renderDriveSettings(){
     '<div class="info-grid">'+
       descView('Carpeta local sincronizada',esc(folder||'Sin configurar'))+
       descView('Clave de recuperación',!folder?'Sin configurar':st?.unlocked?'Desbloqueada en esta sesión':'Bloqueada. Ingresá tu frase al abrir Desktop.')+
-      descView('Último archivo cifrado local',st?.lastEncryptedFileUnixMs?formatDateTime(Number(st.lastEncryptedFileUnixMs)):'Sin copias cifradas verificadas aquí')+
+      descView('Último archivo cifrado local',st?.lastEncryptedFileUnixMs?new Date(Number(st.lastEncryptedFileUnixMs)).toLocaleString('es-AR'):'Sin copias cifradas verificadas aquí')+
       descView('Estado en la nube','No comprobado; verificá en Google Drive')+'</div>'+
     '<div class="settings-actions" style="margin-top:14px">'+
       button('Configurar carpeta cifrada','configure-drive-backup','btn-primary')+
