@@ -1,5 +1,5 @@
 //! Two matching, locally verified artifacts. Does not claim off-device durability.
-use crate::{excel, store};
+use crate::{excel, store, drive_backup};
 use rusqlite::{backup::Backup, Connection, OpenFlags};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -24,6 +24,8 @@ pub(crate) struct BackupResult {
     pub manifest_path: String,
     pub external_copy_ok: bool,
     pub external_copy_error: Option<String>,
+    pub drive_copy_ok: bool,
+    pub drive_copy_error: Option<String>,
 }
 fn err(e:impl std::fmt::Display)->String {format!("No se pudo crear o verificar el respaldo: {e}")}
 fn now_ms()->Result<u128,String> {Ok(SystemTime::now().duration_since(UNIX_EPOCH).map_err(err)?.as_millis())}
@@ -47,7 +49,7 @@ fn snapshot(src:&Connection, dst:&Path)->Result<(),String>{
     drop(op);
     verify_db(&conn)
 }
-fn backup_pair(src:&Connection, dest:&Path, id:&str)->Result<BackupResult,String>{
+pub(crate) fn backup_pair(src:&Connection, dest:&Path, id:&str)->Result<BackupResult,String>{
     fs::create_dir_all(dest).map_err(err)?;
     let db=dest.join(format!("AutoTrace_{id}.sqlite3"));
     let excel=dest.join(format!("AutoTrace_{id}.xlsx"));
@@ -75,13 +77,13 @@ fn backup_pair(src:&Connection, dest:&Path, id:&str)->Result<BackupResult,String
         fs::rename(&temp_xlsx,&excel).map_err(err)?;
         fs::rename(&temp_manifest,&manifest).map_err(err)?;
         if sha(&db)?!=metadata["sqliteSha256"].as_str().unwrap_or("") || sha(&excel)?!=metadata["excelSha256"].as_str().unwrap_or("") {return Err("Checksum no coincide después de copiar".into());}
-        Ok(BackupResult{sqlite_path:db.display().to_string(),excel_path:excel.display().to_string(),manifest_path:manifest.display().to_string(),external_copy_ok:false,external_copy_error:None})
+        Ok(BackupResult{sqlite_path:db.display().to_string(),excel_path:excel.display().to_string(),manifest_path:manifest.display().to_string(),external_copy_ok:false,external_copy_error:None,drive_copy_ok:false,drive_copy_error:None})
     })();
     let _=fs::remove_dir_all(staging);
     if result.is_err(){let _=fs::remove_file(db);let _=fs::remove_file(excel);let _=fs::remove_file(manifest);}
     result
 }
-fn verify_pair_marker(path:&Path)->Result<(),String>{
+pub(crate) fn verify_pair_marker(path:&Path)->Result<(),String>{
     let manifest:serde_json::Value=serde_json::from_slice(&fs::read(path).map_err(err)?).map_err(err)?;
     if manifest["kind"]!="autotrace-dual-backup" || manifest["version"]!=1 {
         return Err("Manifiesto de respaldo no reconocido".into());
@@ -139,7 +141,7 @@ fn external_config_path(app:&tauri::AppHandle)->Result<PathBuf,String>{
     fs::create_dir_all(&folder).map_err(err)?;
     Ok(folder.join("external-backup-destination.json"))
 }
-fn configured_folder(app:&tauri::AppHandle)->Result<Option<PathBuf>,String>{
+pub(crate) fn configured_folder(app:&tauri::AppHandle)->Result<Option<PathBuf>,String>{
     let cfg=external_config_path(app)?;
     if !cfg.exists(){return Ok(None);}
     let doc:serde_json::Value=serde_json::from_slice(&fs::read(cfg).map_err(err)?).map_err(err)?;
@@ -158,6 +160,9 @@ pub(crate) fn configure_external_backup(app:tauri::AppHandle)->Result<Option<Str
         return Err("La carpeta elegida no puede contener los datos de AutoTrace".into());
     }
     check_distinct_volume(&local,&destination)?;
+    if drive_backup::overlaps_encrypted_destination(&app,&destination)?{
+        return Err("La carpeta de Google Drive cifrada debe estar aislada: no se puede usar también como destino de respaldos SIN CIFRAR.".into());
+    }
     let config=external_config_path(&app)?;
     fs::write(&config,serde_json::to_vec(&serde_json::json!({"directory":destination})).map_err(err)?).map_err(err)?;
     Ok(Some(destination.display().to_string()))
@@ -283,7 +288,13 @@ pub(crate) fn backup_now(app:tauri::AppHandle)->Result<BackupResult,String>{
     let mut backup=backup_pair(&src,&backup_dir(&app)?,&id)?;
     if let Some(folder)=configured_folder(&app)?{
         let main=backup_dir(&app)?;
-        let copy=check_distinct_volume(&main,&folder).and_then(|()|mirror_pair(&backup,&folder));
+        let copy=drive_backup::overlaps_encrypted_destination(&app,&folder).and_then(|overlap|{
+            if overlap{
+                Err("Se bloqueó una copia sin cifrar a la carpeta configurada para Google Drive.".into())
+            }else{
+                check_distinct_volume(&main,&folder).and_then(|()|mirror_pair(&backup,&folder))
+            }
+        });
         match copy{
             Ok(())=>{
                 backup.external_copy_ok=true;
@@ -291,6 +302,11 @@ pub(crate) fn backup_now(app:tauri::AppHandle)->Result<BackupResult,String>{
             },
             Err(e)=>backup.external_copy_error=Some(e),
         }
+    }
+    match drive_backup::replicate_if_unlocked(&app,&backup){
+        Ok(Some(_))=>backup.drive_copy_ok=true,
+        Ok(None)=>{},
+        Err(e)=>backup.drive_copy_error=Some(e),
     }
     if let Err(e)=prune_verified(&backup_dir(&app)?){eprintln!("AutoTrace local retention: {e}");}
     Ok(backup)
@@ -352,7 +368,7 @@ pub(crate) fn export_customer_excel_dialog(app:tauri::AppHandle,client_id:String
 }
 // Only data from a verified and validated SQLite source enters the current app.
 // Copying a user-selected SQLite database directly to the live path is forbidden.
-fn read_sqlite_candidate(path:&Path)->Result<(store::AppData,bool),String>{
+pub(crate) fn read_sqlite_candidate(path:&Path)->Result<(store::AppData,bool),String>{
     let meta=fs::metadata(path).map_err(err)?;
     if !meta.is_file() || meta.len()>512_000_000 || meta.len()<100 {
         return Err("Archivo SQLite vacío o demasiado grande".into());
