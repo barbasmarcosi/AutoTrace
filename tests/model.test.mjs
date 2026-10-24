@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {normalizePlate, pendingAmount, margin, csvCell, validateData} from '../site/model.mjs';
+import {normalizePlate, pendingAmount, margin, csvCell, validateData, laborRevenue, laborContribution, historicalUnallocated} from '../site/model.mjs';
 const fixture=()=>({clients:[{id:'c1',name:'Lucía'}],vehicles:[{id:'v1',clientId:'c1',plate:'AF 123 BC',make:'Ford',model:'Ka',year:2019,mileage:125000}],orders:[{id:'o1',vehicleId:'v1',title:'Service',status:'progress',openedAt:'2026-10-20',partsCost:100,laborCost:50,charged:250,paid:100,mileage:125000}],settings:{garageName:'Mi taller',currency:'ARS',demo:false}});
 test('normalizes plates and calculates pending and margin',()=>{
  assert.equal(normalizePlate('af 123 bc'),'AF123BC');
@@ -24,4 +24,59 @@ test('rejects invalid amounts, overpayment and dates',()=>{
 });
 test('guards CSV formula injection and escapes quote',()=>{
  assert.equal(csvCell('=1+2'),'"\'=1+2"');assert.equal(csvCell('A "B"'),'"A ""B"""');
+});
+
+test('los desgloses son opcionales para registros viejos y conservan cantidad/importe al validar',()=>{
+  const data={
+    clients:[{id:'c',name:'Cliente',phone:'',email:'',notes:'',createdAt:''}],
+    vehicles:[{id:'v',clientId:'c',plate:'AF012BC',make:'Toyota',model:'Hilux',year:'',mileage:10,vin:'',color:'',nextServiceDate:'',notes:'',createdAt:''}],
+    orders:[{id:'o',vehicleId:'v',title:'Presupuesto',category:'Mecánica',status:'received',openedAt:'2026-10-22',completedAt:'',mileage:10,description:'',partsCost:0,laborCost:0,charged:347000,paid:0,notes:'',createdAt:''}],
+    settings:{garageName:'Taller',currency:'ARS',demo:false}
+  };
+  const old=validateData(data);
+  assert.equal(old.orders[0].items,undefined);
+  data.orders[0].items=[{id:'1',kind:'part',description:'Filtro',quantity:8,unitPrice:19000}];
+  data.orders[0].documentKind='quote';
+  const renewed=validateData(data);
+  assert.equal(renewed.orders[0].items[0].quantity,8);
+  assert.equal(pendingAmount(renewed.orders[0]),0);
+  data.orders[0].items[0].quantity=-1;
+  assert.throws(()=>validateData(data));
+});
+
+test('mano de obra neta no se inventa cuando el trabajo no tiene renglones',()=>{
+  const order=fixture().orders[0];
+  assert.equal(laborContribution(order),null);
+  order.items=[{id:'labor',kind:'labor',description:'Diagnóstico',quantity:2,unitPrice:250}];
+  assert.equal(laborRevenue(order),500);
+  assert.equal(laborContribution(order),450);
+});
+test('cobros electrónicos requieren cuenta y conservan pagos históricos sin clasificar',()=>{
+  const data=fixture();
+  data.settings.accounts=[{id:'a1',name:'Banco del taller',kind:'bank',alias:'taller.banco'}];
+  data.orders[0].payments=[{id:'p1',date:'2026-10-22',amount:25,method:'transfer',accountId:'a1',reference:'OP-001'}];
+  let state=validateData(data);
+  assert.equal(state.orders[0].payments[0].accountId,'a1');
+  assert.equal(historicalUnallocated(state.orders[0]),75);
+  data.orders[0].payments[0].accountId='';
+  assert.throws(()=>validateData(data),/cuenta receptora/);
+  data.orders[0].payments[0].accountId='a1';
+  data.orders[0].payments[0].amount=120;
+  assert.throws(()=>validateData(data),/superan/);
+});
+test('efectivo nunca lleva cuenta; cobros y cuentas referenciadas no pueden desaparecer',()=>{
+  const data=fixture();
+  data.settings.accounts=[{id:'a1',name:'Cuenta principal',kind:'wallet',alias:''}];
+  data.orders[0].payments=[{id:'p1',date:'2026-10-22',amount:10,method:'cash',accountId:'a1',reference:''}];
+  assert.throws(()=>validateData(data),/no electrónicos/);
+  data.orders[0].payments[0].method='qr';
+  validateData(data);
+  data.settings.accounts=[];
+  assert.throws(()=>validateData(data),/cuenta receptora/);
+});
+test('presupuestos no tienen cobros y el JSON anterior sigue siendo válido',()=>{
+  const data=fixture();
+  assert.equal(validateData(data).settings.accounts,undefined);
+  data.orders[0].documentKind='quote';
+  assert.throws(()=>validateData(data),/presupuestos/);
 });

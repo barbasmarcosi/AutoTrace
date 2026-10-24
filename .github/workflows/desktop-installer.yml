@@ -1,0 +1,70 @@
+name: Desktop Windows NSIS installer (preview)
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/desktop-installer.yml'
+      - 'desktop/**'
+      - 'tests/**'
+      - 'site/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: autotrace-installer-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-nsis:
+    runs-on: windows-latest
+    env:
+      # Public OAuth Desktop client ID. Empty until AutoTrace's Google Cloud app is registered.
+      AUTOTRACE_GOOGLE_OAUTH_CLIENT_ID: ${{ vars.AUTOTRACE_GOOGLE_OAUTH_CLIENT_ID }}
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable verified 2026-10-24
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          workspaces: desktop/src-tauri -> target
+      - name: Validate model, database and backup engine
+        run: |
+          node --test tests/*.test.mjs
+          python -m unittest discover -s tests -p test_desktop_schema.py -v
+          cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml --all-targets
+      - name: Audit Desktop release policy and security regressions
+        run: |
+          python scripts/check_desktop_release_policy.py
+          python -m unittest discover -s tests -p test_release_policy.py -v
+      - name: Build unsigned Windows installer (NSIS)
+        working-directory: desktop/src-tauri
+        shell: pwsh
+        run: |
+          # Prebuilt cross-platform CLI avoids compiling tauri-cli on the runner.
+          npm exec --yes --package="@tauri-apps/cli@2.12.3" -- tauri build --bundles nsis
+      - name: Inspect produced installer (no production data)
+        shell: pwsh
+        run: |
+          $exes = @(Get-ChildItem -Path "desktop/src-tauri/target/release/bundle/nsis" -Filter "*.exe" -File -ErrorAction Stop)
+          if ($exes.Count -lt 1) { throw "No se produjo un instalador NSIS" }
+          foreach ($exe in $exes) {
+            Write-Output "Installer: $($exe.Name)"
+            Write-Output "Size: $($exe.Length) bytes"
+            $sha = (Get-FileHash -Algorithm SHA256 $exe.FullName).Hash.ToLowerInvariant()
+            Write-Output "SHA256: $sha"
+            "$sha *$($exe.Name)" | Out-File -FilePath "$($exe.FullName).sha256.txt" -Encoding ascii
+          }
+      - name: Silent installation and uninstallation smoke (ephemeral runner)
+        shell: pwsh
+        run: ./desktop/scripts/smoke-installer.ps1
+      - name: Upload preview installer (UNSIGNED)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: autotrace-desktop-windows-preview-unsigned
+          path: |
+            desktop/src-tauri/target/release/bundle/nsis/*.exe
+            desktop/src-tauri/target/release/bundle/nsis/*.sha256.txt
+          retention-days: 7
+          if-no-files-found: error

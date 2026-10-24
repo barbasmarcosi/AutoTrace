@@ -1,0 +1,112 @@
+//! Public-client Google OAuth for a Windows Desktop application: PKCE S256 + loopback.
+//! Refresh token is stored in Windows Credential Manager through keyring.
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD,Engine as _};
+use reqwest::blocking::Client;
+use serde::Deserialize;
+use sha2::{Digest,Sha256};
+use std::{io::{Read,Write},net::TcpListener,thread,time::{Duration,Instant}};
+use url::Url;
+const SERVICE:&str="AutoTrace-GoogleDrive";
+const USER:&str="refresh-token";
+pub(crate) const SCOPE:&str="https://www.googleapis.com/auth/drive.file";
+fn vault()->Result<keyring::Entry,String>{
+    keyring::Entry::new(SERVICE,USER).map_err(|_|"No se pudo acceder a credenciales seguras de Windows".into())
+}
+pub(crate) fn authorized()->bool{vault().is_ok_and(|v|v.get_password().is_ok())}
+pub(crate) fn forget()->Result<(),String>{
+    let _=vault()?.delete_credential();Ok(())
+}
+pub(crate) fn client_id_valid(s:&str)->bool{
+    s.len()>35&&s.len()<300&&s.ends_with(".apps.googleusercontent.com")
+        &&s.bytes().all(|b|b.is_ascii_alphanumeric()||b==b'.'||b==b'-')
+}
+fn http()->Result<Client,String>{
+    Client::builder().timeout(Duration::from_secs(80)).build().map_err(|_|"Error inicializando HTTPS".into())
+}
+#[derive(Deserialize)]
+struct Tokens {access_token:Option<String>,refresh_token:Option<String>}
+fn exchange(fields:&[(&str,&str)])->Result<Tokens,String>{
+    let resp=http()?.post("https://oauth2.googleapis.com/token")
+        .form(fields).send().map_err(|_|"No se pudo comunicar con OAuth de Google")?;
+    if !resp.status().is_success(){return Err(format!("Google OAuth rechazó el acceso (HTTP {}). Revisá el Client ID o volvé a conectar.",resp.status().as_u16()));}
+    resp.json().map_err(|_|"La respuesta de Google OAuth no es válida".into())
+}
+pub(crate) fn token(client_id:&str)->Result<String,String>{
+    let refresh=vault()?.get_password().map_err(|_|"No hay autorización guardada. Conectá Google Drive desde Ajustes.")?;
+    let result=exchange(&[("client_id",client_id),("grant_type","refresh_token"),("refresh_token",&refresh)])?;
+    result.access_token.filter(|s|!s.is_empty()).ok_or("Google no entregó acceso".into())
+}
+fn challenge(v:&str)->String{URL_SAFE_NO_PAD.encode(Sha256::digest(v.as_bytes()))}
+fn verifier()->(String,String,String){
+    let random=format!("{}{}",uuid::Uuid::new_v4().simple(),uuid::Uuid::new_v4().simple());
+    let state=uuid::Uuid::new_v4().simple().to_string();
+    let hash=challenge(&random);
+    (random,hash,state)
+}
+fn wait_callback(listener:TcpListener,expected:&str)->Result<String,String>{
+    listener.set_nonblocking(true).map_err(|_|"No se pudo escuchar el callback de Google")?;
+    let deadline=Instant::now()+Duration::from_secs(180);
+    while Instant::now()<deadline{
+        match listener.accept(){
+            Ok((mut sock,peer))=>{
+                if !peer.ip().is_loopback(){continue;}
+                sock.set_read_timeout(Some(Duration::from_secs(3))).map_err(|_|"Conexión OAuth inválida")?;
+                let mut buf=[0u8;8192];
+                let n=sock.read(&mut buf).map_err(|_|"Callback OAuth incompleto")?;
+                let line=std::str::from_utf8(&buf[..n]).map_err(|_|"Solicitud OAuth inválida")?
+                    .lines().next().unwrap_or("").to_string();
+                let path=line.strip_prefix("GET ").and_then(|r|r.split(' ').next()).unwrap_or("");
+                let u=Url::parse(&format!("http://localhost{path}")).map_err(|_|"Callback inválido")?;
+                let state=u.query_pairs().find(|(k,_)|k=="state").map(|(_,v)|v.into_owned());
+                let code=u.query_pairs().find(|(k,_)|k=="code").map(|(_,v)|v.into_owned());
+                let valid=u.path()=="/callback"&&state.as_deref()==Some(expected)&&code.is_some();
+                let response=if valid {
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\n\r\n<html><body>AutoTrace conectado. Ya podés cerrar esta pestaña.</body></html>"
+                }else{
+                    "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nAutorizacion invalida"
+                };
+                let _=sock.write_all(response.as_bytes());
+                if valid{return Ok(code.unwrap_or_default());}
+            },
+            Err(e) if e.kind()==std::io::ErrorKind::WouldBlock=>thread::sleep(Duration::from_millis(100)),
+            Err(_)=>return Err("No se pudo recibir autorización OAuth".into())
+        }
+    }
+    Err("Expiró el tiempo para conectar la cuenta Google".into())
+}
+pub(crate) fn connect(client_id:&str)->Result<(),String>{
+    if !client_id_valid(client_id){return Err("Falta un Client ID OAuth válido tipo Desktop".into());}
+    let listener=TcpListener::bind("127.0.0.1:0").map_err(|_|"No se pudo escuchar un puerto local OAuth")?;
+    let redirect=format!("http://127.0.0.1:{}/callback",listener.local_addr().map_err(|_|"Puerto OAuth inválido")?.port());
+    let (proof,hash,state)=verifier();
+    let mut url=Url::parse("https://accounts.google.com/o/oauth2/v2/auth").map_err(|e|e.to_string())?;
+    url.query_pairs_mut().append_pair("client_id",client_id)
+        .append_pair("redirect_uri",&redirect).append_pair("response_type","code")
+        .append_pair("scope",SCOPE).append_pair("code_challenge",&hash)
+        .append_pair("code_challenge_method","S256").append_pair("access_type","offline")
+        .append_pair("state",&state).append_pair("prompt","consent");
+    webbrowser::open(url.as_str()).map_err(|_|"No se pudo abrir Google en el navegador")?;
+    let code=wait_callback(listener,&state)?;
+    let res=exchange(&[("client_id",client_id),("grant_type","authorization_code"),
+        ("code",&code),("redirect_uri",&redirect),("code_verifier",&proof)])?;
+    let refresh=res.refresh_token.filter(|s|!s.is_empty())
+        .ok_or("Google no entregó un token de renovación para acceso sin conexión")?;
+    vault()?.set_password(&refresh).map_err(|_|"Windows no permitió almacenar el token de forma segura")?;
+    Ok(())
+}
+#[cfg(test)]
+mod tests{
+    use super::*;
+    #[test] fn pkce_state_and_scope_are_limited(){
+        let (v,h,s)=verifier();
+        assert_eq!(v.len(),64);
+        assert_eq!(h,challenge(&v));
+        assert_eq!(h.len(),43);
+        assert_eq!(s.len(),32);
+        assert_eq!(SCOPE,"https://www.googleapis.com/auth/drive.file");
+    }
+    #[test] fn rejects_wrong_oauth_client(){
+        assert!(client_id_valid("012345678901-abc.apps.googleusercontent.com"));
+        assert!(!client_id_valid("https://evil.invalid"));
+    }
+}

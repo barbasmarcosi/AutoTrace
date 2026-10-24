@@ -9,9 +9,18 @@ const currencyFormat = (value, currency) => new Intl.NumberFormat('es-AR', {
 const dateFormat = value => /^\d{4}-\d{2}-\d{2}$/.test(value ?? '')
   ? new Date(`${value}T12:00:00`).toLocaleDateString('es-AR', {day: '2-digit', month: 'long', year: 'numeric'}) : 'Sin fecha';
 
+function renderItemizedLines(order,currency){
+  if(!Array.isArray(order.items)||!order.items.length)return '';
+  const rows=order.items.map(item=>
+     '<tr><td>'+escapeHTML(item.description)+'</td><td>'+escapeHTML(item.quantity)+'</td><td>'+
+     escapeHTML(currencyFormat(item.unitPrice,currency))+'</td><td>'+
+     escapeHTML(currencyFormat(Number(item.quantity)*Number(item.unitPrice),currency))+'</td></tr>').join('');
+  return '<h2>Detalle de piezas y tareas</h2><table class="items-table"><thead><tr><th>Descripción</th><th>Cantidad</th><th>Precio unitario</th><th>Total</th></tr></thead><tbody>'+
+     rows+'</tbody></table>';
+}
 export function buildCustomerSummary({order, vehicle, client, garageName = 'Mi taller', currency = 'ARS'}) {
   const o = order;
-  const due = Math.max(0, Math.round(((Number(o.charged) || 0) - (Number(o.paid) || 0)) * 100) / 100);
+  const due = o.documentKind==='quote'?0:Math.max(0, Math.round(((Number(o.charged) || 0) - (Number(o.paid) || 0)) * 100) / 100);
   const statusNames = {received: 'Recibido', progress: 'En proceso', waiting: 'Esperando repuesto', done: 'Finalizado', delivered: 'Entregado'};
   const brand = escapeHTML(garageName);
   const lines = [
@@ -31,6 +40,7 @@ export function buildCustomerSummary({order, vehicle, client, garageName = 'Mi t
   .meta{color:#657d7c;font-size:12px}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
   .field{min-width:0}.field small{display:block;font-size:11px;color:#6a807f;margin-bottom:4px}.field strong{display:block;font-size:14px;overflow-wrap:anywhere}
   .description{white-space:pre-wrap;overflow-wrap:anywhere;margin:0}
+  .items-table{width:100%;border-collapse:collapse;table-layout:fixed}.items-table td,.items-table th{border-bottom:1px solid #dfe7e3;padding:8px 6px;text-align:left;vertical-align:top;overflow-wrap:anywhere}.items-table th{background:#eef5f2;font-size:11px}.items-table td:first-child{white-space:pre-wrap;width:45%}
   .totals{background:#f0f8f5;border:1px solid #d9eae3;border-radius:13px;padding:20px;display:grid;gap:12px}
   .total-line{display:flex;justify-content:space-between;align-items:baseline;gap:20px}.total-line strong{font-size:17px}
   .balance{border-top:1px solid #c6dfd5;padding-top:12px;font-weight:750}
@@ -38,15 +48,16 @@ export function buildCustomerSummary({order, vehicle, client, garageName = 'Mi t
   @media(max-width:530px){body{padding:24px 18px}.grid{grid-template-columns:1fr}.brand{font-size:19px}h1{font-size:22px}}
   @media print{body{max-width:none;padding:0}header{break-after:avoid}.totals{print-color-adjust:exact;-webkit-print-color-adjust:exact}}
 </style></head><body>
-<header><div><div class="overline">AutoTrace · Servicio automotor</div><div class="brand">${brand}</div></div><div class="overline">Resumen de servicio</div></header>
+<header><div><div class="overline">AutoTrace · Servicio automotor</div><div class="brand">${brand}</div></div><div class="overline">${o.documentKind==='quote'?'Presupuesto':'Resumen de servicio'}</div></header>
 <h1>${escapeHTML(o.title)}</h1>
 <p class="meta">Ingreso: ${escapeHTML(dateFormat(o.openedAt))} · Estado: ${escapeHTML(statusNames[o.status] || o.status || 'Sin estado')}</p>
 <h2>Datos del vehículo y cliente</h2><div class="grid">${lines.map(([label, value]) => `<div class="field"><small>${escapeHTML(label)}</small><strong>${escapeHTML(value)}</strong></div>`).join('')}</div>
 <h2>Servicio y diagnóstico</h2><p class="description">${escapeHTML(o.description || 'Sin detalle adicional.')}</p>
+${renderItemizedLines(o,currency)}
 <h2>Resumen de importes</h2><div class="totals">
-<div class="total-line"><span>Importe acordado</span><strong>${escapeHTML(currencyFormat(o.charged, currency))}</strong></div>
-<div class="total-line"><span>Total abonado</span><strong>${escapeHTML(currencyFormat(o.paid, currency))}</strong></div>
-<div class="total-line balance"><span>Saldo pendiente</span><strong>${escapeHTML(currencyFormat(due, currency))}</strong></div>
+<div class="total-line"><span>${o.documentKind==='quote'?'Importe presupuestado':'Importe acordado'}</span><strong>${escapeHTML(currencyFormat(o.charged, currency))}</strong></div>
+${o.documentKind==='quote'?'':('<div class="total-line"><span>Total abonado</span><strong>'+escapeHTML(currencyFormat(o.paid,currency))+'</strong></div>')}
+${o.documentKind==='quote'?'':('<div class="total-line balance"><span>Saldo pendiente</span><strong>'+escapeHTML(currencyFormat(due,currency))+'</strong></div>')}
 </div>
 <footer>Documento informativo del trabajo registrado. No es una factura ni un comprobante fiscal. Los importes son los cargados en AutoTrace al momento de imprimir.</footer>
 </body></html>`;

@@ -40,3 +40,19 @@ test('los tres indicadores del inicio abren listados filtrados',()=>{
     assert.match(code,new RegExp(`case '${action}':`));
   }
 });
+
+test('los renglones del remito se imprimen sin inyectar HTML ni filtrar costos',()=>{
+  const data=fixture();
+  data.order.items=[{id:'a',kind:'part',description:'Filtro <script>alert(1)</script>',quantity:2,unitPrice:12500},
+                    {id:'b',kind:'labor',description:'Control de bujías',quantity:1,unitPrice:22000}];
+  const html=buildCustomerSummary(data);
+  assert.match(html,/Control de bujías/);
+  assert.match(html,/Filtro &lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+  assert.doesNotMatch(html,/<script>|NOTA_INTERNA_NO_IMPRIMIR_123|7777777/);
+});
+test('un presupuesto no se presenta como cobro pendiente',()=>{
+  const data=fixture();data.order.documentKind='quote';
+  const html=buildCustomerSummary(data);
+  assert.match(html,/Importe presupuestado/);
+  assert.doesNotMatch(html,/Saldo pendiente|Total abonado/);
+});

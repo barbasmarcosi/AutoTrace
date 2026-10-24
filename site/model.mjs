@@ -1,8 +1,13 @@
 /** Funciones puras compartidas por la aplicación y sus pruebas. */
 export const normalizePlate = value => String(value ?? '').toUpperCase().replace(/[^A-Z0-9]/g,'');
 export const amount = value => {const n=Number(value);return Number.isFinite(n)&&n>=0?Math.round(n*100)/100:0;};
-export const pendingAmount = work => Math.max(0,Math.round((amount(work.charged)-amount(work.paid))*100)/100);
+export const pendingAmount = work => work.documentKind==='quote'?0:Math.max(0,Math.round((amount(work.charged)-amount(work.paid))*100)/100);
 export const margin = work => Math.round((amount(work.charged)-amount(work.partsCost)-amount(work.laborCost))*100)/100;
+export const PAYMENT_METHODS = Object.freeze({cash:'Efectivo',transfer:'Transferencia',debit:'Tarjeta de débito',credit:'Tarjeta de crédito',qr:'QR / billetera virtual',other:'Otro'});
+export const ELECTRONIC_METHODS = Object.freeze(['transfer','debit','credit','qr']);
+export const laborRevenue = work => Math.round((work.items||[]).filter(item=>item.kind==='labor').reduce((total,item)=>total+Math.round(item.quantity*item.unitPrice*100)/100,0)*100)/100;
+export const laborContribution = work => (work.items||[]).some(item=>item.kind==='labor') ? Math.round((laborRevenue(work)-amount(work.laborCost))*100)/100 : null;
+export const historicalUnallocated = work => Math.round((amount(work.paid)-(work.payments||[]).reduce((total,p)=>total+amount(p.amount),0))*100)/100;
 export function csvCell(value){let text=String(value??'');if(/^[\s]*[=+@-]/.test(text))text="'"+text;return `"${text.replace(/"/g,'""')}"`;}
 const str=(v,n=3000)=>typeof v==='string'?v.slice(0,n):'';
 const number=(value,label)=>{const n=Number(value);if(!Number.isFinite(n)||n<0||n>1e12)throw Error(`El campo ${label} tiene un valor numérico inválido.`);return Math.round(n*100)/100;};
@@ -26,14 +31,52 @@ export function validateData(data){
   });
   checkUnique(vehicles,'vehículos');
   if(new Set(vehicles.map(v=>v.plate)).size!==vehicles.length)throw Error('Hay patentes repetidas.');
+  const accountsRaw=data.settings?.accounts??[];
+  if(!Array.isArray(accountsRaw)||accountsRaw.length>100)throw Error('Cuentas receptoras inválidas.');
+  const accounts=accountsRaw.map(a=>{
+    if(!a||typeof a!=='object'||!str(a.id,100).trim()||!str(a.name,120).trim()||!['bank','wallet','other'].includes(a.kind))throw Error('Cuenta receptora inválida.');
+    return {id:str(a.id,100),name:str(a.name,120),kind:a.kind,alias:str(a.alias,120)};
+  });
+  checkUnique(accounts,'cuentas');
+  const accountIds=new Set(accounts.map(a=>a.id));
   const vehicleIds=new Set(vehicles.map(v=>v.id));
   const validStatuses=new Set(['received','progress','waiting','done','delivered']);
   const orders=data.orders.map(o=>{
+    const rawLines=o.items===undefined?[]:o.items;
+    if(!Array.isArray(rawLines)||rawLines.length>100)throw Error('El detalle del trabajo supera los 100 renglones.');
+    const lineIds=new Set();
+    const items=rawLines.map(item=>{
+      if(!item||typeof item!=='object')throw Error('Renglón de trabajo inválido.');
+      const id=str(item.id,100),kind=str(item.kind,20),description=str(item.description,1500);
+      if(!id.trim()||!description.trim()||!['part','labor','other'].includes(kind)||lineIds.has(id))throw Error('Hay renglones incompletos o repetidos.');
+      lineIds.add(id);
+      const quantity=number(item.quantity,'cantidad'),unitPrice=number(item.unitPrice,'valor unitario');
+      if(quantity<=0||quantity>100000||quantity*unitPrice>1e12)throw Error('Cantidad o total del renglón fuera de rango.');
+      return {id,kind,description,quantity,unitPrice};
+    });
+    const documentKind=str(o.documentKind,16),documentNumber=str(o.documentNumber,80),sourceFingerprint=str(o.sourceFingerprint,64);
+    if(documentKind&&!['quote','work'].includes(documentKind))throw Error('Tipo de documento inválido.');
+    if(sourceFingerprint&&!/^[0-9a-f]{64}$/.test(sourceFingerprint))throw Error('Identificador de archivo inválido.');
     if(!o||typeof o!=='object'||!str(o.id,100).trim()||!vehicleIds.has(o.vehicleId)||!str(o.title,150).trim()||!validStatuses.has(o.status))throw Error('Hay trabajos inválidos.');
     const partsCost=number(o.partsCost,'costo de repuestos'),laborCost=number(o.laborCost,'costo de mano de obra'),charged=number(o.charged,'importe'),paid=number(o.paid,'pagado');
     if(paid>charged)throw Error('Un trabajo tiene un pago mayor a su importe.');
-    return {id:str(o.id,100),vehicleId:o.vehicleId,title:str(o.title,150),category:str(o.category,120),status:o.status,openedAt:date(o.openedAt,'de trabajo'),completedAt:date(o.completedAt,'de cierre'),mileage:number(o.mileage,'kilometraje de trabajo'),description:str(o.description),partsCost,laborCost,charged,paid,notes:str(o.notes),createdAt:date(o.createdAt,'de alta de trabajo')};
+    const rawPayments=o.payments??[];
+    if(!Array.isArray(rawPayments)||rawPayments.length>200)throw Error('Historial de cobros inválido.');
+    const payments=rawPayments.map(p=>{
+      if(!p||typeof p!=='object'||!str(p.id,100).trim()||!validDate(p.date)||!p.date||!Object.hasOwn(PAYMENT_METHODS,p.method))throw Error('Cobro inválido.');
+      const amountPaid=number(p.amount,'cobro');
+      if(amountPaid<=0||Math.abs(amountPaid-Number(p.amount))>0.000001)throw Error('Importe de cobro inválido.');
+      const accountId=str(p.accountId,100),reference=str(p.reference,160);
+      if(ELECTRONIC_METHODS.includes(p.method)&&!accountIds.has(accountId))throw Error('El cobro electrónico requiere una cuenta receptora registrada.');
+      if(!ELECTRONIC_METHODS.includes(p.method)&&accountId)throw Error('Los cobros no electrónicos no llevan cuenta receptora.');
+      return {id:str(p.id,100),date:p.date,amount:amountPaid,method:p.method,accountId,reference};
+    });
+    checkUnique(payments,'cobros');
+    const collected=Math.round(payments.reduce((s,p)=>s+p.amount,0)*100)/100;
+    if(collected>paid+0.000001)throw Error('Los cobros detallados superan el total recibido.');
+    if(o.documentKind==='quote'&&(paid>0||payments.length))throw Error('Los presupuestos no admiten cobros.');
+    return {id:str(o.id,100),vehicleId:o.vehicleId,title:str(o.title,150),category:str(o.category,120),status:o.status,openedAt:date(o.openedAt,'de trabajo'),completedAt:date(o.completedAt,'de cierre'),mileage:number(o.mileage,'kilometraje de trabajo'),description:str(o.description),partsCost,laborCost,charged,paid,notes:str(o.notes),createdAt:date(o.createdAt,'de alta de trabajo'),...(items.length?{items}:{}),...(documentKind?{documentKind}:{}),...(documentNumber?{documentNumber}:{}),...(sourceFingerprint?{sourceFingerprint}:{}),...(payments.length?{payments}:{})};
   });
   checkUnique(orders,'trabajos');
-  return {clients,vehicles,orders,settings:{garageName:str(data.settings?.garageName,100)||'Mi taller',currency:['ARS','USD','EUR'].includes(data.settings?.currency)?data.settings.currency:'ARS',demo:!!data.settings?.demo}};
+  return {clients,vehicles,orders,settings:{garageName:str(data.settings?.garageName,100)||'Mi taller',currency:['ARS','USD','EUR'].includes(data.settings?.currency)?data.settings.currency:'ARS',demo:!!data.settings?.demo,...(accounts.length?{accounts}:{})}};
 }
