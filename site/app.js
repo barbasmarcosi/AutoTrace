@@ -96,6 +96,7 @@ let dbConnection = null;
 const desktopInvoke = window.__TAURI__?.core?.invoke ?? null;
 let desktopRevision = 0;
 let lastDesktopBackup = null;
+let lastDriveStatus = null;
 let desktopBackupBusy = false;
 let pendingLegacyDocument = null;
 // Impide registrar dos veces el mismo cobro al pulsar Guardar repetidamente.
@@ -371,10 +372,29 @@ function renderAccountSettings(){
       '<p class="muted-sm">Todavía no hay cuentas configuradas. Podés agregarlas aquí o durante el primer cobro electrónico.</p>')+
     '</section>';
 }
+function renderDriveSettings(){
+  if(!desktopInvoke)return '';
+  const st=lastDriveStatus;
+  const folder=st?.directory;
+  return '<section class="card card-pad detail-section" style="margin-top:18px">'+
+    '<h3>Google Drive · copia cifrada</h3>'+
+    '<p>AutoTrace genera un archivo cifrado con SQLite, Excel y verificación de integridad en una carpeta que sincronices con Google Drive para escritorio. No conecta con Google ni confirma que la subida se completó.</p>'+
+    '<div class="info-grid">'+
+      descView('Carpeta local sincronizada',esc(folder||'Sin configurar'))+
+      descView('Clave de recuperación',!folder?'Sin configurar':st?.unlocked?'Desbloqueada en esta sesión':'Bloqueada. Ingresá tu frase al abrir Desktop.')+
+      descView('Último archivo cifrado local',st?.lastEncryptedFileUnixMs?formatDateTime(Number(st.lastEncryptedFileUnixMs)):'Sin copias cifradas verificadas aquí')+
+      descView('Estado en la nube','No comprobado; verificá en Google Drive')+'</div>'+
+    '<div class="settings-actions" style="margin-top:14px">'+
+      button('Configurar carpeta cifrada','configure-drive-backup','btn-primary')+
+      (folder&&!st?.unlocked?button('Desbloquear copias','unlock-drive-backup','btn-secondary'):'')+
+      (folder&&st?.unlocked?button('Bloquear clave','lock-drive-backup','btn-secondary'):'')+
+      button('Recuperar copia cifrada','restore-drive-backup','btn-secondary')+
+    '</div><p class="muted-sm" style="margin-top:15px">Conservá la frase fuera de la computadora. Si la perdés, no podremos descifrar los respaldos. La clave no se guarda en AutoTrace y se debe ingresar cada vez que reinicies Desktop. Sincronizá solamente los archivos <strong>.atbackup.age</strong>, nunca el Excel o SQLite sin cifrar.</p></section>';
+}
 function renderSettings(){
   return `${sectionHead('Configuración y respaldos','Personalizá AutoTrace y administrá tu información.')}
   ${memoryOnly?'<p class="notice warning">Este navegador no permite almacenar datos. No cargues información real en esta sesión.</p>':''}
-  <div class="settings-grid"><div><div class="card settings-block detail-section"><h3>Preferencias del taller</h3><p>Estos ajustes afectan la visualización, no modifican tus importes.</p><form id="settings-form" class="form-grid"><div class="field span-2"><label for="garageName">Nombre del taller</label><input id="garageName" name="garageName" maxlength="100" value="${esc(db.settings.garageName)}" required /></div><div class="field"><label for="currency">Moneda</label><select id="currency" name="currency">${['ARS','USD','EUR'].map(c=>`<option value="${c}" ${db.settings.currency===c?'selected':''}>${c}</option>`).join('')}</select></div><div class="field" style="justify-content:flex-end"> <button class="btn btn-primary" type="submit">Guardar preferencias</button></div></form></div><div class="card settings-block"><h3>Datos locales</h3><p>Descargá una copia completa de clientes, vehículos, trabajos y preferencias. Importar reemplaza todos los registros actuales.</p><div class="settings-actions">${button(`${icon('download')} Exportar JSON`,'export-json','btn-primary')}${button(`${icon('upload')} Importar JSON`,'import-json','btn-secondary')}${button(`${icon('download')} Exportar CSV`,'export-csv','btn-secondary')}${!desktopInvoke?`${button(`${icon('download')} Excel completo`,'export-excel-desktop','btn-primary')}${button(`${icon('upload')} Restaurar Excel completo`,'import-excel-desktop','btn-secondary')}${button(`${icon('upload')} Importar presupuesto / remito`,'import-legacy-document','btn-secondary')}`:''}${desktopInvoke?`${button(`${icon('download')} Excel completo`,'export-excel-desktop','btn-primary')}${button(`${icon('upload')} Importar Excel`,'import-excel-desktop','btn-secondary')}${button(`${icon('upload')} Importar presupuesto / remito`,'import-legacy-document','btn-secondary')}${button(`${icon('image')} Configurar logo del taller`,'choose-workshop-logo','btn-secondary')}${button(`${icon('upload')} Recuperar SQLite`,'restore-sqlite-desktop','btn-secondary')}${button(`${icon('shield')} Crear respaldo ahora`,'backup-desktop-now','btn-secondary')}${button(`${icon('download')} Elegir carpeta de respaldo`,'choose-external-backup','btn-secondary')}${button(`${icon('shield')} Probar recuperación`,'test-backup-recovery','btn-secondary')}`:''}</div><div class="notice" style="margin-top:23px">${icon('shield',17)} ${desktopInvoke?'SQLite local. Las copias automáticas SQLite + Excel se guardan EN ESTA COMPUTADORA. Para protegerte ante pérdida del equipo, exportá una copia a un disco externo. El Excel contiene datos personales y costos internos.':'Los registros se guardan con IndexedDB en este navegador. No se envían a GitHub ni a servidores de AutoTrace. Si borrás datos del sitio o cambiás de dispositivo, necesitarás el respaldo.'}</div></div></div><div><div class="card settings-block detail-section"><h3>Estado de la instalación</h3><p>${desktopInvoke?'AutoTrace Desktop funciona con SQLite local, sin servidor.':'La PWA funciona sin conexión después de abrirla por primera vez.'}</p><div class="info-grid">${descView('Clientes',String(db.clients.length))}${descView('Vehículos',String(db.vehicles.length))}${descView('Trabajos',String(db.orders.length))}${descView('Almacenamiento',desktopInvoke?'SQLite local':memoryOnly?'No disponible':'Local (IndexedDB)')}${desktopInvoke?descView('Carpeta de respaldo adicional',lastDesktopBackup?.externalDirectory||'Sin configurar'):''}${desktopInvoke?descView('Último respaldo local verificado',lastDesktopBackup?.lastBackupUnixMs?new Date(Number(lastDesktopBackup.lastBackupUnixMs)).toLocaleString('es-AR'):'No hay copia válida'):''}${desktopInvoke?descView('Última copia secundaria verificada',lastDesktopBackup?.lastExternalBackupUnixMs?new Date(Number(lastDesktopBackup.lastExternalBackupUnixMs)).toLocaleString('es-AR'):'No configurada / no válida'):''}</div></div><div class="card settings-block"><h3>Zona de mantenimiento</h3><p>Las acciones siguientes eliminan datos. Antes de continuar, exportá un respaldo JSON.</p><div class="settings-actions">${db.settings.demo?button('Eliminar datos de muestra','reset-demo','btn-secondary'):''}${button(`${icon('trash')} Borrar todos los datos`,'clear-all','btn-danger-ghost')}</div></div>${renderAccountSettings()}<div class="notice warning" style="margin-top:19px">${desktopInvoke?'Las copias automáticas locales NO protegen ante robo, fallo total del disco o incendio. Copiá el Excel completo y la copia SQLite a un medio externo. No hay cifrado automático ni backups en la nube.':'Esta versión está pensada para pruebas y uso individual. Las cuentas receptoras son etiquetas locales para registrar cobros; no se conectan a tu banco. No incluye cifrado, facturación fiscal, copias automáticas ni sincronización entre dispositivos.'}</div></div></div>`;
+  <div class="settings-grid"><div><div class="card settings-block detail-section"><h3>Preferencias del taller</h3><p>Estos ajustes afectan la visualización, no modifican tus importes.</p><form id="settings-form" class="form-grid"><div class="field span-2"><label for="garageName">Nombre del taller</label><input id="garageName" name="garageName" maxlength="100" value="${esc(db.settings.garageName)}" required /></div><div class="field"><label for="currency">Moneda</label><select id="currency" name="currency">${['ARS','USD','EUR'].map(c=>`<option value="${c}" ${db.settings.currency===c?'selected':''}>${c}</option>`).join('')}</select></div><div class="field" style="justify-content:flex-end"> <button class="btn btn-primary" type="submit">Guardar preferencias</button></div></form></div><div class="card settings-block"><h3>Datos locales</h3><p>Descargá una copia completa de clientes, vehículos, trabajos y preferencias. Importar reemplaza todos los registros actuales.</p><div class="settings-actions">${button(`${icon('download')} Exportar JSON`,'export-json','btn-primary')}${button(`${icon('upload')} Importar JSON`,'import-json','btn-secondary')}${button(`${icon('download')} Exportar CSV`,'export-csv','btn-secondary')}${!desktopInvoke?`${button(`${icon('download')} Excel completo`,'export-excel-desktop','btn-primary')}${button(`${icon('upload')} Restaurar Excel completo`,'import-excel-desktop','btn-secondary')}${button(`${icon('upload')} Importar presupuesto / remito`,'import-legacy-document','btn-secondary')}`:''}${desktopInvoke?`${button(`${icon('download')} Excel completo`,'export-excel-desktop','btn-primary')}${button(`${icon('upload')} Importar Excel`,'import-excel-desktop','btn-secondary')}${button(`${icon('upload')} Importar presupuesto / remito`,'import-legacy-document','btn-secondary')}${button(`${icon('image')} Configurar logo del taller`,'choose-workshop-logo','btn-secondary')}${button(`${icon('upload')} Recuperar SQLite`,'restore-sqlite-desktop','btn-secondary')}${button(`${icon('shield')} Crear respaldo ahora`,'backup-desktop-now','btn-secondary')}${button(`${icon('download')} Elegir carpeta de respaldo`,'choose-external-backup','btn-secondary')}${button(`${icon('shield')} Probar recuperación`,'test-backup-recovery','btn-secondary')}`:''}</div><div class="notice" style="margin-top:23px">${icon('shield',17)} ${desktopInvoke?'SQLite local. Las copias automáticas SQLite + Excel se guardan EN ESTA COMPUTADORA. Para protegerte ante pérdida del equipo, exportá una copia a un disco externo. El Excel contiene datos personales y costos internos.':'Los registros se guardan con IndexedDB en este navegador. No se envían a GitHub ni a servidores de AutoTrace. Si borrás datos del sitio o cambiás de dispositivo, necesitarás el respaldo.'}</div></div></div><div><div class="card settings-block detail-section"><h3>Estado de la instalación</h3><p>${desktopInvoke?'AutoTrace Desktop funciona con SQLite local, sin servidor.':'La PWA funciona sin conexión después de abrirla por primera vez.'}</p><div class="info-grid">${descView('Clientes',String(db.clients.length))}${descView('Vehículos',String(db.vehicles.length))}${descView('Trabajos',String(db.orders.length))}${descView('Almacenamiento',desktopInvoke?'SQLite local':memoryOnly?'No disponible':'Local (IndexedDB)')}${desktopInvoke?descView('Carpeta de respaldo adicional',lastDesktopBackup?.externalDirectory||'Sin configurar'):''}${desktopInvoke?descView('Último respaldo local verificado',lastDesktopBackup?.lastBackupUnixMs?new Date(Number(lastDesktopBackup.lastBackupUnixMs)).toLocaleString('es-AR'):'No hay copia válida'):''}${desktopInvoke?descView('Última copia secundaria verificada',lastDesktopBackup?.lastExternalBackupUnixMs?new Date(Number(lastDesktopBackup.lastExternalBackupUnixMs)).toLocaleString('es-AR'):'No configurada / no válida'):''}</div></div><div class="card settings-block"><h3>Zona de mantenimiento</h3><p>Las acciones siguientes eliminan datos. Antes de continuar, exportá un respaldo JSON.</p><div class="settings-actions">${db.settings.demo?button('Eliminar datos de muestra','reset-demo','btn-secondary'):''}${button(`${icon('trash')} Borrar todos los datos`,'clear-all','btn-danger-ghost')}</div></div>${renderAccountSettings()}${renderDriveSettings()}<div class="notice warning" style="margin-top:19px">${desktopInvoke?'Las copias automáticas locales NO protegen ante robo, fallo total del disco o incendio. Copiá el Excel completo y la copia SQLite a un medio externo. No hay cifrado automático ni backups en la nube.':'Esta versión está pensada para pruebas y uso individual. Las cuentas receptoras son etiquetas locales para registrar cobros; no se conectan a tu banco. No incluye cifrado, facturación fiscal, copias automáticas ni sincronización entre dispositivos.'}</div></div></div>`;
 }
 const input = (label,name,value='',opts={})=>`<div class="field ${opts.full?'span-2':''}"><label for="f-${name}">${esc(label)}${opts.required?' *':''}</label>${opts.textarea?`<textarea id="f-${name}" name="${name}" maxlength="${opts.maxlength||3000}" placeholder="${esc(opts.placeholder||'')}">${esc(value)}</textarea>`:opts.select?`<select id="f-${name}" name="${name}" ${opts.required?'required':''}>${opts.select.map(x=>`<option value="${esc(x.value)}" ${String(x.value)===String(value)?'selected':''}>${esc(x.label)}</option>`).join('')}</select>`:`<input id="f-${name}" type="${opts.type||'text'}" name="${name}" value="${esc(value)}" ${opts.required?'required':''} ${opts.min!==undefined?`min="${opts.min}"`:''} ${opts.max!==undefined?`max="${opts.max}"`:''} ${opts.step!==undefined?`step="${opts.step}"`:''} maxlength="${opts.maxlength||120}" placeholder="${esc(opts.placeholder||'')}" />`}${opts.hint?`<small>${esc(opts.hint)}</small>`:''}</div>`;
 function showModal(title,subtitle,kind,fields,id=''){
@@ -599,6 +619,7 @@ async function saveForm(form){
   const fd=new FormData(form);const get=k=>String(fd.get(k)||'').trim();
   const kind=form.dataset.kind,id=form.dataset.id,existing=!!id;
   if(kind==='account')return saveAccountForm(form);
+  if(kind.startsWith('drive-'))return saveDriveForm(form);
   const baseId=id||uid();
   let newPaymentAccount=null;
   let next,routeTo,message;
@@ -689,8 +710,10 @@ async function createDesktopBackup(silent=false){
   try{
     const completed=await desktopInvoke('backup_now');
     lastDesktopBackup=await desktopInvoke('backup_status');
+    lastDriveStatus=await desktopInvoke('drive_backup_status');
+    if(completed.driveCopyError)toast('Respaldo local correcto, pero Google Drive cifrado no recibió la copia: '+completed.driveCopyError,'error');
     if(completed.externalCopyError)toast('Copia local correcta, pero falló la copia secundaria: '+completed.externalCopyError,'error');
-    else if(!silent)toast(completed.externalCopyOk?'Respaldo verificado también en la carpeta secundaria.':'Respaldo local creado. Elegí una carpeta en otro disco para protegerte ante averías.');
+    else if(!silent)toast(completed.driveCopyOk?'Respaldo cifrado creado en carpeta sincronizada. Verificá que Google Drive termine de subirlo.':completed.externalCopyOk?'Respaldo verificado también en la carpeta secundaria.':'Respaldo local creado. Elegí otra unidad o una carpeta cifrada sincronizada para protegerte.');
     if(route().page==='ajustes')render();
     return true;
   }catch(error){
@@ -698,6 +721,56 @@ async function createDesktopBackup(silent=false){
     toast(`Falló el respaldo: ${String(error)}`,'error');
     return false;
   }finally{desktopBackupBusy=false;}
+}
+function driveSetupForm(kind){
+  if(!desktopInvoke)return;
+  const setup=kind==='configure',restore=kind==='restore';
+  showModal(setup?'Configurar copia cifrada para Google Drive':restore?'Recuperar copia cifrada':'Desbloquear copia cifrada',
+    setup?'Seleccionarás una carpeta de Google Drive. La frase protege los archivos y NO se guarda en AutoTrace.':
+      restore?'Elegirás un archivo cifrado de Google Drive para revisarlo antes de restaurar.':
+      'Ingresá tu frase de recuperación para retomar la copia automática cifrada mientras la aplicación esté abierta.',
+    'drive-'+kind,[
+      input('Frase de recuperación (mínimo 16 caracteres)','drivePassphrase','',{type:'password',required:true,full:true,maxlength:256,placeholder:'Una frase larga que guardes fuera de la computadora'}),
+      ...(setup?[input('Repetir frase de recuperación','driveConfirmation','',{type:'password',required:true,full:true,maxlength:256})]:[])
+    ].join(''));
+}
+async function saveDriveForm(form){
+  const kind=form.dataset.kind;
+  const fd=new FormData(form);
+  const passphrase=String(fd.get('drivePassphrase')||'');
+  if(passphrase.length<16){toast('Usá una frase de al menos 16 caracteres.','error');return;}
+  if(kind==='drive-configure'&&passphrase!==String(fd.get('driveConfirmation')||'')){
+    toast('Las frases no coinciden.','error');return;
+  }
+  try{
+    if(kind==='drive-restore'){
+      modalOriginal='';document.querySelector('#form-dialog').close();
+      const preview=await desktopInvoke('choose_drive_restore',{passphrase});
+      if(!preview)return;
+      const next=validateData(preview.data);
+      const msg='Archivo cifrado: '+preview.filename+'. SQLite y Excel verificados. Se recuperarán '+
+        next.clients.length+' clientes, '+next.vehicles.length+' vehículos y '+next.orders.length+
+        ' trabajos. Todos los datos actuales serán REEMPLAZADOS después de crear una copia local.';
+      if(!await confirmAction('Restaurar desde Google Drive',msg,'Respaldar y restaurar'))return;
+      if(!await createDesktopBackup(true))throw Error('No se pudo realizar el respaldo previo. Restauración cancelada.');
+      await saveData(next);
+      navigate('inicio');
+      toast('Respaldo cifrado recuperado. Revisá registros y generá una nueva copia.');
+      return;
+    }
+    if(kind==='drive-configure'){
+      const directory=await desktopInvoke('configure_drive_backup',{passphrase});
+      if(!directory)return;
+      toast('Carpeta cifrada configurada; la frase quedará solo en esta sesión.');
+    }else if(kind==='drive-unlock'){
+      await desktopInvoke('unlock_drive_backup',{passphrase});
+      toast('Clave desbloqueada solo para esta sesión.');
+    }
+    modalOriginal='';document.querySelector('#form-dialog').close();
+    lastDriveStatus=await desktopInvoke('drive_backup_status');
+    await createDesktopBackup(true);
+    if(route().page==='ajustes')render();
+  }catch(error){console.error('No se pudo completar la operación de copia cifrada:',String(error));toast(String(error),'error');}
 }
 async function testDesktopRecovery(){
   if(!desktopInvoke)return;
@@ -917,6 +990,8 @@ async function scheduleDesktopBackups(){
   if(!desktopInvoke)return;
   try{
     lastDesktopBackup=await desktopInvoke('backup_status');
+    lastDriveStatus=await desktopInvoke('drive_backup_status');
+    if(route().page==='ajustes')render();
     const stale=!lastDesktopBackup.lastBackupUnixMs || Date.now()-Number(lastDesktopBackup.lastBackupUnixMs)>=4*60*60*1000;
     if(stale)await createDesktopBackup(true);
   }catch(e){console.error(e);toast('No se pudo comprobar el estado de las copias de seguridad','error');}
@@ -1035,6 +1110,16 @@ document.addEventListener('click',async event=>{
     case 'restore-sqlite-desktop':await restoreSqliteDesktop();break;
     case 'backup-desktop-now':await createDesktopBackup();break;
     case 'choose-external-backup':await chooseExternalBackup();break;
+    case 'configure-drive-backup':driveSetupForm('configure');break;
+    case 'unlock-drive-backup':driveSetupForm('unlock');break;
+    case 'restore-drive-backup':driveSetupForm('restore');break;
+    case 'lock-drive-backup':{
+      if(desktopInvoke){
+        await desktopInvoke('lock_drive_backup');
+        lastDriveStatus=await desktopInvoke('drive_backup_status');
+        render();toast('Clave bloqueada. Las copias locales siguen funcionando.');
+      }break;
+    }
     case 'test-backup-recovery':await testDesktopRecovery();break;
     case 'export-csv':exportCSV();break;
     case 'import-json':document.querySelector('#import-file').click();break;
