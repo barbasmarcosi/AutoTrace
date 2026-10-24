@@ -132,6 +132,19 @@ pub(crate) async fn drive_api_unlock(app:tauri::AppHandle,passphrase:String)->Re
         Ok(true)
     }).await.map_err(|_|"Falló el desbloqueo cifrado".to_string())?
 }
+#[tauri::command]
+pub(crate) async fn drive_api_enable_auto_unlock(app:tauri::AppHandle,passphrase:String)->Result<(),String>{
+    tauri::async_runtime::spawn_blocking(move ||{
+        let existing=pending(&app)?;
+        // Refuse persistence if previously queued snapshots use a different phrase.
+        drive_backup::unlock_for_api(passphrase.clone(),&existing)?;
+        drive_backup::enable_auto_unlock(passphrase)
+    }).await.map_err(|_|"Falló la protección de la clave en Windows".to_string())?
+}
+#[tauri::command]
+pub(crate) fn drive_api_disable_auto_unlock()->Result<(),String>{
+    drive_backup::disable_auto_unlock()
+}
 fn access(app:&tauri::AppHandle)->Result<String,String>{
     let cfg=config(app)?;
     let id=effective_client_id(&cfg)?;
