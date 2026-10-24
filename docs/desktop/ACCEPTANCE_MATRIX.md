@@ -60,6 +60,22 @@
 | D-G06 | Archivo manipulado, frase equivocada o backup truncado: importación rechazada, base vigente preservada | Obligatorio D7 |
 | D-G07 | Indicar por separado backup local generado, copia cloud pendiente y cloud confirmada; no simular éxito por solo entrar en Drive | Obligatorio D7 |
 
+## C.2. Experiencia en un clic y cifrado autónomo (D8)
+
+| ID | Prueba observable | Gate |
+|---|---|---|
+| D-H01 | Build final trae el Client ID **público** de AutoTrace; usuario del taller nunca ve ni completa Client ID/Google Cloud | Obligatorio D8 |
+| D-H02 | Build de desarrollo sin identidad oficial informa «no configurado» sin romper SQLite, backups ni PWA | Obligatorio D8 |
+| D-H03 | Después de reiniciar Windows, AutoTrace cifra nuevos respaldos con clave protegida por el sistema; no necesita pedir la frase cada vez | Obligatorio D8 |
+| D-H04 | Con pérdida total de PC y otra identidad Windows, cuenta Google + kit portable permiten descifrar copia y restaurar sin datos locales previos | Obligatorio D8 |
+| D-H05 | Respuesta perdida tras subir, 308, 401, 403, 429, 5xx, desconexión y espacio insuficiente se prueban con adaptador HTTP simulado; sin duplicados ni pérdida | Obligatorio D8 |
+| D-H06 | Token vencido/revocado no se presenta como «conectado y respaldando»; UI indica reconexión, última copia verificada y cola pendiente | Obligatorio D8 |
+| D-H07 | Cambio de OAuth Client ID no causa pérdida silenciosa: se ofrece exportación de `.atbackup.age` y migración explícita de archivos históricos | Obligatorio D8 |
+| D-H08 | Release sin OAuth autorizado mantiene función local intacta; no se distribuyen refresh tokens, passwords, client secrets ni datos de usuarios | Obligatorio D8 |
+| D-H09 | Sincronización con aplicación cerrada/PC apagada NO se promete hasta implementar y probar un servicio o Programador de tareas | Gate de honestidad |
+
+Ver planificación y dependencias: [D8 — Google Drive en un clic](D8_GOOGLE_DRIVE_ONE_CLICK_PLAN.md).
+
 ## D. Experiencia, build y soporte
 
 | ID | Prueba observable | Gate |
