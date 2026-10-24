@@ -1,0 +1,211 @@
+//! Strict Google Drive v3 encrypted-file transport.
+//! All HTTP destinations are Google HTTPS endpoints; no public sharing endpoints.
+use md5;
+use reqwest::{blocking::{Body,Client},header::{CONTENT_LENGTH,CONTENT_RANGE,CONTENT_TYPE,LOCATION,RANGE}};
+use serde::{Serialize,Deserialize};
+use std::{fs,io::{Read,Seek,SeekFrom},path::Path,thread,time::Duration};
+use url::Url;
+const API:&str="https://www.googleapis.com/drive/v3/files";
+const UPLOAD:&str="https://www.googleapis.com/upload/drive/v3/files";
+const MAX:u64=600_000_000;
+const CHUNK:u64=8*1024*1024;
+fn file_md5(path:&Path)->Result<String,String>{
+    let mut file=fs::File::open(path).map_err(|e|e.to_string())?;
+    let mut digest=md5::Context::new();
+    let mut buf=[0u8;128*1024];
+    loop{
+        let n=file.read(&mut buf).map_err(|e|e.to_string())?;
+        if n==0{break;}
+        digest.consume(&buf[..n]);
+    }
+    Ok(format!("{:x}",digest.compute()))
+}
+#[derive(Debug,Clone,Serialize,Deserialize)]
+#[serde(rename_all="camelCase")]
+pub(crate) struct CloudFile {
+    pub id:String,
+    pub name:String,
+    pub size:Option<String>,
+    pub md5_checksum:Option<String>,
+    pub created_time:Option<String>,
+}
+fn http()->Result<Client,String>{
+    Client::builder().timeout(Duration::from_secs(90)).build().map_err(|_|"No se pudo iniciar HTTPS".into())
+}
+fn identifier(id:&str)->Result<&str,String>{
+    if id.len()<8||id.len()>160||!id.bytes().all(|c|c.is_ascii_alphanumeric()||c==b'-'||c==b'_'){
+        return Err("ID remoto inválido".into());
+    }
+    Ok(id)
+}
+fn json_get(client:&Client,token:&str,url:&str)->Result<serde_json::Value,String>{
+    let r=client.get(url).bearer_auth(token).send().map_err(|_|"No hay conexión con Google Drive")?;
+    if !r.status().is_success(){return Err(format!("Google Drive devolvió HTTP {}. Revisá la cuenta, la cuota o la conexión.",r.status().as_u16()));}
+    r.json().map_err(|_|"La respuesta de Drive no es válida".into())
+}
+fn json_post(client:&Client,token:&str,url:&str,data:&serde_json::Value)->Result<serde_json::Value,String>{
+    let r=client.post(url).bearer_auth(token).json(data).send().map_err(|_|"No se pudo contactar con Google Drive")?;
+    if !r.status().is_success(){return Err(format!("Google Drive rechazó la creación: HTTP {}",r.status().as_u16()));}
+    r.json().map_err(|_|"La respuesta de Drive no es válida".into())
+}
+fn list_query(client:&Client,token:&str,q:&str,fields:&str)->Result<Vec<serde_json::Value>,String>{
+    let mut all=Vec::new();
+    let mut cursor:Option<String>=None;
+    for _page in 0..20 {
+        let mut url=Url::parse(API).map_err(|e|e.to_string())?;
+        url.query_pairs_mut().append_pair("q",q).append_pair("fields",fields)
+            .append_pair("pageSize","1000");
+        if let Some(ref token)=cursor{url.query_pairs_mut().append_pair("pageToken",token);}
+        let doc=json_get(client,token,url.as_str())?;
+        let page=doc["files"].as_array().ok_or("Google no devolvió una lista de archivos")?;
+        all.extend(page.iter().cloned());
+        cursor=doc["nextPageToken"].as_str().filter(|v|!v.is_empty()).map(str::to_owned);
+        if cursor.is_none(){return Ok(all);}
+    }
+    Err("Se alcanzó el límite de paginación de Drive. Se conservarán todas las copias; revisá la política de retención remota.".into())
+}
+fn folder(client:&Client,token:&str)->Result<String,String>{
+    let q="trashed = false and mimeType = 'application/vnd.google-apps.folder' and appProperties has { key='autotraceKind' and value='backups' }";
+    let list=list_query(client,token,q,"nextPageToken,files(id,name)")?;
+    if let Some(f)=list.first(){return Ok(identifier(f["id"].as_str().ok_or("Carpeta sin ID")?)?.to_owned());}
+    let create=serde_json::json!({
+        "name":"AutoTrace Backups","mimeType":"application/vnd.google-apps.folder",
+        "appProperties":{"autotraceKind":"backups"}
+    });
+    let result=json_post(client,token,API,&create)?;
+    Ok(identifier(result["id"].as_str().ok_or("Falta ID de carpeta creada")?)?.to_owned())
+}
+fn listed(client:&Client,token:&str)->Result<Vec<CloudFile>,String>{
+    let q="trashed = false and appProperties has { key='autotraceBackup' and value='age-v1' }";
+    let raw=list_query(client,token,q,"nextPageToken,files(id,name,size,md5Checksum,createdTime)")?;
+    let mut files=Vec::new();
+    for item in raw{
+        let f:CloudFile=serde_json::from_value(item).map_err(|_|"Archivo remoto no válido")?;
+        if f.name.starts_with("AutoTrace_")&&f.name.ends_with(".atbackup.age")&&identifier(&f.id).is_ok(){files.push(f);}
+    }
+    files.sort_by(|a,b|b.created_time.cmp(&a.created_time));
+    Ok(files)
+}
+pub(crate) fn list(token:&str)->Result<Vec<CloudFile>,String>{listed(&http()?,token)}
+fn next_offset(range:Option<&str>,size:u64)->Result<u64,String>{
+    let Some(r)=range else {return Ok(0)};
+    let v=r.strip_prefix("bytes=0-").ok_or("Google devolvió un rango inesperado")?
+        .parse::<u64>().map_err(|_|"Rango de subida inválido")?;
+    if v>=size{return Err("Rango confirmado excede el archivo".into());}
+    Ok(v+1)
+}
+pub(crate) fn upload(token:&str,path:&Path)->Result<String,String>{
+    let client=http()?;
+    let name=path.file_name().and_then(|n|n.to_str()).ok_or("Archivo sin nombre")?;
+    if !name.starts_with("AutoTrace_")||!name.ends_with(".atbackup.age"){return Err("Solo se admiten archivos AutoTrace cifrados".into());}
+    let size=fs::metadata(path).map_err(|e|e.to_string())?.len();
+    if size==0||size>MAX{return Err("Archivo cifrado fuera del tamaño permitido".into());}
+    let checksum=file_md5(path)?;
+    // Retry idempotently, including a completed request whose local acknowledgement was lost.
+    if let Some(existing)=listed(&client,token)?.into_iter().find(|x|x.name==name){
+        if existing.size.as_deref()==Some(size.to_string().as_str())&&
+           existing.md5_checksum.as_deref()==Some(checksum.as_str()){
+            return Ok(existing.id);
+        }
+        return Err("Ya existe un backup remoto de igual nombre y distinto contenido. No se sobrescribe.".into());
+    }
+    let parent=folder(&client,token)?;
+    let info=serde_json::json!({
+        "name":name,"mimeType":"application/octet-stream","parents":[parent],
+        "appProperties":{"autotraceBackup":"age-v1"}
+    });
+    let init=client.post(format!("{UPLOAD}?uploadType=resumable&fields=id,name,size,md5Checksum"))
+        .bearer_auth(token).header("X-Upload-Content-Type","application/octet-stream")
+        .header("X-Upload-Content-Length",size.to_string()).json(&info).send()
+        .map_err(|_|"No se pudo iniciar la subida reanudable a Google Drive")?;
+    if !init.status().is_success(){return Err(format!("Google rechazó la subida: HTTP {}",init.status()));}
+    let session=init.headers().get(LOCATION).and_then(|x|x.to_str().ok()).ok_or("Falta sesión de subida de Google")?;
+    let url=Url::parse(session).map_err(|_|"Sesión de subida inválida")?;
+    if url.scheme()!="https"||url.host_str()!=Some("www.googleapis.com")||
+       !url.path().starts_with("/upload/drive/v3/files"){
+        return Err("Google entregó una URL de subida no confiable".into());
+    }
+    let mut offset=0u64;
+    let mut retries=0usize;
+    let mut id=None;
+    while offset<size {
+        let end=(offset+CHUNK).min(size)-1;
+        let mut f=fs::File::open(path).map_err(|e|e.to_string())?;
+        f.seek(SeekFrom::Start(offset)).map_err(|e|e.to_string())?;
+        let len=end-offset+1;
+        let response=client.put(url.clone()).bearer_auth(token)
+            .header(CONTENT_TYPE,"application/octet-stream")
+            .header(CONTENT_RANGE,format!("bytes {offset}-{end}/{size}"))
+            .header(CONTENT_LENGTH,len.to_string())
+            .body(Body::sized(f.take(len),len)).send();
+        match response {
+            Ok(r) if r.status().is_success()=>{
+                let doc:serde_json::Value=r.json().map_err(|_|"Respuesta de subida sin JSON")?;
+                id=Some(identifier(doc["id"].as_str().ok_or("Falta ID de subida")?)?.to_owned());break;
+            },
+            Ok(r) if r.status().as_u16()==308=>{
+                let new=next_offset(r.headers().get(RANGE).and_then(|x|x.to_str().ok()),size)?;
+                if new<=offset {return Err("Google no confirmó progreso de subida".into());}
+                offset=new;retries=0;
+            },
+            Ok(r) if r.status().is_server_error()||r.status().as_u16()==429=>{retries+=1;},
+            Err(_)=>{retries+=1;},
+            Ok(r)=>return Err(format!("Drive rechazó el archivo (HTTP {})",r.status())),
+        }
+        if retries>4{return Err("Subida interrumpida. La copia cifrada sigue pendiente localmente.".into());}
+        if retries>0{
+            thread::sleep(Duration::from_secs(1u64<<retries.min(3)));
+            let probe=client.put(url.clone()).bearer_auth(token)
+                .header(CONTENT_RANGE,format!("bytes */{size}"))
+                .header(CONTENT_LENGTH,"0").send().map_err(|_|"No se pudo reanudar la carga")?;
+            if probe.status().as_u16()==308{
+                offset=next_offset(probe.headers().get(RANGE).and_then(|x|x.to_str().ok()),size)?;
+            }else if probe.status().is_success(){
+                let doc:serde_json::Value=probe.json().map_err(|_|"Confirmación remota inválida")?;
+                id=Some(identifier(doc["id"].as_str().ok_or("Falta ID remoto")?)?.to_owned());break;
+            }else{return Err("No se pudo reanudar la subida. La copia sigue pendiente localmente.".into());}
+        }
+    }
+    let id=id.ok_or("No se completó la subida de Drive")?;
+    let mut url=Url::parse(&format!("{API}/{id}")).map_err(|e|e.to_string())?;
+    url.query_pairs_mut().append_pair("fields","id,size,md5Checksum,appProperties");
+    let remote=json_get(&client,token,url.as_str())?;
+    if remote["size"].as_str()!=Some(size.to_string().as_str())||
+       remote["md5Checksum"].as_str()!=Some(checksum.as_str())||
+       remote["appProperties"]["autotraceBackup"]!="age-v1"{
+        return Err("La copia está subida pero falló la verificación de tamaño y checksum.".into());
+    }
+    Ok(id)
+}
+pub(crate) fn download(token:&str,id:&str,destination:&Path)->Result<(),String>{
+    let client=http()?;
+    let selected=listed(&client,token)?.into_iter().find(|x|x.id==id)
+        .ok_or("El archivo no pertenece a las copias de AutoTrace en esta cuenta")?;
+    identifier(id)?;
+    let size=selected.size.as_deref().ok_or("Drive no devuelve el tamaño")?
+        .parse::<u64>().map_err(|_|"Tamaño remoto inválido")?;
+    if size==0||size>MAX{return Err("Copia remota fuera de tamaño permitido".into());}
+    let response=client.get(format!("{API}/{id}?alt=media")).bearer_auth(token).send()
+        .map_err(|_|"Error descargando desde Google Drive")?;
+    if !response.status().is_success(){return Err(format!("Drive rechazó descarga (HTTP {})",response.status()));}
+    let mut file=fs::File::create_new(destination).map_err(|e|e.to_string())?;
+    let copied=std::io::copy(&mut response.take(size+1),&mut file).map_err(|e|e.to_string())?;
+    if copied!=size{return Err("Copia descargada incompleta".into());}
+    file.sync_all().map_err(|e|e.to_string())?;drop(file);
+    let checksum=file_md5(destination)?;
+    if selected.md5_checksum.as_deref()!=Some(checksum.as_str()){
+        return Err("Google devolvió una copia con checksum distinto".into());
+    }
+    Ok(())
+}
+#[cfg(test)]
+mod tests{
+    use super::*;
+    #[test] fn ranges_and_ids_are_checked(){
+        assert_eq!(next_offset(None,20).unwrap(),0);
+        assert_eq!(next_offset(Some("bytes=0-7"),20).unwrap(),8);
+        assert!(next_offset(Some("bytes=0-20"),20).is_err());
+        assert!(identifier("../../etc/passwd").is_err());
+        assert!(identifier("validFileId_22").is_ok());
+    }
+}

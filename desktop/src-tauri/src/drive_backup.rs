@@ -142,6 +142,28 @@ pub(crate) fn unlock_drive_backup(app:tauri::AppHandle,passphrase:String)->Resul
 }
 #[tauri::command]
 pub(crate) fn lock_drive_backup()->Result<(),String>{set_secret(None)}
+pub(crate) fn unlocked_phrase()->Result<Option<SecretString>,String>{active_secret()}
+pub(crate) fn unlock_for_api(passphrase:String,files:&[PathBuf])->Result<(),String>{
+    check_pass(&passphrase)?;
+    // An existing encrypted pending queue MUST decrypt with the supplied phrase.
+    if let Some(first)=files.first(){let _=read_archive(first,&passphrase)?;}
+    set_secret(Some(SecretString::from(passphrase)))
+}
+pub(crate) fn test_archive_at(path:&Path,passphrase:&str)->Result<backup::RecoveryTestResult,String>{
+    check_pass(passphrase)?;
+    let decoded=read_archive(path,passphrase)?;
+    backup::recovery_rehearsal(&decoded.sqlite.with_extension("manifest.json"))
+}
+pub(crate) fn preview_archive_at(path:&Path,passphrase:&str)->Result<backup::SqlitePreview,String>{
+    check_pass(passphrase)?;
+    let decoded=read_archive(path,passphrase)?;
+    let (data,verified)=backup::read_sqlite_candidate(&decoded.sqlite)?;
+    if !verified{return Err("Respaldo no verificado".into());}
+    Ok(backup::SqlitePreview{
+        data,verified,
+        filename:path.file_name().unwrap_or_default().to_string_lossy().into_owned()
+    })
+}
 
 fn archive_name(result:&backup::BackupResult)->Result<String,String>{
     let filename=Path::new(&result.manifest_path).file_name().and_then(|s|s.to_str())
@@ -152,7 +174,7 @@ fn archive_name(result:&backup::BackupResult)->Result<String,String>{
     }
     Ok(format!("{base}.atbackup.age"))
 }
-fn seal(result:&backup::BackupResult,dest:&Path,pass:&SecretString)->Result<PathBuf,String>{
+pub(crate) fn seal(result:&backup::BackupResult,dest:&Path,pass:&SecretString)->Result<PathBuf,String>{
     backup::verify_pair_marker(Path::new(&result.manifest_path))?;
     let target=dest.join(archive_name(result)?);
     if target.exists(){return Err("El archivo cifrado ya existe. No se sobrescribió.".into());}

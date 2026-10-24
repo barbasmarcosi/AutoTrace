@@ -97,6 +97,8 @@ const desktopInvoke = window.__TAURI__?.core?.invoke ?? null;
 let desktopRevision = 0;
 let lastDesktopBackup = null;
 let lastDriveStatus = null;
+let lastDirectDrive = null;
+let directDriveFiles = [];
 let desktopBackupBusy = false;
 let pendingLegacyDocument = null;
 // Impide registrar dos veces el mismo cobro al pulsar Guardar repetidamente.
@@ -392,10 +394,34 @@ function renderDriveSettings(){
       button('Recuperar copia cifrada','restore-drive-backup','btn-secondary')+
     '</div><p class="muted-sm" style="margin-top:15px">Conservá la frase fuera de la computadora. Si la perdés, no podremos descifrar los respaldos. La clave no se guarda en AutoTrace y se debe ingresar cada vez que reinicies Desktop. Sincronizá solamente los archivos <strong>.atbackup.age</strong>, nunca el Excel o SQLite sin cifrar.</p></section>';
 }
+function renderDirectDrive(){
+  if(!desktopInvoke)return '';
+  const st=lastDirectDrive||{},connected=!!st.connected;
+  const last=st.lastVerifiedUploadAt?new Date(st.lastVerifiedUploadAt).toLocaleString('es-AR'):'Sin subidas confirmadas';
+  return '<section class="card card-pad detail-section" style="margin-top:18px">'+
+    '<h3>Google Drive · Conexión directa</h3>'+
+    '<p>Copias cifradas directamente mediante la API oficial de Google Drive. No necesitás instalar Google Drive para escritorio. Acceso OAuth limitado a archivos de la aplicación.</p>'+
+    '<div class="info-grid">'+
+      descView('Autorización Google',connected?'Cuenta conectada':st.clientConfigured?'Client ID listo · Falta conectar':'Configurar OAuth Client ID')+
+      descView('Última subida verificada',esc(last))+
+      descView('Copias pendientes',String(st.pendingCount??0))+
+      descView('Copias listadas',String(directDriveFiles.length))+
+    '</div><div class="settings-actions" style="margin-top:14px">'+
+      button('Configurar Client ID','set-drive-client','btn-secondary')+
+      (!connected?button('Conectar Google','connect-drive-api','btn-primary'):'')+
+      (connected?button('Desbloquear cifrado','unlock-drive-api','btn-secondary'):'')+
+      (connected?button('Crear y subir copia ahora','upload-drive-api','btn-primary'):'')+
+      (connected?button('Reintentar pendientes','retry-drive-api','btn-secondary'):'')+
+      (connected?button('Ver copias en Drive','refresh-drive-api','btn-secondary'):'')+
+      (connected&&directDriveFiles.length?button('Probar copia remota','test-drive-api','btn-secondary'):'')+
+      (connected&&directDriveFiles.length?button('Recuperar desde Drive','restore-drive-api','btn-secondary'):'')+
+      (connected?button('Desconectar Google','disconnect-drive-api','btn-secondary'):'')+
+    '</div><p class="muted-sm" style="margin-top:12px">La autorización se guarda en el gestor seguro de Windows. La frase de recuperación queda solamente en memoria durante la sesión. El estado de subida se confirma con Google Drive y checksum remoto.</p></section>';
+}
 function renderSettings(){
   return `${sectionHead('Configuración y respaldos','Personalizá AutoTrace y administrá tu información.')}
   ${memoryOnly?'<p class="notice warning">Este navegador no permite almacenar datos. No cargues información real en esta sesión.</p>':''}
-  <div class="settings-grid"><div><div class="card settings-block detail-section"><h3>Preferencias del taller</h3><p>Estos ajustes afectan la visualización, no modifican tus importes.</p><form id="settings-form" class="form-grid"><div class="field span-2"><label for="garageName">Nombre del taller</label><input id="garageName" name="garageName" maxlength="100" value="${esc(db.settings.garageName)}" required /></div><div class="field"><label for="currency">Moneda</label><select id="currency" name="currency">${['ARS','USD','EUR'].map(c=>`<option value="${c}" ${db.settings.currency===c?'selected':''}>${c}</option>`).join('')}</select></div><div class="field" style="justify-content:flex-end"> <button class="btn btn-primary" type="submit">Guardar preferencias</button></div></form></div><div class="card settings-block"><h3>Datos locales</h3><p>Descargá una copia completa de clientes, vehículos, trabajos y preferencias. Importar reemplaza todos los registros actuales.</p><div class="settings-actions">${button(`${icon('download')} Exportar JSON`,'export-json','btn-primary')}${button(`${icon('upload')} Importar JSON`,'import-json','btn-secondary')}${button(`${icon('download')} Exportar CSV`,'export-csv','btn-secondary')}${!desktopInvoke?`${button(`${icon('download')} Excel completo`,'export-excel-desktop','btn-primary')}${button(`${icon('upload')} Restaurar Excel completo`,'import-excel-desktop','btn-secondary')}${button(`${icon('upload')} Importar presupuesto / remito`,'import-legacy-document','btn-secondary')}`:''}${desktopInvoke?`${button(`${icon('download')} Excel completo`,'export-excel-desktop','btn-primary')}${button(`${icon('upload')} Importar Excel`,'import-excel-desktop','btn-secondary')}${button(`${icon('upload')} Importar presupuesto / remito`,'import-legacy-document','btn-secondary')}${button(`${icon('image')} Configurar logo del taller`,'choose-workshop-logo','btn-secondary')}${button(`${icon('upload')} Recuperar SQLite`,'restore-sqlite-desktop','btn-secondary')}${button(`${icon('shield')} Crear respaldo ahora`,'backup-desktop-now','btn-secondary')}${button(`${icon('download')} Elegir carpeta de respaldo`,'choose-external-backup','btn-secondary')}${button(`${icon('shield')} Probar recuperación`,'test-backup-recovery','btn-secondary')}`:''}</div><div class="notice" style="margin-top:23px">${icon('shield',17)} ${desktopInvoke?'SQLite local. Las copias automáticas SQLite + Excel se guardan EN ESTA COMPUTADORA. Para protegerte ante pérdida del equipo, exportá una copia a un disco externo. El Excel contiene datos personales y costos internos.':'Los registros se guardan con IndexedDB en este navegador. No se envían a GitHub ni a servidores de AutoTrace. Si borrás datos del sitio o cambiás de dispositivo, necesitarás el respaldo.'}</div></div></div><div><div class="card settings-block detail-section"><h3>Estado de la instalación</h3><p>${desktopInvoke?'AutoTrace Desktop funciona con SQLite local, sin servidor.':'La PWA funciona sin conexión después de abrirla por primera vez.'}</p><div class="info-grid">${descView('Clientes',String(db.clients.length))}${descView('Vehículos',String(db.vehicles.length))}${descView('Trabajos',String(db.orders.length))}${descView('Almacenamiento',desktopInvoke?'SQLite local':memoryOnly?'No disponible':'Local (IndexedDB)')}${desktopInvoke?descView('Carpeta de respaldo adicional',lastDesktopBackup?.externalDirectory||'Sin configurar'):''}${desktopInvoke?descView('Último respaldo local verificado',lastDesktopBackup?.lastBackupUnixMs?new Date(Number(lastDesktopBackup.lastBackupUnixMs)).toLocaleString('es-AR'):'No hay copia válida'):''}${desktopInvoke?descView('Última copia secundaria verificada',lastDesktopBackup?.lastExternalBackupUnixMs?new Date(Number(lastDesktopBackup.lastExternalBackupUnixMs)).toLocaleString('es-AR'):'No configurada / no válida'):''}</div></div><div class="card settings-block"><h3>Zona de mantenimiento</h3><p>Las acciones siguientes eliminan datos. Antes de continuar, exportá un respaldo JSON.</p><div class="settings-actions">${db.settings.demo?button('Eliminar datos de muestra','reset-demo','btn-secondary'):''}${button(`${icon('trash')} Borrar todos los datos`,'clear-all','btn-danger-ghost')}</div></div>${renderAccountSettings()}${renderDriveSettings()}<div class="notice warning" style="margin-top:19px">${desktopInvoke?'Los respaldos locales SQLite y Excel siguen SIN CIFRAR y no protegen ante robo o destrucción del equipo. Si activás la carpeta de Google Drive, solo los archivos .atbackup.age se cifran automáticamente; su creación no garantiza que Google haya finalizado la subida. Guardá la frase de recuperación fuera de la computadora.':'Esta versión está pensada para pruebas y uso individual. Las cuentas receptoras son etiquetas locales para registrar cobros; no se conectan a tu banco. No incluye cifrado, facturación fiscal, copias automáticas ni sincronización entre dispositivos.'}</div></div></div>`;
+  <div class="settings-grid"><div><div class="card settings-block detail-section"><h3>Preferencias del taller</h3><p>Estos ajustes afectan la visualización, no modifican tus importes.</p><form id="settings-form" class="form-grid"><div class="field span-2"><label for="garageName">Nombre del taller</label><input id="garageName" name="garageName" maxlength="100" value="${esc(db.settings.garageName)}" required /></div><div class="field"><label for="currency">Moneda</label><select id="currency" name="currency">${['ARS','USD','EUR'].map(c=>`<option value="${c}" ${db.settings.currency===c?'selected':''}>${c}</option>`).join('')}</select></div><div class="field" style="justify-content:flex-end"> <button class="btn btn-primary" type="submit">Guardar preferencias</button></div></form></div><div class="card settings-block"><h3>Datos locales</h3><p>Descargá una copia completa de clientes, vehículos, trabajos y preferencias. Importar reemplaza todos los registros actuales.</p><div class="settings-actions">${button(`${icon('download')} Exportar JSON`,'export-json','btn-primary')}${button(`${icon('upload')} Importar JSON`,'import-json','btn-secondary')}${button(`${icon('download')} Exportar CSV`,'export-csv','btn-secondary')}${!desktopInvoke?`${button(`${icon('download')} Excel completo`,'export-excel-desktop','btn-primary')}${button(`${icon('upload')} Restaurar Excel completo`,'import-excel-desktop','btn-secondary')}${button(`${icon('upload')} Importar presupuesto / remito`,'import-legacy-document','btn-secondary')}`:''}${desktopInvoke?`${button(`${icon('download')} Excel completo`,'export-excel-desktop','btn-primary')}${button(`${icon('upload')} Importar Excel`,'import-excel-desktop','btn-secondary')}${button(`${icon('upload')} Importar presupuesto / remito`,'import-legacy-document','btn-secondary')}${button(`${icon('image')} Configurar logo del taller`,'choose-workshop-logo','btn-secondary')}${button(`${icon('upload')} Recuperar SQLite`,'restore-sqlite-desktop','btn-secondary')}${button(`${icon('shield')} Crear respaldo ahora`,'backup-desktop-now','btn-secondary')}${button(`${icon('download')} Elegir carpeta de respaldo`,'choose-external-backup','btn-secondary')}${button(`${icon('shield')} Probar recuperación`,'test-backup-recovery','btn-secondary')}`:''}</div><div class="notice" style="margin-top:23px">${icon('shield',17)} ${desktopInvoke?'SQLite local. Las copias automáticas SQLite + Excel se guardan EN ESTA COMPUTADORA. Para protegerte ante pérdida del equipo, exportá una copia a un disco externo. El Excel contiene datos personales y costos internos.':'Los registros se guardan con IndexedDB en este navegador. No se envían a GitHub ni a servidores de AutoTrace. Si borrás datos del sitio o cambiás de dispositivo, necesitarás el respaldo.'}</div></div></div><div><div class="card settings-block detail-section"><h3>Estado de la instalación</h3><p>${desktopInvoke?'AutoTrace Desktop funciona con SQLite local, sin servidor.':'La PWA funciona sin conexión después de abrirla por primera vez.'}</p><div class="info-grid">${descView('Clientes',String(db.clients.length))}${descView('Vehículos',String(db.vehicles.length))}${descView('Trabajos',String(db.orders.length))}${descView('Almacenamiento',desktopInvoke?'SQLite local':memoryOnly?'No disponible':'Local (IndexedDB)')}${desktopInvoke?descView('Carpeta de respaldo adicional',lastDesktopBackup?.externalDirectory||'Sin configurar'):''}${desktopInvoke?descView('Último respaldo local verificado',lastDesktopBackup?.lastBackupUnixMs?new Date(Number(lastDesktopBackup.lastBackupUnixMs)).toLocaleString('es-AR'):'No hay copia válida'):''}${desktopInvoke?descView('Última copia secundaria verificada',lastDesktopBackup?.lastExternalBackupUnixMs?new Date(Number(lastDesktopBackup.lastExternalBackupUnixMs)).toLocaleString('es-AR'):'No configurada / no válida'):''}</div></div><div class="card settings-block"><h3>Zona de mantenimiento</h3><p>Las acciones siguientes eliminan datos. Antes de continuar, exportá un respaldo JSON.</p><div class="settings-actions">${db.settings.demo?button('Eliminar datos de muestra','reset-demo','btn-secondary'):''}${button(`${icon('trash')} Borrar todos los datos`,'clear-all','btn-danger-ghost')}</div></div>${renderAccountSettings()}${renderDirectDrive()}${renderDriveSettings()}<div class="notice warning" style="margin-top:19px">${desktopInvoke?'Los respaldos locales SQLite y Excel siguen SIN CIFRAR. La integración directa con Google Drive solo envía archivos cifrados y confirma la subida; los archivos en una carpeta sincronizada son independientes. Guardá la frase de recuperación fuera de la computadora y probá restaurar desde otra PC.':'Esta versión está pensada para pruebas y uso individual. Las cuentas receptoras son etiquetas locales para registrar cobros; no se conectan a tu banco. No incluye cifrado, facturación fiscal, copias automáticas ni sincronización entre dispositivos.'}</div></div></div>`;
 }
 const input = (label,name,value='',opts={})=>`<div class="field ${opts.full?'span-2':''}"><label for="f-${name}">${esc(label)}${opts.required?' *':''}</label>${opts.textarea?`<textarea id="f-${name}" name="${name}" maxlength="${opts.maxlength||3000}" placeholder="${esc(opts.placeholder||'')}">${esc(value)}</textarea>`:opts.select?`<select id="f-${name}" name="${name}" ${opts.required?'required':''}>${opts.select.map(x=>`<option value="${esc(x.value)}" ${String(x.value)===String(value)?'selected':''}>${esc(x.label)}</option>`).join('')}</select>`:`<input id="f-${name}" type="${opts.type||'text'}" name="${name}" value="${esc(value)}" ${opts.required?'required':''} ${opts.min!==undefined?`min="${opts.min}"`:''} ${opts.max!==undefined?`max="${opts.max}"`:''} ${opts.step!==undefined?`step="${opts.step}"`:''} maxlength="${opts.maxlength||120}" placeholder="${esc(opts.placeholder||'')}" />`}${opts.hint?`<small>${esc(opts.hint)}</small>`:''}</div>`;
 function showModal(title,subtitle,kind,fields,id=''){
@@ -620,6 +646,7 @@ async function saveForm(form){
   const fd=new FormData(form);const get=k=>String(fd.get(k)||'').trim();
   const kind=form.dataset.kind,id=form.dataset.id,existing=!!id;
   if(kind==='account')return saveAccountForm(form);
+  if(kind.startsWith('drive-api-'))return saveDriveApiForm(form);
   if(kind.startsWith('drive-'))return saveDriveForm(form);
   const baseId=id||uid();
   let newPaymentAccount=null;
@@ -713,9 +740,12 @@ async function createDesktopBackup(silent=false){
     lastDesktopBackup=await desktopInvoke('backup_status');
     try{lastDriveStatus=await desktopInvoke('drive_backup_status');}
     catch(e){console.warn('No se pudo consultar el estado de la carpeta cifrada:',String(e));lastDriveStatus=null;}
+    try{lastDirectDrive=await desktopInvoke('drive_api_status');}
+    catch(e){console.warn('No se pudo consultar Google Drive API:',String(e));lastDirectDrive=null;}
+    if(completed.cloudCopyError)toast('La copia local se guardó, pero la subida directa a Google Drive quedó pendiente: '+completed.cloudCopyError,'error');
     if(completed.driveCopyError)toast('Respaldo local correcto, pero No se pudo generar el respaldo cifrado en la carpeta sincronizada: '+completed.driveCopyError,'error');
     if(completed.externalCopyError)toast('Copia local correcta, pero falló la copia secundaria: '+completed.externalCopyError,'error');
-    else if(!silent)toast(completed.driveCopyOk?'Respaldo cifrado creado en carpeta sincronizada. Verificá que Google Drive termine de subirlo.':completed.externalCopyOk?'Respaldo verificado también en la carpeta secundaria.':'Respaldo local creado. Elegí otra unidad o una carpeta cifrada sincronizada para protegerte.');
+    else if(!silent)toast(completed.cloudCopyOk?'Respaldo cifrado subido y verificado en Google Drive.':completed.driveCopyOk?'Respaldo cifrado creado en carpeta sincronizada. Verificá que Google Drive termine de subirlo.':completed.externalCopyOk?'Respaldo verificado en la carpeta secundaria.':'Respaldo local creado.');
     if(route().page==='ajustes')render();
     return true;
   }catch(error){
@@ -723,6 +753,50 @@ async function createDesktopBackup(silent=false){
     toast(`Falló el respaldo: ${String(error)}`,'error');
     return false;
   }finally{desktopBackupBusy=false;}
+}
+function driveApiForm(kind){
+  if((kind==='restore'||kind==='test')&&!directDriveFiles.length){toast('Primero consultá las copias de Google Drive.','error');return;}
+  const remote=kind==='test'||kind==='restore';
+  const fields=kind==='client'?
+    input('OAuth Client ID de Google Cloud','clientId','',{required:true,full:true,maxlength:300,placeholder:'...apps.googleusercontent.com'}):
+    (remote?input('Copia cifrada disponible','remoteFile','',{select:directDriveFiles.map(x=>({value:x.id,label:x.name+' · '+(x.createdTime||'')})),required:true,full:true}):'')+
+    input('Frase de recuperación','drivePassphrase','',{type:'password',required:true,full:true,maxlength:256});
+  showModal(kind==='client'?'Configurar Google Drive API':kind==='unlock'?'Desbloquear cifrado':
+    kind==='test'?'Probar recuperación remota':'Recuperar directamente desde Drive',
+    kind==='client'?'Creá un Client ID OAuth de tipo Desktop y habilitá Google Drive API en Google Cloud.':
+    'Google Drive guardará solamente archivos cifrados. La frase no se envía a Google.',
+    'drive-api-'+kind,fields);
+}
+async function saveDriveApiForm(form){
+  const kind=form.dataset.kind.slice('drive-api-'.length),fd=new FormData(form);
+  const phrase=String(fd.get('drivePassphrase')||'');
+  try{
+    if(kind==='client'){
+      await desktopInvoke('drive_api_set_client',{clientId:String(fd.get('clientId')||'')});
+      toast('Client ID configurado. Ahora conectá la cuenta Google.');
+    }else if(kind==='unlock'){
+      await desktopInvoke('drive_api_unlock',{passphrase:phrase});
+      toast('Frase desbloqueada en esta sesión; no se almacena.');
+    }else if(kind==='test'){
+      modalOriginal='';document.querySelector('#form-dialog').close();
+      const report=await desktopInvoke('drive_api_test',{fileId:String(fd.get('remoteFile')),passphrase:phrase});
+      toast('Prueba desde Google Drive aprobada: '+report.clients+' clientes, '+report.vehicles+' vehículos y '+report.orders+' trabajos. Datos actuales intactos.');
+      return;
+    }else if(kind==='restore'){
+      modalOriginal='';document.querySelector('#form-dialog').close();
+      const preview=await desktopInvoke('drive_api_preview',{fileId:String(fd.get('remoteFile')),passphrase:phrase});
+      const next=validateData(preview.data);
+      if(!await confirmAction('Restaurar desde Google Drive',
+        'La copia incluye '+next.clients.length+' clientes, '+next.vehicles.length+' vehículos y '+next.orders.length+' trabajos. Se REEMPLAZARÁN los registros actuales tras crear un respaldo local.',
+        'Respaldar y restaurar'))return;
+      if(!await createDesktopBackup(true))throw Error('No se pudo generar respaldo previo. Restauración cancelada.');
+      await saveData(next);navigate('inicio');toast('Copia cifrada recuperada directamente desde Google Drive.');
+      return;
+    }
+    modalOriginal='';document.querySelector('#form-dialog').close();
+    lastDirectDrive=await desktopInvoke('drive_api_status');
+    if(route().page==='ajustes')render();
+  }catch(e){console.error('Google Drive API:',String(e));toast(String(e),'error');}
 }
 function driveSetupForm(kind){
   if(!desktopInvoke)return;
@@ -1004,9 +1078,18 @@ async function scheduleDesktopBackups(){
     lastDesktopBackup=await desktopInvoke('backup_status');
     try{lastDriveStatus=await desktopInvoke('drive_backup_status');}
     catch(e){console.warn('No se pudo consultar el estado de la carpeta cifrada:',String(e));lastDriveStatus=null;}
+    try{lastDirectDrive=await desktopInvoke('drive_api_status');}
+    catch(e){console.warn('No se pudo consultar Google Drive API:',String(e));lastDirectDrive=null;}
     if(route().page==='ajustes')render();
     const stale=!lastDesktopBackup.lastBackupUnixMs || Date.now()-Number(lastDesktopBackup.lastBackupUnixMs)>=4*60*60*1000;
     if(stale)await createDesktopBackup(true);
+    else if(lastDirectDrive?.connected&&lastDirectDrive.pendingCount>0&&!desktopBackupBusy){
+      try{
+        await desktopInvoke('drive_api_retry');
+        lastDirectDrive=await desktopInvoke('drive_api_status');
+        if(route().page==='ajustes')render();
+      }catch(e){console.warn('Copia cifrada pendiente de conexión:',String(e));}
+    }
   }catch(e){console.error(e);toast('No se pudo comprobar el estado de las copias de seguridad','error');}
 }
 function exportJSON(){const backup={format:'autotrace-backup',version:1,exportedAt:new Date().toISOString(),data:db};saveAsFile(JSON.stringify(backup,null,2),`autotrace-respaldo-${isoDate(new Date())}.json`,'application/json;charset=utf-8');toast('Respaldo JSON descargado.');}
@@ -1127,6 +1210,41 @@ document.addEventListener('click',async event=>{
     case 'unlock-drive-backup':driveSetupForm('unlock');break;
     case 'restore-drive-backup':driveSetupForm('restore');break;
     case 'test-drive-recovery':driveSetupForm('test');break;
+    case 'set-drive-client':driveApiForm('client');break;
+    case 'unlock-drive-api':driveApiForm('unlock');break;
+    case 'test-drive-api':driveApiForm('test');break;
+    case 'restore-drive-api':driveApiForm('restore');break;
+    case 'connect-drive-api':{
+      try{
+        await desktopInvoke('drive_api_connect');
+        lastDirectDrive=await desktopInvoke('drive_api_status');
+        render();toast('Google Drive conectado. Desbloqueá el cifrado para subir una copia.');
+      }catch(e){toast(String(e),'error');}break;
+    }
+    case 'disconnect-drive-api':{
+      try{
+        if(await confirmAction('Desconectar Google Drive','Las copias remotas existentes permanecerán en Drive. AutoTrace dejará de subir nuevas copias.')){
+          await desktopInvoke('drive_api_disconnect');
+          directDriveFiles=[];lastDirectDrive=await desktopInvoke('drive_api_status');render();
+          toast('Google Drive desconectado.');
+        }
+      }catch(e){toast(String(e),'error');}break;
+    }
+    case 'upload-drive-api':await createDesktopBackup();break;
+    case 'retry-drive-api':{
+      try{
+        const count=await desktopInvoke('drive_api_retry');
+        lastDirectDrive=await desktopInvoke('drive_api_status');render();
+        toast(count?'Copias pendientes verificadas en Drive: '+count:'No hay copias pendientes.');
+      }catch(e){toast(String(e),'error');}break;
+    }
+    case 'refresh-drive-api':{
+      try{
+        directDriveFiles=await desktopInvoke('drive_api_list');
+        lastDirectDrive=await desktopInvoke('drive_api_status');render();
+        toast('Se encontraron '+directDriveFiles.length+' copias cifradas.');
+      }catch(e){toast(String(e),'error');}break;
+    }
     case 'lock-drive-backup':{
       if(desktopInvoke){
         await desktopInvoke('lock_drive_backup');
@@ -1218,7 +1336,8 @@ try {
   await loadData();render();
 if(desktopInvoke){
   await scheduleDesktopBackups();
-  setInterval(scheduleDesktopBackups,4*60*60*1000);
+  // Each check retries an encrypted queue when online; new snapshots remain 4-hourly.
+  setInterval(scheduleDesktopBackups,15*60*1000);
 }
 } catch(err) {
   console.error('No se pudo abrir la base de AutoTrace:',err);

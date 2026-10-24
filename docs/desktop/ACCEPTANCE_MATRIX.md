@@ -48,6 +48,34 @@
 | D-B14 | Drive apagado/sin conexión/carpeta no disponible informa que solo hay copia local; **no** declara subida remota confirmada | D6 obligatorio para nube |
 | D-B15 | Al reiniciar se requiere desbloquear clave; no guardar frase de recuperación en disco, configuraciones, CI ni logs | D6 obligatorio para nube |
 
+## C.1. Drive API directa (D7)
+
+| ID | Prueba observable | Gate |
+|---|---|---|
+| D-G01 | Consentimiento OAuth Desktop en navegador real con PKCE S256, `state` y scope solo `drive.file` | Obligatorio D7 |
+| D-G02 | Token de renovación exclusivamente en Windows Credential Manager; sobreviven reinicio y desconexión, se eliminan al desconectar | Obligatorio D7 |
+| D-G03 | No se envía ningún SQLite/Excel sin cifrar: carga age, verificada con `size`, MD5 y origen de aplicación mediante Drive API | Obligatorio D7 |
+| D-G04 | Sin red se conserva cola cifrada; se reintenta sin duplicar ni sobrescribir archivos remotos | Obligatorio D7 |
+| D-G05 | Otra PC y otra instalación pueden listar y recuperar copias de la misma cuenta Google con el mismo OAuth Client ID | Obligatorio D7 |
+| D-G06 | Archivo manipulado, frase equivocada o backup truncado: importación rechazada, base vigente preservada | Obligatorio D7 |
+| D-G07 | Indicar por separado backup local generado, copia cloud pendiente y cloud confirmada; no simular éxito por solo entrar en Drive | Obligatorio D7 |
+
+## C.2. Experiencia en un clic y cifrado autónomo (D8)
+
+| ID | Prueba observable | Gate |
+|---|---|---|
+| D-H01 | Build final trae el Client ID **público** de AutoTrace; usuario del taller nunca ve ni completa Client ID/Google Cloud | Obligatorio D8 |
+| D-H02 | Build de desarrollo sin identidad oficial informa «no configurado» sin romper SQLite, backups ni PWA | Obligatorio D8 |
+| D-H03 | Después de reiniciar Windows, AutoTrace cifra nuevos respaldos con clave protegida por el sistema; no necesita pedir la frase cada vez | Obligatorio D8 |
+| D-H04 | Con pérdida total de PC y otra identidad Windows, cuenta Google + kit portable permiten descifrar copia y restaurar sin datos locales previos | Obligatorio D8 |
+| D-H05 | Respuesta perdida tras subir, 308, 401, 403, 429, 5xx, desconexión y espacio insuficiente se prueban con adaptador HTTP simulado; sin duplicados ni pérdida | Obligatorio D8 |
+| D-H06 | Token vencido/revocado no se presenta como «conectado y respaldando»; UI indica reconexión, última copia verificada y cola pendiente | Obligatorio D8 |
+| D-H07 | Cambio de OAuth Client ID no causa pérdida silenciosa: se ofrece exportación de `.atbackup.age` y migración explícita de archivos históricos | Obligatorio D8 |
+| D-H08 | Release sin OAuth autorizado mantiene función local intacta; no se distribuyen refresh tokens, passwords, client secrets ni datos de usuarios | Obligatorio D8 |
+| D-H09 | Sincronización con aplicación cerrada/PC apagada NO se promete hasta implementar y probar un servicio o Programador de tareas | Gate de honestidad |
+
+Ver planificación y dependencias: [D8 — Google Drive en un clic](D8_GOOGLE_DRIVE_ONE_CLICK_PLAN.md).
+
 ## D. Experiencia, build y soporte
 
 | ID | Prueba observable | Gate |

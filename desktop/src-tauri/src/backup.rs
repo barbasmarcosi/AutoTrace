@@ -1,5 +1,5 @@
 //! Two matching, locally verified artifacts. Does not claim off-device durability.
-use crate::{excel, store, drive_backup};
+use crate::{excel, store, drive_backup, drive_api};
 use rusqlite::{backup::Backup, Connection, OpenFlags};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -26,6 +26,8 @@ pub(crate) struct BackupResult {
     pub external_copy_error: Option<String>,
     pub drive_copy_ok: bool,
     pub drive_copy_error: Option<String>,
+    pub cloud_copy_ok: bool,
+    pub cloud_copy_error: Option<String>,
 }
 fn err(e:impl std::fmt::Display)->String {format!("No se pudo crear o verificar el respaldo: {e}")}
 fn now_ms()->Result<u128,String> {Ok(SystemTime::now().duration_since(UNIX_EPOCH).map_err(err)?.as_millis())}
@@ -77,7 +79,7 @@ pub(crate) fn backup_pair(src:&Connection, dest:&Path, id:&str)->Result<BackupRe
         fs::rename(&temp_xlsx,&excel).map_err(err)?;
         fs::rename(&temp_manifest,&manifest).map_err(err)?;
         if sha(&db)?!=metadata["sqliteSha256"].as_str().unwrap_or("") || sha(&excel)?!=metadata["excelSha256"].as_str().unwrap_or("") {return Err("Checksum no coincide después de copiar".into());}
-        Ok(BackupResult{sqlite_path:db.display().to_string(),excel_path:excel.display().to_string(),manifest_path:manifest.display().to_string(),external_copy_ok:false,external_copy_error:None,drive_copy_ok:false,drive_copy_error:None})
+        Ok(BackupResult{sqlite_path:db.display().to_string(),excel_path:excel.display().to_string(),manifest_path:manifest.display().to_string(),external_copy_ok:false,external_copy_error:None,drive_copy_ok:false,drive_copy_error:None,cloud_copy_ok:false,cloud_copy_error:None})
     })();
     let _=fs::remove_dir_all(staging);
     if result.is_err(){let _=fs::remove_file(db);let _=fs::remove_file(excel);let _=fs::remove_file(manifest);}
@@ -282,7 +284,11 @@ fn prune_verified(dir:&Path)->Result<usize,String>{
 }
 
 #[tauri::command]
-pub(crate) fn backup_now(app:tauri::AppHandle)->Result<BackupResult,String>{
+pub(crate) async fn backup_now(app:tauri::AppHandle)->Result<BackupResult,String>{
+    tauri::async_runtime::spawn_blocking(move ||backup_now_blocking(app))
+        .await.map_err(|_|"Falló la ejecución del respaldo".to_string())?
+}
+fn backup_now_blocking(app:tauri::AppHandle)->Result<BackupResult,String>{
     let src=store::open_app(&app)?;
     let id=format!("{}-{}",now_ms()?,uuid::Uuid::new_v4().simple());
     let mut backup=backup_pair(&src,&backup_dir(&app)?,&id)?;
@@ -307,6 +313,11 @@ pub(crate) fn backup_now(app:tauri::AppHandle)->Result<BackupResult,String>{
         Ok(Some(_))=>backup.drive_copy_ok=true,
         Ok(None)=>{},
         Err(e)=>backup.drive_copy_error=Some(e),
+    }
+    match drive_api::replicate_if_connected(&app,&backup){
+        Ok(Some(_))=>backup.cloud_copy_ok=true,
+        Ok(None)=>{},
+        Err(e)=>backup.cloud_copy_error=Some(e),
     }
     if let Err(e)=prune_verified(&backup_dir(&app)?){eprintln!("AutoTrace local retention: {e}");}
     Ok(backup)
