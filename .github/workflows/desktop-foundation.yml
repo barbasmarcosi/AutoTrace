@@ -44,3 +44,12 @@ jobs:
       - name: Rust unit tests, SQLite and Excel roundtrip on Windows
         working-directory: desktop/src-tauri
         run: cargo test --all-targets
+      # Capture the exact dependency resolution once; the file is safe to
+      # commit (no tokens or client data) and enables repeatable --locked builds.
+      - name: Upload generated Cargo.lock for review
+        uses: actions/upload-artifact@v4
+        with:
+          name: autotrace-cargo-lockfile
+          path: desktop/src-tauri/Cargo.lock
+          retention-days: 7
+          if-no-files-found: error
