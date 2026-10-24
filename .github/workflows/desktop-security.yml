@@ -3,9 +3,13 @@ name: Desktop dependency advisory audit
 on:
   pull_request:
     paths:
-      - 'desktop/src-tauri/Cargo.lock'
-      - 'desktop/src-tauri/Cargo.toml'
+      - 'desktop/**'
+      - 'tests/**'
+      - 'site/**'
+      - '.github/workflows/desktop-foundation.yml'
+      - '.github/workflows/desktop-installer.yml'
       - '.github/workflows/desktop-security.yml'
+      - '.github/workflows/pwa-browser-smoke.yml'
   workflow_dispatch:
   schedule:
     - cron: '23 8 * * 1'
