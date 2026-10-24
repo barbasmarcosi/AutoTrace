@@ -41,7 +41,7 @@ jobs:
         shell: pwsh
         run: |
           # Prebuilt cross-platform CLI avoids compiling tauri-cli on the runner.
-          npm exec --yes --package="@tauri-apps/cli@^2" -- tauri build --bundles nsis
+          npm exec --yes --package="@tauri-apps/cli@2.12.3" -- tauri build --bundles nsis
       - name: Inspect produced installer (no production data)
         shell: pwsh
         run: |
