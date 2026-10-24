@@ -646,6 +646,7 @@ async function saveForm(form){
   const fd=new FormData(form);const get=k=>String(fd.get(k)||'').trim();
   const kind=form.dataset.kind,id=form.dataset.id,existing=!!id;
   if(kind==='account')return saveAccountForm(form);
+  if(kind.startsWith('drive-api-'))return saveDriveApiForm(form);
   if(kind.startsWith('drive-'))return saveDriveForm(form);
   const baseId=id||uid();
   let newPaymentAccount=null;
@@ -752,6 +753,50 @@ async function createDesktopBackup(silent=false){
     toast(`Falló el respaldo: ${String(error)}`,'error');
     return false;
   }finally{desktopBackupBusy=false;}
+}
+function driveApiForm(kind){
+  if((kind==='restore'||kind==='test')&&!directDriveFiles.length){toast('Primero consultá las copias de Google Drive.','error');return;}
+  const remote=kind==='test'||kind==='restore';
+  const fields=kind==='client'?
+    input('OAuth Client ID de Google Cloud','clientId','',{required:true,full:true,maxlength:300,placeholder:'...apps.googleusercontent.com'}):
+    (remote?input('Copia cifrada disponible','remoteFile','',{select:directDriveFiles.map(x=>({value:x.id,label:x.name+' · '+(x.createdTime||'')})),required:true,full:true}):'')+
+    input('Frase de recuperación','drivePassphrase','',{type:'password',required:true,full:true,maxlength:256});
+  showModal(kind==='client'?'Configurar Google Drive API':kind==='unlock'?'Desbloquear cifrado':
+    kind==='test'?'Probar recuperación remota':'Recuperar directamente desde Drive',
+    kind==='client'?'Creá un Client ID OAuth de tipo Desktop y habilitá Google Drive API en Google Cloud.':
+    'Google Drive guardará solamente archivos cifrados. La frase no se envía a Google.',
+    'drive-api-'+kind,fields);
+}
+async function saveDriveApiForm(form){
+  const kind=form.dataset.kind.slice('drive-api-'.length),fd=new FormData(form);
+  const phrase=String(fd.get('drivePassphrase')||'');
+  try{
+    if(kind==='client'){
+      await desktopInvoke('drive_api_set_client',{clientId:String(fd.get('clientId')||'')});
+      toast('Client ID configurado. Ahora conectá la cuenta Google.');
+    }else if(kind==='unlock'){
+      await desktopInvoke('drive_api_unlock',{passphrase:phrase});
+      toast('Frase desbloqueada en esta sesión; no se almacena.');
+    }else if(kind==='test'){
+      modalOriginal='';document.querySelector('#form-dialog').close();
+      const report=await desktopInvoke('drive_api_test',{fileId:String(fd.get('remoteFile')),passphrase:phrase});
+      toast('Prueba desde Google Drive aprobada: '+report.clients+' clientes, '+report.vehicles+' vehículos y '+report.orders+' trabajos. Datos actuales intactos.');
+      return;
+    }else if(kind==='restore'){
+      modalOriginal='';document.querySelector('#form-dialog').close();
+      const preview=await desktopInvoke('drive_api_preview',{fileId:String(fd.get('remoteFile')),passphrase:phrase});
+      const next=validateData(preview.data);
+      if(!await confirmAction('Restaurar desde Google Drive',
+        'La copia incluye '+next.clients.length+' clientes, '+next.vehicles.length+' vehículos y '+next.orders.length+' trabajos. Se REEMPLAZARÁN los registros actuales tras crear un respaldo local.',
+        'Respaldar y restaurar'))return;
+      if(!await createDesktopBackup(true))throw Error('No se pudo generar respaldo previo. Restauración cancelada.');
+      await saveData(next);navigate('inicio');toast('Copia cifrada recuperada directamente desde Google Drive.');
+      return;
+    }
+    modalOriginal='';document.querySelector('#form-dialog').close();
+    lastDirectDrive=await desktopInvoke('drive_api_status');
+    if(route().page==='ajustes')render();
+  }catch(e){console.error('Google Drive API:',String(e));toast(String(e),'error');}
 }
 function driveSetupForm(kind){
   if(!desktopInvoke)return;
@@ -1158,6 +1203,41 @@ document.addEventListener('click',async event=>{
     case 'unlock-drive-backup':driveSetupForm('unlock');break;
     case 'restore-drive-backup':driveSetupForm('restore');break;
     case 'test-drive-recovery':driveSetupForm('test');break;
+    case 'set-drive-client':driveApiForm('client');break;
+    case 'unlock-drive-api':driveApiForm('unlock');break;
+    case 'test-drive-api':driveApiForm('test');break;
+    case 'restore-drive-api':driveApiForm('restore');break;
+    case 'connect-drive-api':{
+      try{
+        await desktopInvoke('drive_api_connect');
+        lastDirectDrive=await desktopInvoke('drive_api_status');
+        render();toast('Google Drive conectado. Desbloqueá el cifrado para subir una copia.');
+      }catch(e){toast(String(e),'error');}break;
+    }
+    case 'disconnect-drive-api':{
+      try{
+        if(await confirmAction('Desconectar Google Drive','Las copias remotas existentes permanecerán en Drive. AutoTrace dejará de subir nuevas copias.')){
+          await desktopInvoke('drive_api_disconnect');
+          directDriveFiles=[];lastDirectDrive=await desktopInvoke('drive_api_status');render();
+          toast('Google Drive desconectado.');
+        }
+      }catch(e){toast(String(e),'error');}break;
+    }
+    case 'upload-drive-api':await createDesktopBackup();break;
+    case 'retry-drive-api':{
+      try{
+        const count=await desktopInvoke('drive_api_retry');
+        lastDirectDrive=await desktopInvoke('drive_api_status');render();
+        toast(count?'Copias pendientes verificadas en Drive: '+count:'No hay copias pendientes.');
+      }catch(e){toast(String(e),'error');}break;
+    }
+    case 'refresh-drive-api':{
+      try{
+        directDriveFiles=await desktopInvoke('drive_api_list');
+        lastDirectDrive=await desktopInvoke('drive_api_status');render();
+        toast('Se encontraron '+directDriveFiles.length+' copias cifradas.');
+      }catch(e){toast(String(e),'error');}break;
+    }
     case 'lock-drive-backup':{
       if(desktopInvoke){
         await desktopInvoke('lock_drive_backup');
