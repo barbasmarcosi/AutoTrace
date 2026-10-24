@@ -301,8 +301,8 @@ mod tests {
         let doc:store::AppData=serde_json::from_value(serde_json::json!({
           "clients":[{"id":"c1","name":"Cliente protegido","phone":"0112345000","email":"","notes":"","createdAt":"2026-10-20"}],
           "vehicles":[{"id":"v1","clientId":"c1","plate":"AF123BD","make":"Ford","model":"Ka","year":2019,"mileage":1.0,"vin":"","color":"","nextServiceDate":"","notes":"","createdAt":""}],
-          "orders":[{"id":"o1","vehicleId":"v1","title":"Diagnóstico","category":"Electrónica","status":"done","openedAt":"2026-10-22","completedAt":"","mileage":1.0,"description":"","partsCost":150.0,"laborCost":200.0,"charged":1000.0,"paid":500.0,"notes":"","createdAt":"2026-10-22"}],
-          "settings":{"garageName":"Taller","currency":"ARS","demo":false}
+          "orders":[{"id":"o1","vehicleId":"v1","title":"Diagnóstico","category":"Electrónica","status":"done","openedAt":"2026-10-22","completedAt":"","mileage":1.0,"description":"","partsCost":150.0,"laborCost":200.0,"charged":1000.0,"paid":500.0,"notes":"","createdAt":"2026-10-22","payments":[{"id":"pay1","date":"2026-10-22","amount":200.0,"method":"transfer","accountId":"account1","reference":"OPERACION_SECRETA"}]}],
+          "settings":{"garageName":"Taller","currency":"ARS","demo":false,"accounts":[{"id":"account1","name":"Banco protegido","kind":"bank","alias":"ALIAS_SECRETO"}]}
         })).unwrap();
         store::write(&mut conn,&doc,0).unwrap();
         let pair=backup::backup_pair(&conn,&primary,"fixture").unwrap();
@@ -311,6 +311,8 @@ mod tests {
         let raw=fs::read(&cloud).unwrap();
         assert!(!raw.windows(b"Cliente protegido".len()).any(|chunk|chunk==b"Cliente protegido"));
         assert!(!raw.windows(b"SQLite format 3".len()).any(|chunk|chunk==b"SQLite format 3"));
+        assert!(!raw.windows(b"OPERACION_SECRETA".len()).any(|chunk|chunk==b"OPERACION_SECRETA"));
+        assert!(!raw.windows(b"ALIAS_SECRETO".len()).any(|chunk|chunk==b"ALIAS_SECRETO"));
         let recovered=read_archive(&cloud,password.expose_secret_for_restore()).unwrap();
         let (restored,verified)=backup::read_sqlite_candidate(&recovered.sqlite).unwrap();
         assert!(verified);
