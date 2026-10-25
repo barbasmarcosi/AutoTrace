@@ -7,6 +7,9 @@ on:
       - 'tests/**'
       - 'site/**'
       - '.github/workflows/desktop-foundation.yml'
+      - '.github/workflows/desktop-installer.yml'
+      - 'scripts/verify-acceptance-installer.ps1'
+      - 'docs/desktop/ACCEPTANCE_PACKAGE_U0_U7.md'
   workflow_dispatch:
 
 permissions:

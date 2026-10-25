@@ -11,6 +11,8 @@ on:
       - '.github/workflows/desktop-security.yml'
       - '.github/workflows/pwa-browser-smoke.yml'
       - 'scripts/check_age_passphrase_compatibility.sh'
+      - 'scripts/verify-acceptance-installer.ps1'
+      - 'docs/desktop/ACCEPTANCE_PACKAGE_U0_U7.md'
   workflow_dispatch:
   schedule:
     - cron: '23 8 * * 1'
