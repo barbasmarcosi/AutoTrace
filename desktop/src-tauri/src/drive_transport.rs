@@ -223,20 +223,37 @@ pub(crate) fn download(token:&str,id:&str,destination:&Path)->Result<(),String>{
     let expected_md5=selected.md5_checksum.as_deref().ok_or("Drive no devolvió checksum del archivo")?;
     receive_verified(response,size,expected_md5,destination)
 }
-/// Publish only a completely written and verified encrypted file. A hard
-/// link is an atomic no-replace operation on NTFS/POSIX, unlike a check-then-
-/// rename sequence (Unix rename may overwrite another process' destination).
-/// Both paths are on the same volume because the staging file is a sibling.
-/// Unsupported filesystems fail closed; they never expose a partial archive.
+/// Publish only a completed/verified ciphertext, never replacing a prior
+/// backup. On Windows MoveFileExW WITHOUT MOVEFILE_REPLACE_EXISTING performs
+/// an atomic same-volume no-clobber rename even on FAT/exFAT removable USB.
+/// Hard links alone would reject common removable filesystems.
+#[cfg(windows)]
+fn publish_completed_no_replace(stage:&Path,destination:&Path)->std::io::Result<()>{
+    use std::{os::windows::ffi::OsStrExt,iter};
+    #[link(name="kernel32")]
+    unsafe extern "system" {
+        fn MoveFileExW(existing:*const u16,new:*const u16,flags:u32)->i32;
+    }
+    let from=stage.as_os_str().encode_wide().chain(iter::once(0)).collect::<Vec<_>>();
+    let to=destination.as_os_str().encode_wide().chain(iter::once(0)).collect::<Vec<_>>();
+    // 0x8 = MOVEFILE_WRITE_THROUGH; no 0x1 REPLACE_EXISTING, no
+    // COPY_ALLOWED. The source and destination must be on the same disk.
+    if unsafe{MoveFileExW(from.as_ptr(),to.as_ptr(),0x8)}!=0{Ok(())}
+    else{Err(std::io::Error::last_os_error())}
+}
+#[cfg(not(windows))]
+fn publish_completed_no_replace(stage:&Path,destination:&Path)->std::io::Result<()>{
+    fs::hard_link(stage,destination)
+}
 pub(crate) fn publish_verified_cipher(stage:&Path,destination:&Path)->Result<(),String>{
     if stage.parent()!=destination.parent(){
         return Err("El respaldo cifrado debe publicarse en la misma unidad temporal".into());
     }
-    fs::hard_link(stage,destination).map_err(|e|{
+    publish_completed_no_replace(stage,destination).map_err(|e|{
         if e.kind()==std::io::ErrorKind::AlreadyExists{
             "Otro proceso ya creó el respaldo de destino. No se sobrescribió.".into()
         }else{
-            format!("No se pudo publicar el respaldo de forma atómica en este disco: {e}")
+            format!("No se pudo publicar el respaldo sin sobrescribir en este disco: {e}")
         }
     })
 }
@@ -420,9 +437,11 @@ mod tests{
         assert_eq!(fs::read(&destination).unwrap(),b"verified-complete-ciphertext");
         assert!(publish_verified_cipher(&stage,&destination).is_err(),
             "duplicate final publication must never silently replace a download");
-        fs::remove_file(&stage).unwrap();
+        // Windows MoveFileExW moves the staged name; POSIX hardlink keeps
+        // staging until cleanup. Both must preserve the final ciphertext.
+        if stage.exists(){fs::remove_file(&stage).unwrap();}
         assert_eq!(fs::read(&destination).unwrap(),b"verified-complete-ciphertext",
-            "unlinking staging must not invalidate an atomically published ciphertext");
+            "staging cleanup must not invalidate an atomically published ciphertext");
         fs::remove_dir_all(&dir).unwrap();
     }
     #[test] fn only_one_matching_remote_backup_may_be_reused(){
