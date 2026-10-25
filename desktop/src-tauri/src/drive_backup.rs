@@ -694,7 +694,8 @@ mod tests {
             assert_empty();
         }
         let mut tampered=encrypted_bytes.clone();
-        tampered[tampered.len()-33]^=0x5a;
+        let tamper_offset=tampered.len()-33;
+        tampered[tamper_offset]^=0x5a;
         let corrupted=encrypted.join("tampered.atbackup.age");
         fs::write(&corrupted,&tampered).unwrap();
         assert!(read_archive_in(&corrupted,password.expose_secret_for_restore(),&sandbox).is_err());
