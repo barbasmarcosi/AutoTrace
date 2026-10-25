@@ -326,29 +326,65 @@ fn current_revision(conn: &Connection) -> Result<u64, String> {
     u64::try_from(val).map_err(sqlite_error)
 }
 
+/// Reject persisted SQLite rows whose indexed columns disagree with the
+/// authoritative JSON record. PRAGMA integrity_check and foreign_key_check
+/// cannot detect these logical inconsistencies after external file edits.
 pub(crate) fn read(conn: &Connection) -> Result<Snapshot, String> {
     let mut data = AppData::default();
-    for (sql, target) in [
-        ("SELECT record_json FROM clients ORDER BY rowid", 0),
-        ("SELECT record_json FROM vehicles ORDER BY rowid", 1),
-        ("SELECT record_json FROM orders ORDER BY rowid", 2),
-    ] {
-        let mut stmt = conn.prepare(sql).map_err(sqlite_error)?;
-        let rows = stmt.query_map([], |r| r.get::<_, String>(0)).map_err(sqlite_error)?;
+    {
+        let mut stmt=conn.prepare("SELECT id,name,record_json FROM clients ORDER BY rowid").map_err(sqlite_error)?;
+        let rows=stmt.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?)))
+            .map_err(sqlite_error)?;
         for row in rows {
-            let json = row.map_err(sqlite_error)?;
-            match target {
-                0 => data.clients.push(serde_json::from_str(&json).map_err(sqlite_error)?),
-                1 => data.vehicles.push(serde_json::from_str(&json).map_err(sqlite_error)?),
-                _ => data.orders.push(serde_json::from_str(&json).map_err(sqlite_error)?),
+            let (id,name,json)=row.map_err(sqlite_error)?;
+            let client:Client=serde_json::from_str(&json).map_err(sqlite_error)?;
+            if client.id!=id||client.name!=name {
+                return Err("La base SQLite contiene datos de cliente inconsistentes. No se cargó.".into());
             }
+            data.clients.push(client);
         }
     }
-    if let Some(raw) = conn.query_row("SELECT record_json FROM app_settings WHERE id=1", [], |r| r.get::<_, String>(0)).optional().map_err(sqlite_error)? {
-        data.settings = serde_json::from_str(&raw).map_err(sqlite_error)?;
+    {
+        let mut stmt=conn.prepare("SELECT id,client_id,plate,record_json FROM vehicles ORDER BY rowid").map_err(sqlite_error)?;
+        let rows=stmt.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?)))
+            .map_err(sqlite_error)?;
+        for row in rows {
+            let (id,client_id,plate,json)=row.map_err(sqlite_error)?;
+            let vehicle:Vehicle=serde_json::from_str(&json).map_err(sqlite_error)?;
+            if vehicle.id!=id||vehicle.client_id!=client_id||vehicle.plate!=plate {
+                return Err("La base SQLite contiene datos de vehículo inconsistentes. No se cargó.".into());
+            }
+            data.vehicles.push(vehicle);
+        }
+    }
+    {
+        let mut stmt=conn.prepare(
+            "SELECT id,vehicle_id,status,charged_cents,paid_cents,parts_cents,labor_cents,record_json FROM orders ORDER BY rowid"
+        ).map_err(sqlite_error)?;
+        let rows=stmt.query_map([],|r|Ok((
+            r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,
+            r.get::<_,i64>(3)?,r.get::<_,i64>(4)?,r.get::<_,i64>(5)?,
+            r.get::<_,i64>(6)?,r.get::<_,String>(7)?
+        ))).map_err(sqlite_error)?;
+        for row in rows {
+            let (id,vehicle_id,status,charged,paid,parts,labor,json)=row.map_err(sqlite_error)?;
+            let order:Order=serde_json::from_str(&json).map_err(sqlite_error)?;
+            if order.id!=id||order.vehicle_id!=vehicle_id||order.status!=status||
+                cents(order.charged,"importe")?!=charged||
+                cents(order.paid,"pagado")?!=paid||
+                cents(order.parts_cost,"repuestos")?!=parts||
+                cents(order.labor_cost,"mano de obra")?!=labor {
+                return Err("La base SQLite contiene importes o datos de trabajo inconsistentes. No se cargó.".into());
+            }
+            data.orders.push(order);
+        }
+    }
+    if let Some(raw)=conn.query_row("SELECT record_json FROM app_settings WHERE id=1",[],|r|r.get::<_,String>(0))
+        .optional().map_err(sqlite_error)? {
+        data.settings=serde_json::from_str(&raw).map_err(sqlite_error)?;
     }
     validate(&data)?;
-    Ok(Snapshot { data, revision: current_revision(conn)? })
+    Ok(Snapshot{data,revision:current_revision(conn)?})
 }
 
 /// Load each table once under the same IMMEDIATE transaction. Avoid 50k
@@ -714,6 +750,41 @@ mod tests {
         });
         assert!(write(&mut db, &data, 0).is_err());
         assert_eq!(read(&db).unwrap().revision, 0);
+    }
+    #[test]
+    fn sql_projection_tampering_is_rejected_even_when_sqlite_integrity_says_ok(){
+        let mut db=Connection::open_in_memory().unwrap();
+        db.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        db.execute_batch(SCHEMA).unwrap();
+        let data:AppData=serde_json::from_value(serde_json::json!({
+          "clients":[{"id":"c","name":"Cliente sintético","phone":"","email":"","notes":"","createdAt":""}],
+          "vehicles":[{"id":"v","clientId":"c","plate":"AF123BC","make":"Marca","model":"Modelo",
+              "year":2021,"mileage":0,"vin":"","color":"","nextServiceDate":"","notes":"","createdAt":""}],
+          "orders":[{"id":"o","vehicleId":"v","title":"Diagnóstico","category":"","status":"done",
+              "openedAt":"","completedAt":"","mileage":0,"description":"",
+              "partsCost":10.10,"laborCost":20.20,"charged":100.00,"paid":23.45,
+              "notes":"","createdAt":""}],
+          "settings":{"garageName":"Taller QA","currency":"ARS","demo":false}
+        })).unwrap();
+        write(&mut db,&data,0).unwrap();
+        assert_eq!(read(&db).unwrap().revision,1);
+        // SQL accepts a different monetary projection because all CHECK/FK
+        // constraints are satisfied; our semantic reader must fail closed.
+        db.execute("UPDATE orders SET charged_cents=9999 WHERE id='o'",[]).unwrap();
+        let check:String=db.query_row("PRAGMA integrity_check",[],|r|r.get(0)).unwrap();
+        assert_eq!(check,"ok");
+        assert!(read(&db).unwrap_err().contains("inconsistentes"));
+        // A caller cannot silently heal or overwrite corrupted SQL with a
+        // logically different JSON snapshot without revision checks.
+        db.execute("UPDATE orders SET charged_cents=10000 WHERE id='o'",[]).unwrap();
+        assert_eq!(read(&db).unwrap().revision,1);
+        db.execute("UPDATE vehicles SET plate='AG234CD' WHERE id='v'",[]).unwrap();
+        assert!(read(&db).unwrap_err().contains("inconsistentes"));
+        db.execute("UPDATE vehicles SET plate='AF123BC' WHERE id='v'",[]).unwrap();
+        db.execute("UPDATE clients SET name='Otra persona' WHERE id='c'",[]).unwrap();
+        assert!(read(&db).unwrap_err().contains("inconsistentes"));
+        db.execute("UPDATE clients SET name='Cliente sintético' WHERE id='c'",[]).unwrap();
+        assert_eq!(read(&db).unwrap().revision,1);
     }
     #[test]
     fn financial_ledger_validation_never_partially_mutates_persisted_state(){
