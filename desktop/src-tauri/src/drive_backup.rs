@@ -399,7 +399,10 @@ pub(crate) fn seal(result:&backup::BackupResult,dest:&Path,pass:&SecretString)->
         crate::drive_transport::publish_verified_cipher(&staged,&target)?;
         Ok(())
     })();
-    if job.is_err(){let _=fs::remove_file(&staged);}
+    // A successful hard-link publication leaves the staging name alive.
+    // Delete that name in *both* outcomes; the verified destination has its
+    // own filesystem link and remains valid after staging cleanup.
+    let _=fs::remove_file(&staged);
     job?;
     Ok(target)
 }
@@ -669,6 +672,8 @@ mod tests {
         let pair=backup::backup_pair(&conn,&primary,"fixture").unwrap();
         let password=SecretString::from("una clave de prueba larga y privada".to_owned());
         let cloud=seal(&pair,&drive,&password).unwrap();
+        assert_eq!(fs::read_dir(&drive).unwrap().count(),1,
+            "successful encrypted sealing must not leave extra staging copies");
         let raw=fs::read(&cloud).unwrap();
         assert!(!raw.windows(b"Cliente protegido".len()).any(|chunk|chunk==b"Cliente protegido"));
         assert!(!raw.windows(b"SQLite format 3".len()).any(|chunk|chunk==b"SQLite format 3"));
