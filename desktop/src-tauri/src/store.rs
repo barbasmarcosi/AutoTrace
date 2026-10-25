@@ -351,22 +351,31 @@ pub(crate) fn read(conn: &Connection) -> Result<Snapshot, String> {
     Ok(Snapshot { data, revision: current_revision(conn)? })
 }
 
-/// Remove records absent from the submitted snapshot. Deletion is ordered from
-/// child to parent to preserve FK integrity, while existing IDs retain their rowid.
-fn remove_deleted(conn:&Connection,table:&str,expected:&HashSet<&str>)->Result<(),String>{
-    let (select,remove)=match table{
-        "orders"=>("SELECT id FROM orders","DELETE FROM orders WHERE id=?1"),
-        "vehicles"=>("SELECT id FROM vehicles","DELETE FROM vehicles WHERE id=?1"),
-        "clients"=>("SELECT id FROM clients","DELETE FROM clients WHERE id=?1"),
+/// Load each table once under the same IMMEDIATE transaction. Avoid 50k
+/// repeated UPSERT statements on a single-field edit of a large workshop.
+fn stored_records(conn:&Connection,table:&str)->Result<HashMap<String,String>,String>{
+    let sql=match table{
+        "orders"=>"SELECT id,record_json FROM orders",
+        "vehicles"=>"SELECT id,record_json FROM vehicles",
+        "clients"=>"SELECT id,record_json FROM clients",
         _=>return Err("Entidad de persistencia no soportada".into()),
     };
-    let existing={
-        let mut stmt=conn.prepare(select).map_err(sqlite_error)?;
-        let rows=stmt.query_map([],|r|r.get::<_,String>(0)).map_err(sqlite_error)?;
-        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(sqlite_error)?
+    let mut stmt=conn.prepare(sql).map_err(sqlite_error)?;
+    let rows=stmt.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))
+        .map_err(sqlite_error)?;
+    rows.collect::<rusqlite::Result<HashMap<_,_>>>().map_err(sqlite_error)
+}
+/// Remove records absent from the submitted snapshot. Deletion is ordered from
+/// child to parent to preserve FK integrity, while existing IDs retain rowid.
+fn remove_deleted(conn:&Connection,table:&str,stored:&HashMap<String,String>,expected:&HashSet<&str>)->Result<(),String>{
+    let sql=match table{
+        "orders"=>"DELETE FROM orders WHERE id=?1",
+        "vehicles"=>"DELETE FROM vehicles WHERE id=?1",
+        "clients"=>"DELETE FROM clients WHERE id=?1",
+        _=>return Err("Entidad de persistencia no soportada".into()),
     };
-    let mut delete=conn.prepare(remove).map_err(sqlite_error)?;
-    for id in existing{
+    let mut delete=conn.prepare(sql).map_err(sqlite_error)?;
+    for id in stored.keys(){
         if !expected.contains(id.as_str()){delete.execute([id]).map_err(sqlite_error)?;}
     }
     Ok(())
@@ -412,9 +421,14 @@ pub(crate) fn write(conn: &mut Connection, data: &AppData, expected_revision: u6
     let client_ids:HashSet<&str>=data.clients.iter().map(|c|c.id.as_str()).collect();
     let vehicle_ids:HashSet<&str>=data.vehicles.iter().map(|v|v.id.as_str()).collect();
     let order_ids:HashSet<&str>=data.orders.iter().map(|o|o.id.as_str()).collect();
-    remove_deleted(&tx,"orders",&order_ids)?;
-    remove_deleted(&tx,"vehicles",&vehicle_ids)?;
-    remove_deleted(&tx,"clients",&client_ids)?;
+    // Snapshot IDs and JSON once per transaction before any plate placeholders
+    // or ordered deletions. No stale cache survives between revisions.
+    let stored_clients=stored_records(&tx,"clients")?;
+    let stored_vehicles=stored_records(&tx,"vehicles")?;
+    let stored_orders=stored_records(&tx,"orders")?;
+    remove_deleted(&tx,"orders",&stored_orders,&order_ids)?;
+    remove_deleted(&tx,"vehicles",&stored_vehicles,&vehicle_ids)?;
+    remove_deleted(&tx,"clients",&stored_clients,&client_ids)?;
     {
         let mut stmt=tx.prepare(
             "INSERT INTO clients(id,name,record_json) VALUES (?1,?2,?3)
@@ -422,8 +436,9 @@ pub(crate) fn write(conn: &mut Connection, data: &AppData, expected_revision: u6
              WHERE clients.record_json!=excluded.record_json OR clients.name!=excluded.name"
         ).map_err(sqlite_error)?;
         for c in &data.clients{
-            stmt.execute(params![c.id,c.name,serde_json::to_string(c).map_err(sqlite_error)?])
-                .map_err(sqlite_error)?;
+            let json=serde_json::to_string(c).map_err(sqlite_error)?;
+            if stored_clients.get(&c.id).is_some_and(|saved|saved==&json){continue;}
+            stmt.execute(params![c.id,c.name,json]).map_err(sqlite_error)?;
         }
     }
     release_changed_vehicle_plates(&tx,data)?;
@@ -436,8 +451,9 @@ pub(crate) fn write(conn: &mut Connection, data: &AppData, expected_revision: u6
                vehicles.client_id!=excluded.client_id OR vehicles.plate!=excluded.plate"
         ).map_err(sqlite_error)?;
         for v in &data.vehicles{
-            stmt.execute(params![v.id,v.client_id,v.plate,serde_json::to_string(v).map_err(sqlite_error)?])
-                .map_err(sqlite_error)?;
+            let json=serde_json::to_string(v).map_err(sqlite_error)?;
+            if stored_vehicles.get(&v.id).is_some_and(|saved|saved==&json){continue;}
+            stmt.execute(params![v.id,v.client_id,v.plate,json]).map_err(sqlite_error)?;
         }
     }
     {
@@ -454,10 +470,12 @@ pub(crate) fn write(conn: &mut Connection, data: &AppData, expected_revision: u6
                orders.parts_cents!=excluded.parts_cents OR orders.labor_cents!=excluded.labor_cents"
         ).map_err(sqlite_error)?;
         for o in &data.orders{
+            let json=serde_json::to_string(o).map_err(sqlite_error)?;
+            if stored_orders.get(&o.id).is_some_and(|saved|saved==&json){continue;}
             stmt.execute(params![
                 o.id,o.vehicle_id,o.status,cents(o.charged,"importe")?,
                 cents(o.paid,"pagado")?,cents(o.parts_cost,"repuestos")?,
-                cents(o.labor_cost,"mano de obra")?,serde_json::to_string(o).map_err(sqlite_error)?
+                cents(o.labor_cost,"mano de obra")?,json
             ]).map_err(sqlite_error)?;
         }
     }
@@ -611,8 +629,18 @@ mod tests {
             BEGIN SELECT RAISE(ABORT,'unexpected vehicle update'); END;
             CREATE TRIGGER deny_order_update BEFORE UPDATE ON orders
             BEGIN SELECT RAISE(ABORT,'unexpected order update'); END;
+            CREATE TRIGGER deny_client_insert BEFORE INSERT ON clients
+            BEGIN SELECT RAISE(ABORT,'unexpected client insert'); END;
+            CREATE TRIGGER deny_vehicle_insert BEFORE INSERT ON vehicles
+            BEGIN SELECT RAISE(ABORT,'unexpected vehicle insert'); END;
+            CREATE TRIGGER deny_order_insert BEFORE INSERT ON orders
+            BEGIN SELECT RAISE(ABORT,'unexpected order insert'); END;
         ").unwrap();
         assert_eq!(write(&mut db,&data,1).unwrap().revision,2);
+        // Existing rows must be skipped before even attempting INSERT; an
+        // ON CONFLICT WHERE false still fires SQLite's BEFORE INSERT trigger.
+        db.execute_batch("DROP TRIGGER deny_client_insert; DROP TRIGGER deny_vehicle_insert;
+                          DROP TRIGGER deny_order_insert;").unwrap();
         // Editing a client MUST NOT touch a vehicle or its order.
         data.clients[0].name="Cliente Renombrado".into();
         assert_eq!(write(&mut db,&data,2).unwrap().revision,3);
