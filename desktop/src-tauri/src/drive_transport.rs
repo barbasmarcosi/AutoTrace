@@ -223,6 +223,23 @@ pub(crate) fn download(token:&str,id:&str,destination:&Path)->Result<(),String>{
     let expected_md5=selected.md5_checksum.as_deref().ok_or("Drive no devolvió checksum del archivo")?;
     receive_verified(response,size,expected_md5,destination)
 }
+/// Publish only a completely written and verified encrypted file. A hard
+/// link is an atomic no-replace operation on NTFS/POSIX, unlike a check-then-
+/// rename sequence (Unix rename may overwrite another process' destination).
+/// Both paths are on the same volume because the staging file is a sibling.
+/// Unsupported filesystems fail closed; they never expose a partial archive.
+fn publish_verified_cipher(stage:&Path,destination:&Path)->Result<(),String>{
+    if stage.parent()!=destination.parent(){
+        return Err("El respaldo cifrado debe publicarse en la misma unidad temporal".into());
+    }
+    fs::hard_link(stage,destination).map_err(|e|{
+        if e.kind()==std::io::ErrorKind::AlreadyExists{
+            "Otro proceso ya creó el respaldo de destino. No se sobrescribió.".into()
+        }else{
+            format!("No se pudo publicar el respaldo de forma atómica en este disco: {e}")
+        }
+    })
+}
 /// Write only to an exclusive staging file; publish the downloaded ciphertext
 /// after comparing the exact remote size and checksum. Any network or integrity
 /// failure removes the temporary file and leaves the destination unchanged.
@@ -248,8 +265,9 @@ fn receive_verified<R:Read>(stream:R,size:u64,expected_md5:&str,destination:&Pat
     if file_md5(&stage)?.to_ascii_lowercase()!=expected_md5.to_ascii_lowercase(){
         return Err("Google devolvió una copia con checksum distinto".into());
     }
-    if destination.exists(){return Err("Otro proceso creó el archivo destino: no se sobrescribió".into());}
-    fs::rename(&stage,destination).map_err(|e|e.to_string())?;
+    publish_verified_cipher(&stage,destination)?;
+    // The completed ciphertext is now visible via a fully written hard-link.
+    // Deleting the private staging name leaves the destination's bytes intact.
     drop(guard);
     Ok(())
 }
@@ -384,6 +402,28 @@ mod tests{
         assert!(receive_verified(&b"overwrite"[..],9,&md5,&destination).is_err());
         assert_eq!(fs::read(&destination).unwrap(),data);
         fs::remove_dir_all(dir).unwrap();
+    }
+    #[test] fn atomic_download_publication_refuses_races_and_never_exposes_partial_bytes(){
+        let dir=std::env::temp_dir().join(format!("autotrace-download-atomic-{}",uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let stage=dir.join(".complete-ciphertext.partial");
+        let destination=dir.join("download.atbackup.age");
+        fs::write(&stage,b"verified-complete-ciphertext").unwrap();
+        // Simulate a second process winning the destination race between
+        // initial existence check and atomic final publication.
+        fs::write(&destination,b"older-valid-ciphertext").unwrap();
+        assert!(publish_verified_cipher(&stage,&destination).is_err());
+        assert_eq!(fs::read(&destination).unwrap(),b"older-valid-ciphertext");
+        assert_eq!(fs::read(&stage).unwrap(),b"verified-complete-ciphertext");
+        fs::remove_file(&destination).unwrap();
+        publish_verified_cipher(&stage,&destination).unwrap();
+        assert_eq!(fs::read(&destination).unwrap(),b"verified-complete-ciphertext");
+        assert!(publish_verified_cipher(&stage,&destination).is_err(),
+            "duplicate final publication must never silently replace a download");
+        fs::remove_file(&stage).unwrap();
+        assert_eq!(fs::read(&destination).unwrap(),b"verified-complete-ciphertext",
+            "unlinking staging must not invalidate an atomically published ciphertext");
+        fs::remove_dir_all(&dir).unwrap();
     }
     #[test] fn only_one_matching_remote_backup_may_be_reused(){
         let good=CloudFile{
