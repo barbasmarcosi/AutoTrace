@@ -27,10 +27,10 @@ function Install-Quiet([string] $path, [string] $label) {
 }
 
 function Verify-SyntheticState([string] $phase) {
-    if (-not (Test-Path -LiteralPath $database)) { throw "$phase: persisted SQLite disappeared" }
+    if (-not (Test-Path -LiteralPath $database)) { throw "${phase}: persisted SQLite disappeared" }
     & python $verifier verify $database $evidence
-    if ($LASTEXITCODE -ne 0) { throw "$phase: historical SQLite lost integrity" }
-    Write-Host "$phase: v1 SQLite and monetary balances survived"
+    if ($LASTEXITCODE -ne 0) { throw "${phase}: historical SQLite lost integrity" }
+    Write-Host "${phase}: v1 SQLite and monetary balances survived"
 }
 
 if (Test-Path -LiteralPath $database) {
