@@ -228,7 +228,7 @@ pub(crate) fn download(token:&str,id:&str,destination:&Path)->Result<(),String>{
 /// rename sequence (Unix rename may overwrite another process' destination).
 /// Both paths are on the same volume because the staging file is a sibling.
 /// Unsupported filesystems fail closed; they never expose a partial archive.
-fn publish_verified_cipher(stage:&Path,destination:&Path)->Result<(),String>{
+pub(crate) fn publish_verified_cipher(stage:&Path,destination:&Path)->Result<(),String>{
     if stage.parent()!=destination.parent(){
         return Err("El respaldo cifrado debe publicarse en la misma unidad temporal".into());
     }
