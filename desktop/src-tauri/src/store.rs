@@ -147,6 +147,14 @@ fn open(path: &std::path::Path) -> Result<Connection, String> {
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).map_err(sqlite_error)?;
     if version > 1 { return Err("La base de datos es de una versión más reciente. No se modificó.".into()); }
     if version == 0 {
+        // A new DB has no schema. Never retrofit an unrelated or damaged
+        // pre-existing SQLite file by silently creating AutoTrace tables.
+        let existing_objects:i64=conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'",
+            [],|r|r.get(0)).map_err(sqlite_error)?;
+        if existing_objects!=0 {
+            return Err("La base existente contiene objetos sin versión AutoTrace. No se modificó.".into());
+        }
         conn.execute_batch(&format!("BEGIN IMMEDIATE;\n{SCHEMA}\nCOMMIT;"))
             .map_err(sqlite_error)?;
     }
@@ -480,6 +488,54 @@ pub fn save_state(app: tauri::AppHandle, data: AppData, expected_revision: u64) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn persisted_v1_sqlite_survives_reopen_and_future_version_is_byte_identical(){
+        let base=std::env::temp_dir().join(format!("autotrace-schema-upgrade-{}",uuid::Uuid::new_v4()));
+        fs::create_dir(&base).unwrap();
+        let file=base.join("autotrace.sqlite3");
+        let mut db=open(&file).unwrap();
+        let v1:AppData=serde_json::from_value(serde_json::json!({
+            "clients":[{"id":"c1","name":"Cliente histórico","phone":"","email":"","notes":"","createdAt":""}],
+            "vehicles":[{"id":"v1","clientId":"c1","plate":"AF123BC","make":"Ford","model":"Fiesta",
+                         "year":2018,"mileage":12000,"vin":"","color":"","nextServiceDate":"",
+                         "notes":"","createdAt":""}],
+            "orders":[{"id":"o1","vehicleId":"v1","title":"Trabajo legado","category":"","status":"received",
+                       "openedAt":"","completedAt":"","mileage":12000,"description":"",
+                       "partsCost":23.45,"laborCost":12.0,"charged":40.0,"paid":10.0,
+                       "notes":"","createdAt":""}],
+            "settings":{"garageName":"Taller histórico","currency":"ARS","demo":false}
+        })).unwrap();
+        write(&mut db,&v1,0).unwrap();
+        let saved=serde_json::to_value(&v1).unwrap();
+        drop(db);
+        let reopened=open(&file).unwrap();
+        let snapshot=read(&reopened).unwrap();
+        assert_eq!(snapshot.revision,1);
+        assert_eq!(serde_json::to_value(snapshot.data).unwrap(),saved);
+        drop(reopened);
+        let future=Connection::open(&file).unwrap();
+        future.execute_batch("PRAGMA user_version=2;").unwrap();
+        drop(future);
+        let before=fs::read(&file).unwrap();
+        assert!(open(&file).is_err(),"a newer version must not be migrated backwards");
+        assert_eq!(fs::read(&file).unwrap(),before,"rejected future schema must stay byte-for-byte intact");
+        fs::remove_dir_all(base).unwrap();
+    }
+    #[test]
+    fn unversioned_nonempty_sqlite_is_rejected_without_touching_any_bytes(){
+        let base=std::env::temp_dir().join(format!("autotrace-foreign-schema-{}",uuid::Uuid::new_v4()));
+        fs::create_dir(&base).unwrap();
+        let file=base.join("autotrace.sqlite3");
+        let foreign=Connection::open(&file).unwrap();
+        foreign.execute_batch("CREATE TABLE unrelated(id INTEGER PRIMARY KEY, note TEXT); INSERT INTO unrelated(note) VALUES('synthetic');").unwrap();
+        assert_eq!(foreign.pragma_query_value(None,"user_version",|r|r.get::<_,i64>(0)).unwrap(),0);
+        drop(foreign);
+        let before=fs::read(&file).unwrap();
+        let err=open(&file).err().expect("version-less foreign data must fail closed");
+        assert!(err.contains("sin versión AutoTrace"));
+        assert_eq!(fs::read(&file).unwrap(),before,"foreign database must remain completely unchanged");
+        fs::remove_dir_all(base).unwrap();
+    }
     #[test]
     fn empty_database_starts_without_demo_and_preserves_revision() {
         let mut db = Connection::open_in_memory().unwrap();
