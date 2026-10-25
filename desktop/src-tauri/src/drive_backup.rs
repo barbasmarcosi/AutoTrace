@@ -339,8 +339,7 @@ fn copy_verified_cipher(cipher:&Path,destination:&Path)->Result<(),String>{
         Ok(h.finalize().to_vec())
     }
     if hash(&temp)?!=hash(cipher)?{return Err("El medio externo no conservó íntegro el archivo cifrado.".into());}
-    if destination.exists(){return Err("Otro proceso creó el archivo de destino: no se sobrescribió.".into());}
-    fs::rename(&temp,destination).map_err(|e|e.to_string())?;
+    crate::drive_transport::publish_verified_cipher(&temp,destination)?;
     Ok(())
 }
 pub(crate) fn test_archive_at(path:&Path,passphrase:&str)->Result<backup::RecoveryTestResult,String>{
@@ -397,7 +396,7 @@ pub(crate) fn seal(result:&backup::BackupResult,dest:&Path,pass:&SecretString)->
         // Never claim success for a ciphertext we cannot recover.
         let recovered=read_archive(&staged,pass.expose_secret_for_restore())?;
         drop(recovered);
-        fs::rename(&staged,&target).map_err(|e|e.to_string())?;
+        crate::drive_transport::publish_verified_cipher(&staged,&target)?;
         Ok(())
     })();
     if job.is_err(){let _=fs::remove_file(&staged);}
@@ -627,6 +626,24 @@ mod tests {
             .filter_map(Result::ok).filter(|f|f.file_name().to_string_lossy().ends_with(".partial")).count();
         assert_eq!(partials,0,"no partial files after successful or rejected export");
         fs::remove_dir_all(folder).unwrap();
+    }
+    #[test]
+    fn ciphertext_promotion_refuses_concurrent_destination_without_corrupting_it(){
+        let root=std::env::temp_dir().join(format!("autotrace-portable-race-{}",uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let source=root.join("source-encrypted.age");
+        let dest=root.join("usb-existing.atbackup.age");
+        fs::write(&source,b"synthetic ciphertext").unwrap();
+        fs::write(&dest,b"other-process valid ciphertext").unwrap();
+        let existing=fs::read(&dest).unwrap();
+        assert!(copy_verified_cipher(&source,&dest).is_err());
+        assert_eq!(fs::read(&dest).unwrap(),existing,"a competing backup can never be clobbered");
+        assert_eq!(fs::read(&source).unwrap(),b"synthetic ciphertext");
+        assert_eq!(fs::read_dir(&root).unwrap().count(),2,"error cleanup must remove staging");
+        fs::remove_file(&dest).unwrap();
+        copy_verified_cipher(&source,&dest).unwrap();
+        assert_eq!(fs::read(&dest).unwrap(),b"synthetic ciphertext");
+        fs::remove_dir_all(&root).unwrap();
     }
     #[test]
     fn plain_and_encrypted_backup_folders_cannot_overlap(){
