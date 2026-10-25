@@ -80,3 +80,37 @@ test('presupuestos no tienen cobros y el JSON anterior sigue siendo válido',()=
   data.orders[0].documentKind='quote';
   assert.throws(()=>validateData(data),/presupuestos/);
 });
+
+test('rejects extra monetary decimals instead of silently rewriting an imported ledger',()=>{
+  for(const key of ['charged','paid','partsCost','laborCost']){
+    const d=fixture();d.orders[0][key]=key==='paid'?42.001:250.001;
+    assert.throws(()=>validateData(d),/más de dos decimales/,key);
+  }
+  const item=fixture();
+  item.orders[0].items=[{id:'line',kind:'part',description:'Repuesto',quantity:1.25,unitPrice:3.333}];
+  assert.throws(()=>validateData(item),/más de dos decimales/);
+  const payment=fixture();
+  payment.orders[0].payments=[{id:'p',date:'2026-10-22',amount:0.001,method:'cash',accountId:'',reference:''}];
+  assert.throws(()=>validateData(payment),/más de dos decimales/);
+});
+test('retains fractional quantities and mileage while preserving exact financial cents',()=>{
+  const d=fixture();
+  d.vehicles[0].mileage=125000.1234;
+  d.orders[0].mileage=125000.1234;
+  d.orders[0].items=[{id:'fluid',kind:'part',description:'Aceite fraccionario',quantity:1.2575,unitPrice:33.33}];
+  d.orders[0].charged=0.1+0.2+200;
+  d.orders[0].paid=0.1+0.2;
+  d.orders[0].payments=[{id:'p',date:'2026-10-22',amount:0.1+0.2,method:'cash',accountId:'',reference:''}];
+  const validated=validateData(d);
+  assert.equal(validated.orders[0].items[0].quantity,1.2575);
+  assert.equal(validated.vehicles[0].mileage,125000.1234);
+  assert.equal(validated.orders[0].mileage,125000.1234);
+  assert.equal(validated.orders[0].charged,200.30);
+  assert.equal(validated.orders[0].paid,0.30);
+  assert.equal(validated.orders[0].payments[0].amount,0.30);
+  assert.equal(historicalUnallocated(validated.orders[0]),0);
+});
+test('invalid order objects fail closed with meaningful validation errors',()=>{
+  const d=fixture(); d.orders[0]=null;
+  assert.throws(()=>validateData(d),/trabajos inválidos/);
+});

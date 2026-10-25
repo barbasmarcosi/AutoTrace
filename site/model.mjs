@@ -10,7 +10,10 @@ export const laborContribution = work => (work.items||[]).some(item=>item.kind==
 export const historicalUnallocated = work => Math.round((amount(work.paid)-(work.payments||[]).reduce((total,p)=>total+amount(p.amount),0))*100)/100;
 export function csvCell(value){let text=String(value??'');if(/^[\s]*[=+@-]/.test(text))text="'"+text;return `"${text.replace(/"/g,'""')}"`;}
 const str=(v,n=3000)=>typeof v==='string'?v.slice(0,n):'';
-const number=(value,label)=>{const n=Number(value);if(!Number.isFinite(n)||n<0||n>1e12)throw Error(`El campo ${label} tiene un valor numérico inválido.`);return Math.round(n*100)/100;};
+// Quantities and mileage retain their precision. Money is ALWAYS integer cents
+// after validation; silently rounding imported money corrupts historical ledgers.
+const number=(value,label)=>{const n=Number(value);if(!Number.isFinite(n)||n<0||n>1e12)throw Error(`El campo ${label} tiene un valor numérico inválido.`);return n;};
+const money=(value,label)=>{const n=number(value,label);const cents=n*100;const rounded=Math.round(cents);if(Math.abs(cents-rounded)>0.00001)throw Error(`El campo ${label} tiene más de dos decimales.`);return rounded/100;};
 const validDate = s => !s || (/^\d{4}-\d{2}-\d{2}$/.test(s) && !Number.isNaN(new Date(`${s}T12:00:00`).getTime()) && new Date(`${s}T12:00:00`).toISOString().slice(0,10)===s);
 const date=(v,label)=>{const s=str(v,10);if(!validDate(s))throw Error(`La fecha ${label} no es válida.`);return s;};
 function checkUnique(list,label){if(new Set(list.map(x=>x.id)).size!==list.length)throw Error(`Hay identificadores repetidos en ${label}.`);}
@@ -42,6 +45,7 @@ export function validateData(data){
   const vehicleIds=new Set(vehicles.map(v=>v.id));
   const validStatuses=new Set(['received','progress','waiting','done','delivered']);
   const orders=data.orders.map(o=>{
+    if(!o||typeof o!=='object')throw Error('Hay trabajos inválidos.');
     const rawLines=o.items===undefined?[]:o.items;
     if(!Array.isArray(rawLines)||rawLines.length>100)throw Error('El detalle del trabajo supera los 100 renglones.');
     const lineIds=new Set();
@@ -50,7 +54,7 @@ export function validateData(data){
       const id=str(item.id,100),kind=str(item.kind,20),description=str(item.description,1500);
       if(!id.trim()||!description.trim()||!['part','labor','other'].includes(kind)||lineIds.has(id))throw Error('Hay renglones incompletos o repetidos.');
       lineIds.add(id);
-      const quantity=number(item.quantity,'cantidad'),unitPrice=number(item.unitPrice,'valor unitario');
+      const quantity=number(item.quantity,'cantidad'),unitPrice=money(item.unitPrice,'valor unitario');
       if(quantity<=0||quantity>100000||quantity*unitPrice>1e12)throw Error('Cantidad o total del renglón fuera de rango.');
       return {id,kind,description,quantity,unitPrice};
     });
@@ -58,13 +62,13 @@ export function validateData(data){
     if(documentKind&&!['quote','work'].includes(documentKind))throw Error('Tipo de documento inválido.');
     if(sourceFingerprint&&!/^[0-9a-f]{64}$/.test(sourceFingerprint))throw Error('Identificador de archivo inválido.');
     if(!o||typeof o!=='object'||!str(o.id,100).trim()||!vehicleIds.has(o.vehicleId)||!str(o.title,150).trim()||!validStatuses.has(o.status))throw Error('Hay trabajos inválidos.');
-    const partsCost=number(o.partsCost,'costo de repuestos'),laborCost=number(o.laborCost,'costo de mano de obra'),charged=number(o.charged,'importe'),paid=number(o.paid,'pagado');
+    const partsCost=money(o.partsCost,'costo de repuestos'),laborCost=money(o.laborCost,'costo de mano de obra'),charged=money(o.charged,'importe'),paid=money(o.paid,'pagado');
     if(paid>charged)throw Error('Un trabajo tiene un pago mayor a su importe.');
     const rawPayments=o.payments??[];
     if(!Array.isArray(rawPayments)||rawPayments.length>200)throw Error('Historial de cobros inválido.');
     const payments=rawPayments.map(p=>{
       if(!p||typeof p!=='object'||!str(p.id,100).trim()||!validDate(p.date)||!p.date||!Object.hasOwn(PAYMENT_METHODS,p.method))throw Error('Cobro inválido.');
-      const amountPaid=number(p.amount,'cobro');
+      const amountPaid=money(p.amount,'cobro');
       if(amountPaid<=0||Math.abs(amountPaid-Number(p.amount))>0.000001)throw Error('Importe de cobro inválido.');
       const accountId=str(p.accountId,100),reference=str(p.reference,160);
       if(ELECTRONIC_METHODS.includes(p.method)&&!accountIds.has(accountId))throw Error('El cobro electrónico requiere una cuenta receptora registrada.');
