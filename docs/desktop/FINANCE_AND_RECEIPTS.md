@@ -12,6 +12,7 @@
 2. Elegir importe, fecha y medio: efectivo, transferencia, débito, crédito, QR/billetera u otro.
 3. Para transferencia, tarjeta o QR elegir la **cuenta propia receptora** (banco o billetera) o crear una nueva sin abandonar el flujo. Se puede adjuntar referencia/comprobante como texto no sensible.
 4. Los cobros se agregan individualmente a `order.payments[]` y actualizan `order.paid` sin permitir superar el monto acordado. El historial se muestra en la ficha y Finanzas suma por cuenta.
+5. El identificador de cada cobro es **único en todo el taller**, no solo dentro de su trabajo. La huella SHA-256 de un documento de origen tampoco puede asociarse a dos trabajos. La PWA y el motor SQLite rechazan duplicados antes de persistir para impedir contabilizaciones dobles; los registros históricos sin huella siguen admitidos.
 5. Las cuentas se administran desde Ajustes. No se eliminan en esta etapa, porque están referenciadas por el historial. Solo deben guardarse nombre, tipo y alias opcional, nunca contraseñas ni tokens.
 
 ## Datos históricos

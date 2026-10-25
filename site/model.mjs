@@ -44,6 +44,9 @@ export function validateData(data){
   const accountIds=new Set(accounts.map(a=>a.id));
   const vehicleIds=new Set(vehicles.map(v=>v.id));
   const validStatuses=new Set(['received','progress','waiting','done','delivered']);
+  // Prevent double counting when a document or payment event is assigned to
+  // two work orders, including imports and Desktop roundtrips.
+  const usedFingerprints=new Set(),usedPaymentIds=new Set();
   const orders=data.orders.map(o=>{
     if(!o||typeof o!=='object')throw Error('Hay trabajos inválidos.');
     const rawLines=o.items===undefined?[]:o.items;
@@ -61,6 +64,10 @@ export function validateData(data){
     const documentKind=str(o.documentKind,16),documentNumber=str(o.documentNumber,80),sourceFingerprint=str(o.sourceFingerprint,64);
     if(documentKind&&!['quote','work'].includes(documentKind))throw Error('Tipo de documento inválido.');
     if(sourceFingerprint&&!/^[0-9a-f]{64}$/.test(sourceFingerprint))throw Error('Identificador de archivo inválido.');
+    if(sourceFingerprint){
+      if(usedFingerprints.has(sourceFingerprint))throw Error('Documento de origen duplicado entre trabajos.');
+      usedFingerprints.add(sourceFingerprint);
+    }
     if(!o||typeof o!=='object'||!str(o.id,100).trim()||!vehicleIds.has(o.vehicleId)||!str(o.title,150).trim()||!validStatuses.has(o.status))throw Error('Hay trabajos inválidos.');
     const partsCost=money(o.partsCost,'costo de repuestos'),laborCost=money(o.laborCost,'costo de mano de obra'),charged=money(o.charged,'importe'),paid=money(o.paid,'pagado');
     if(paid>charged)throw Error('Un trabajo tiene un pago mayor a su importe.');
@@ -68,6 +75,8 @@ export function validateData(data){
     if(!Array.isArray(rawPayments)||rawPayments.length>200)throw Error('Historial de cobros inválido.');
     const payments=rawPayments.map(p=>{
       if(!p||typeof p!=='object'||!str(p.id,100).trim()||!validDate(p.date)||!p.date||!Object.hasOwn(PAYMENT_METHODS,p.method))throw Error('Cobro inválido.');
+      if(usedPaymentIds.has(p.id))throw Error('Cobro duplicado entre trabajos; revisá el historial antes de contabilizar.');
+      usedPaymentIds.add(p.id);
       const amountPaid=money(p.amount,'cobro');
       if(amountPaid<=0||Math.abs(amountPaid-Number(p.amount))>0.000001)throw Error('Importe de cobro inválido.');
       const accountId=str(p.accountId,100),reference=str(p.reference,160);

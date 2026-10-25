@@ -114,3 +114,22 @@ test('invalid order objects fail closed with meaningful validation errors',()=>{
   const d=fixture(); d.orders[0]=null;
   assert.throws(()=>validateData(d),/trabajos inválidos/);
 });
+
+test('prevents double counting across work orders with repeated payment IDs or imported document fingerprints',()=>{
+  const data=fixture();
+  data.orders.push({...data.orders[0],id:'o2'});
+  // Old manual records without a source fingerprint remain valid.
+  assert.equal(validateData(data).orders.length,2);
+  data.orders[0].sourceFingerprint='a'.repeat(64);
+  data.orders[1].sourceFingerprint='a'.repeat(64);
+  assert.throws(()=>validateData(data),/Documento de origen duplicado/);
+  data.orders[1].sourceFingerprint='b'.repeat(64);
+  data.orders[0].payments=[{id:'payment-global',date:'2026-10-22',amount:10,method:'cash',accountId:'',reference:''}];
+  data.orders[1].payments=[{...data.orders[0].payments[0]}];
+  assert.throws(()=>validateData(data),/Cobro duplicado entre trabajos/);
+  data.orders[1].payments[0].id='payment-distinct';
+  const valid=validateData(data);
+  assert.equal(valid.orders.length,2);
+  assert.equal(valid.orders[0].payments[0].id,'payment-global');
+  assert.equal(valid.orders[1].payments[0].id,'payment-distinct');
+});

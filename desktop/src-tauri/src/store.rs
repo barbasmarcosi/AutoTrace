@@ -254,6 +254,12 @@ pub(crate) fn validate(data: &AppData) -> Result<(), String> {
         }
     }
     let mut orders = HashSet::new();
+    // Payment IDs identify ledger events across the entire workshop, not just
+    // within a work order. A reused ID must never appear as two cash receipts.
+    let mut payment_ids = HashSet::new();
+    // A single imported workbook fingerprint cannot create two orders and
+    // consequently duplicate both revenue and receivables.
+    let mut source_fingerprints = HashSet::new();
     for o in &data.orders {
         valid_text(&o.id, 100, "trabajo.id", true)?;
         valid_text(&o.title, 150, "trabajo.titulo", true)?;
@@ -281,8 +287,11 @@ pub(crate) fn validate(data: &AppData) -> Result<(), String> {
            || !o.source_fingerprint.chars().all(|c|c.is_ascii_hexdigit() && !c.is_ascii_uppercase())){
             return Err("Huella digital del archivo inválida".into());
         }
+        if !o.source_fingerprint.is_empty() &&
+            !source_fingerprints.insert(o.source_fingerprint.as_str()) {
+            return Err("Documento de origen duplicado entre trabajos; se bloqueó la contabilización doble".into());
+        }
         if o.payments.len()>200 {return Err("Demasiados cobros para un trabajo".into());}
-        let mut payment_ids=HashSet::new();
         let mut detailed_cents=0_i64;
         for p in &o.payments {
             valid_text(&p.id,100,"cobro.id",true)?;
@@ -823,6 +832,37 @@ mod tests {
         let after=read(&db).unwrap();
         assert_eq!(after.data.orders[0].payments[0].amount,40.00);
         assert_eq!(after.data.settings.accounts.len(),1);
+
+        // Even a fully valid independent work cannot reuse a payment event.
+        // Reject the entire transaction, including attempts at importing the
+        // same legacy document twice under a different order ID.
+        let persisted=serde_json::to_value(&after.data).unwrap();
+        let mut copied=data.clone();
+        let mut duplicate=copied.orders[0].clone();
+        duplicate.id="o-copy".into();
+        copied.orders.push(duplicate);
+        let err=write(&mut db,&copied,2).unwrap_err();
+        assert!(err.contains("Cobro duplicado"),"{err}");
+        let snap=read(&db).unwrap();
+        assert_eq!(snap.revision,2);
+        assert_eq!(serde_json::to_value(snap.data).unwrap(),persisted);
+
+        copied.orders[0].source_fingerprint="a".repeat(64);
+        copied.orders[1].source_fingerprint="a".repeat(64);
+        copied.orders[1].payments[0].id="p-copy".into();
+        let err=write(&mut db,&copied,2).unwrap_err();
+        assert!(err.contains("Documento de origen duplicado"),"{err}");
+        let snap=read(&db).unwrap();
+        assert_eq!(snap.revision,2);
+        assert_eq!(serde_json::to_value(snap.data).unwrap(),persisted);
+
+        // Distinct event/document identities are still valid and transactional.
+        copied.orders[1].source_fingerprint="b".repeat(64);
+        assert_eq!(write(&mut db,&copied,2).unwrap().revision,3);
+        let restored=read(&db).unwrap();
+        assert_eq!(restored.data.orders.len(),2);
+        assert_eq!(restored.data.orders[0].payments[0].id,"p");
+        assert_eq!(restored.data.orders[1].payments[0].id,"p-copy");
     }
 
     #[test]
