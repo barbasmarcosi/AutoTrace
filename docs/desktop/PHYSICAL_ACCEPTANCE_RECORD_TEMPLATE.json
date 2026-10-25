@@ -1,0 +1,21 @@
+{
+  "schema": "autotrace-physical-acceptance-record-v1",
+  "releaseCommitSha": "PENDING",
+  "installerSha256": "PENDING",
+  "windowsA": "PENDING",
+  "windowsB": "PENDING",
+  "mediaFileSystem": "PENDING",
+  "recordedAtUtc": "PENDING",
+  "operatorAttestation": "NOT_COMPLETED",
+  "gates": {
+    "U0": "PENDING",
+    "U1": "PENDING",
+    "U2": "PENDING",
+    "U3": "PENDING",
+    "U4": "PENDING",
+    "U5": "BLOCKED",
+    "U6": "PENDING",
+    "U7": "PENDING"
+  },
+  "notes": "Solo datos sintéticos; no incluir nombres, rutas, números de disco, contraseñas, tokens ni Excel/SQLite en este registro. Los preflights no establecen U=PASS."
+}
