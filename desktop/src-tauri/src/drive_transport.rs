@@ -67,6 +67,9 @@ fn list_query(client:&Client,token:&str,q:&str,fields:&str)->Result<Vec<serde_js
 fn folder(client:&Client,token:&str)->Result<String,String>{
     let q="trashed = false and mimeType = 'application/vnd.google-apps.folder' and appProperties has { key='autotraceKind' and value='backups' }";
     let list=list_query(client,token,q,"nextPageToken,files(id,name)")?;
+    // Two tagged backup folders are ambiguous: never silently split a
+    // recoverable history between them.
+    if list.len()>1{return Err("Hay varias carpetas AutoTrace en Drive. Revisalas antes de continuar para no dividir los respaldos.".into());}
     if let Some(f)=list.first(){return Ok(identifier(f["id"].as_str().ok_or("Carpeta sin ID")?)?.to_owned());}
     let create=serde_json::json!({
         "name":"AutoTrace Backups","mimeType":"application/vnd.google-apps.folder",
@@ -107,6 +110,15 @@ fn next_offset(range:Option<&str>,size:u64)->Result<u64,String>{
         .parse::<u64>().map_err(|_|"Rango de subida inválido")?;
     if v>=size{return Err("Rango confirmado excede el archivo".into());}
     Ok(v+1)
+}
+/// Never accept a server acknowledgement for bytes that this client did
+/// not actually attempt to upload. This is checked both for 308 and probes.
+fn acknowledged_offset(range:Option<&str>,size:u64,last_sent_end:u64)->Result<u64,String>{
+    let offset=next_offset(range,size)?;
+    if offset>last_sent_end.saturating_add(1){
+        return Err("Drive confirmó bytes fuera del fragmento enviado. No se puede verificar la copia.".into());
+    }
+    Ok(offset)
 }
 pub(crate) fn upload(token:&str,path:&Path)->Result<String,String>{
     let client=http()?;
@@ -168,7 +180,7 @@ fn upload_chunks(client:&Client,token:&str,url:&Url,path:&Path,size:u64,chunk_si
                 id=Some(identifier(doc["id"].as_str().ok_or("Falta ID de subida")?)?.to_owned());break;
             },
             Ok(r) if r.status().as_u16()==308=>{
-                let new=next_offset(r.headers().get(RANGE).and_then(|x|x.to_str().ok()),size)?;
+                let new=acknowledged_offset(r.headers().get(RANGE).and_then(|x|x.to_str().ok()),size,end)?;
                 if new<=offset {
                     // Google may return 308 without Range before persisting a chunk.
                     // Do not claim progress; retry after a bounded status probe.
@@ -188,7 +200,7 @@ fn upload_chunks(client:&Client,token:&str,url:&Url,path:&Path,size:u64,chunk_si
                 .header(CONTENT_RANGE,format!("bytes */{size}"))
                 .header(CONTENT_LENGTH,"0").send().map_err(|_|"No se pudo reanudar la carga")?;
             if probe.status().as_u16()==308{
-                offset=next_offset(probe.headers().get(RANGE).and_then(|x|x.to_str().ok()),size)?;
+                offset=acknowledged_offset(probe.headers().get(RANGE).and_then(|x|x.to_str().ok()),size,end)?;
             }else if probe.status().is_success(){
                 let doc:serde_json::Value=probe.json().map_err(|_|"Confirmación remota inválida")?;
                 id=Some(identifier(doc["id"].as_str().ok_or("Falta ID remoto")?)?.to_owned());break;
@@ -382,6 +394,14 @@ mod tests{
         assert_eq!(already_uploaded(&[good.clone()],&good.name,123,&"a".repeat(32)).unwrap(),Some(good.id.clone()));
         assert!(already_uploaded(&[good.clone()],&good.name,124,&"a".repeat(32)).is_err());
         assert!(already_uploaded(&[good.clone(),good.clone()],&good.name,123,&"a".repeat(32)).is_err());
+    }
+    #[test] fn rejects_remote_acknowledgements_for_unsent_chunks(){
+        assert_eq!(acknowledged_offset(Some("bytes=0-3"),8,3).unwrap(),4);
+        assert_eq!(acknowledged_offset(None,8,3).unwrap(),0);
+        // The server cannot skip from the first 4 bytes to byte 7.
+        assert!(acknowledged_offset(Some("bytes=0-7"),8,3).is_err());
+        // A later 308 probe is also forbidden to acknowledge unsent bytes.
+        assert!(acknowledged_offset(Some("bytes=0-95"),100,31).is_err());
     }
     #[test] fn ranges_and_ids_are_checked(){
         assert_eq!(next_offset(None,20).unwrap(),0);
