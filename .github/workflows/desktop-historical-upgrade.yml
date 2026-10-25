@@ -14,6 +14,10 @@ on:
       - 'tests/**'
       - 'site/**'
       - '.github/workflows/desktop-historical-upgrade.yml'
+      - '.github/workflows/desktop-installer.yml'
+      - 'scripts/verify-acceptance-installer.ps1'
+      - 'docs/desktop/ACCEPTANCE_PACKAGE_U0_U7.md'
+      - 'docs/desktop/PHYSICAL_ACCEPTANCE_RECORD_TEMPLATE.json'
   workflow_dispatch:
     inputs:
       baseline_artifact_id:

@@ -25,6 +25,10 @@ jobs:
     timeout-minutes: 75
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # PR events default to a synthetic merge ref; release evidence must
+          # use the exact reviewed source commit instead.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable verified 2026-10-24
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
@@ -59,12 +63,79 @@ jobs:
       - name: Silent installation and uninstallation smoke (ephemeral runner)
         shell: pwsh
         run: ./desktop/scripts/smoke-installer.ps1
-      - name: Upload preview installer (UNSIGNED)
+      - name: Assemble and test offline physical acceptance kit (NO customer data)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dir = 'desktop/src-tauri/target/release/bundle/nsis'
+          $exes = @(Get-ChildItem $dir -File -Filter '*-setup.exe')
+          if ($exes.Count -ne 1) { throw "Expected exactly one NSIS installer" }
+          $exe = $exes[0]
+          $sha = (Get-FileHash -LiteralPath $exe.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          $checkoutSha = (& git rev-parse HEAD).Trim().ToLowerInvariant()
+          $expectedSourceSha = '${{ github.event.pull_request.head.sha || github.sha }}'
+          if ($checkoutSha -cne $expectedSourceSha -or $checkoutSha -notmatch '^[a-f0-9]{40}$') {
+            throw "Checkout SHA differs from reviewed PR HEAD; provenance manifest rejected"
+          }
+          $record = [ordered]@{
+            schema = 'autotrace-installer-preflight-v1'
+            repository = 'barbasmarcosi/AutoTrace'
+            commitSha = $checkoutSha
+            workflowRunId = $env:GITHUB_RUN_ID
+            installerKind = 'windows-nsis-preview'
+            installerName = $exe.Name
+            installerBytes = [long]$exe.Length
+            installerSha256 = $sha
+            signed = $false
+          }
+          $manifest = Join-Path $dir 'autotrace-release-manifest.json'
+          [System.IO.File]::WriteAllText(
+            (Join-Path (Get-Location) $manifest),
+            ($record | ConvertTo-Json -Depth 4),
+            (New-Object System.Text.UTF8Encoding($false))
+          )
+          Copy-Item scripts/verify-acceptance-installer.ps1 (Join-Path $dir 'verify-acceptance-installer.ps1')
+          Copy-Item scripts/collect-physical-recovery-evidence.ps1 (Join-Path $dir 'collect-physical-recovery-evidence.ps1')
+          Copy-Item docs/desktop/ACCEPTANCE_PACKAGE_U0_U7.md (Join-Path $dir 'ACCEPTANCE_PACKAGE_U0_U7.md')
+          Copy-Item docs/desktop/PHYSICAL_ACCEPTANCE_RECORD_TEMPLATE.json (Join-Path $dir 'PHYSICAL_ACCEPTANCE_RECORD_TEMPLATE.json')
+          $check = Join-Path $dir 'verify-acceptance-installer.ps1'
+          & $check -Installer $exe.FullName -Manifest $manifest -ExpectedCommit $checkoutSha -EvidenceFile (Join-Path $env:RUNNER_TEMP 'acceptance-preflight-ci.json')
+          if (-not (Test-Path (Join-Path $env:RUNNER_TEMP 'acceptance-preflight-ci.json'))) {
+            throw 'Sanitized preflight evidence was not created'
+          }
+          # NEGATIVE: metadata edited or a wrong SHA must never yield a PASS.
+          $rejected = $false
+          try { & $check -Installer $exe.FullName -Manifest $manifest -ExpectedCommit ('0' * 40) | Out-Null }
+          catch { $rejected = $true }
+          if (-not $rejected) { throw 'Wrong GitHub commit was accepted by preflight' }
+          # NEGATIVE: an installer modified after its manifest is created.
+          $tamperDir = Join-Path $env:RUNNER_TEMP 'tampered-autotrace'
+          New-Item -ItemType Directory -Path $tamperDir -Force | Out-Null
+          $tampered = Join-Path $tamperDir $exe.Name
+          Copy-Item -LiteralPath $exe.FullName -Destination $tampered
+          $file = [System.IO.File]::Open($tampered,[System.IO.FileMode]::Open,[System.IO.FileAccess]::ReadWrite)
+          try {
+            [void]$file.Seek(4096,[System.IO.SeekOrigin]::Begin)
+            $original = $file.ReadByte()
+            [void]$file.Seek(4096,[System.IO.SeekOrigin]::Begin)
+            $file.WriteByte([byte]($original -bxor 1))
+          } finally { $file.Dispose() }
+          $rejected = $false
+          try { & $check -Installer $tampered -Manifest $manifest -ExpectedCommit $checkoutSha | Out-Null }
+          catch { $rejected = $true }
+          if (-not $rejected) { throw 'Modified installer passed checksum verification' }
+          Write-Host 'ACCEPTANCE KIT PASS: trusted SHA, checksum and tamper rejection. Physical U0-U7 remain pending.'
+      - name: Upload preview installer + acceptance kit (UNSIGNED)
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: autotrace-desktop-windows-preview-unsigned
           path: |
             desktop/src-tauri/target/release/bundle/nsis/*.exe
             desktop/src-tauri/target/release/bundle/nsis/*.sha256.txt
+            desktop/src-tauri/target/release/bundle/nsis/autotrace-release-manifest.json
+            desktop/src-tauri/target/release/bundle/nsis/verify-acceptance-installer.ps1
+            desktop/src-tauri/target/release/bundle/nsis/collect-physical-recovery-evidence.ps1
+            desktop/src-tauri/target/release/bundle/nsis/ACCEPTANCE_PACKAGE_U0_U7.md
+            desktop/src-tauri/target/release/bundle/nsis/PHYSICAL_ACCEPTANCE_RECORD_TEMPLATE.json
           retention-days: 7
           if-no-files-found: error
