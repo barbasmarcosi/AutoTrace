@@ -96,9 +96,26 @@ try{
   await page.locator('[name="drivePassphraseRepeat"]').fill('different-long-test-phrase');
   await page.locator('#entity-form [type="submit"]').click();
   assert.equal((await page.evaluate(()=>window.__AUTOTRACE_TEST_CALLS__)).filter(x=>x.cmd==='export_portable_encrypted_backup').length,0);
+  // Form submissions use a Promise + savingForms guard. The intentionally
+  // rejected request must release that guard before submitting again.
+  await page.waitForFunction(()=>{
+    const button=document.querySelector('#entity-form[data-kind="drive-portable-export"] [type="submit"]');
+    return Boolean(button&&!button.disabled);
+  });
   await page.locator('[name="drivePassphraseRepeat"]').fill(phrase);
+  assert.equal(await page.locator('[name="drivePassphraseRepeat"]').inputValue(),phrase);
   await page.locator('#entity-form [type="submit"]').click();
-  await page.locator('#entity-form[data-kind="drive-portable-export"]').waitFor({state:'hidden',timeout:10000});
+  try{
+    await page.locator('#entity-form[data-kind="drive-portable-export"]').waitFor({state:'hidden',timeout:15000});
+  }catch(error){
+    const diagnostic=await page.evaluate(()=>({
+      open:document.querySelector('#form-dialog')?.open,
+      submitDisabled:document.querySelector('#entity-form [type="submit"]')?.disabled,
+      exportCalls:window.__AUTOTRACE_TEST_CALLS__.filter(x=>x.cmd==='export_portable_encrypted_backup').length,
+      visibleMessages:[...document.querySelectorAll('[role="alert"],.toast')].map(x=>x.innerText.slice(0,180)),
+    }));
+    throw Error('Export dialog did not close after a valid synthetic export: '+JSON.stringify(diagnostic),{cause:error});
+  }
   const calls=await page.evaluate(()=>window.__AUTOTRACE_TEST_CALLS__);
   assert.equal(calls.filter(x=>x.cmd==='export_portable_encrypted_backup').length,1);
   assert.equal(await page.locator('#modal-content').innerText(),'');
