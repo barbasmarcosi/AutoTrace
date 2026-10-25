@@ -363,15 +363,21 @@ trait UnsealPassword { fn expose_secret_for_restore(&self)->&str; }
 impl UnsealPassword for SecretString {
     fn expose_secret_for_restore(&self)->&str{use age::secrecy::ExposeSecret;self.expose_secret()}
 }
-struct RestoredArchive { location:PathBuf, sqlite:PathBuf }
+// Keep an OS-backed exclusive lock for the full lifetime of decrypted data.
+// Another Desktop process must never delete a currently used recovery folder.
+struct RestoredArchive { location:PathBuf, sqlite:PathBuf, _lock:Option<fs::File> }
 impl Drop for RestoredArchive {
-    fn drop(&mut self){let _=fs::remove_dir_all(&self.location);}
+    fn drop(&mut self){
+        // Windows refuses to delete open files: release the process lock first.
+        drop(self._lock.take());
+        let _=fs::remove_dir_all(&self.location);
+    }
 }
 fn unpack<R:Read>(mut reader:R,location:&Path)->Result<PathBuf,String>{
     let mut magic=vec![0u8;MAGIC.len()];
     reader.read_exact(&mut magic).map_err(|e|e.to_string())?;
     if magic!=MAGIC{return Err("Formato del respaldo cifrado no reconocido.".into());}
-    fs::create_dir(&location).map_err(|e|e.to_string())?;
+    // Caller created the exclusive directory and holds its process lock.
     let names=["source.sqlite3","source.xlsx","source.manifest.json"];
     for (name,max) in names.iter().zip([MAX_SQLITE,MAX_EXCEL,MAX_MANIFEST]){
         let mut size_bytes=[0u8;8];
@@ -402,27 +408,43 @@ fn unpack<R:Read>(mut reader:R,location:&Path)->Result<PathBuf,String>{
     backup::verify_pair_marker(&marker)?;
     Ok(location.join(format!("{base}.sqlite3")))
 }
-/// On a sudden crash Windows may leave temporarily decrypted customer
-/// records on disk. At the next Desktop startup, delete only stale directories
-/// with our exact generated UUID pattern; never recurse into arbitrary paths.
+/// A crash can leave decrypted customer data in Temp. Every new unpack
+/// holds an OS file lock, so another running process can skip it safely.
+/// Legacy directories (created before lock support) retain the 24-hour policy.
 fn is_owned_decrypt_dir(path:&Path)->bool{
     let Some(name)=path.file_name().and_then(|s|s.to_str()) else {return false;};
     let Some(id)=name.strip_prefix("autotrace-drive-decrypt-") else {return false;};
     uuid::Uuid::parse_str(id).is_ok()
 }
-pub(crate) fn cleanup_stale_decrypt_directories(){
-    let Ok(entries)=fs::read_dir(std::env::temp_dir()) else {return};
+fn cleanup_stale_decrypt_in(base:&Path){
+    let Ok(entries)=fs::read_dir(base) else {return};
     for entry in entries.flatten(){
         let path=entry.path();
         if !is_owned_decrypt_dir(&path){continue;}
         let Ok(metadata)=fs::symlink_metadata(&path) else {continue};
         if !metadata.is_dir() || metadata.file_type().is_symlink(){continue;}
+        let process_lock=path.join(".autotrace-active.lock");
+        if process_lock.exists(){
+            // If the lock is held by a second AutoTrace instance, never
+            // touch its files. If the OS released the lock after a crash,
+            // remove the plaintext on the very next application startup.
+            let Ok(file)=fs::OpenOptions::new().read(true).write(true).open(&process_lock) else {continue};
+            if file.try_lock().is_err(){continue;}
+            drop(file);
+            let _=fs::remove_dir_all(&path);
+            continue;
+        }
+        // Backward compatibility for folders left by older builds that
+        // cannot establish ownership with an OS-backed lock. Never delete
+        // a potentially active legacy recovery based only on its name.
         let Ok(changed)=metadata.modified() else {continue};
         let Ok(age)=std::time::SystemTime::now().duration_since(changed) else {continue};
-        // Active restore processes should finish well before one day.
         if age.as_secs()<24*60*60{continue;}
         let _=fs::remove_dir_all(&path);
     }
+}
+pub(crate) fn cleanup_stale_decrypt_directories(){
+    cleanup_stale_decrypt_in(&std::env::temp_dir());
 }
 fn read_archive(path:&Path,passphrase:&str)->Result<RestoredArchive,String>{
     let meta=fs::metadata(path).map_err(|e|e.to_string())?;
@@ -435,12 +457,17 @@ fn read_archive(path:&Path,passphrase:&str)->Result<RestoredArchive,String>{
     let reader=decryptor.decrypt(std::iter::once(&identity as &dyn age::Identity))
       .map_err(|_|"Clave incorrecta o archivo cifrado alterado")?;
     let location=std::env::temp_dir().join(format!("autotrace-drive-decrypt-{}",uuid::Uuid::new_v4()));
+    fs::create_dir(&location).map_err(|_|"No se pudo preparar la recuperación temporal")?;
     struct Cleanup(PathBuf);
     impl Drop for Cleanup {fn drop(&mut self){let _=fs::remove_dir_all(&self.0);}}
     let cleanup=Cleanup(location.clone());
+    let lock=fs::OpenOptions::new().read(true).write(true).create_new(true)
+        .open(location.join(".autotrace-active.lock"))
+        .map_err(|_|"No se pudo asegurar la recuperación temporal")?;
+    lock.lock().map_err(|_|"No se pudo bloquear la carpeta temporal de recuperación")?;
     let sqlite=unpack(reader,&location).map_err(|_|"Clave incorrecta, datos incompletos o respaldo cifrado dañado")?;
     std::mem::forget(cleanup);
-    Ok(RestoredArchive{location,sqlite})
+    Ok(RestoredArchive{location,sqlite,_lock:Some(lock)})
 }
 pub(crate) fn replicate_if_unlocked(app:&tauri::AppHandle,result:&backup::BackupResult)->Result<Option<String>,String>{
     let Some(dir)=configured_directory(app)? else {return Ok(None)};
@@ -497,6 +524,35 @@ mod tests {
             "AutoTrace_secret_customer","some-other-temp-directory"]{
             assert!(!is_owned_decrypt_dir(&std::env::temp_dir().join(forbidden)));
         }
+    }
+    #[test]
+    fn crash_cleanup_removes_only_unlocked_own_plaintext_and_preserves_active_recovery(){
+        let root=std::env::temp_dir().join(format!("autotrace-cleanup-isolated-{}",uuid::Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        let orphan=root.join(format!("autotrace-drive-decrypt-{}",uuid::Uuid::new_v4()));
+        let active=root.join(format!("autotrace-drive-decrypt-{}",uuid::Uuid::new_v4()));
+        let unrelated=root.join("customer-files-do-not-touch");
+        let legacy=root.join(format!("autotrace-drive-decrypt-{}",uuid::Uuid::new_v4()));
+        for d in [&orphan,&active,&unrelated,&legacy]{fs::create_dir(d).unwrap();}
+        fs::write(orphan.join("plaintext.sqlite3"),b"synthetic-orphan").unwrap();
+        fs::write(active.join("plaintext.sqlite3"),b"synthetic-active").unwrap();
+        fs::write(unrelated.join("important.txt"),b"not AutoTrace").unwrap();
+        fs::write(legacy.join("source.sqlite3"),b"legacy-decrypt").unwrap();
+        fs::write(orphan.join(".autotrace-active.lock"),b"").unwrap();
+        let lock=fs::OpenOptions::new().read(true).write(true).create_new(true)
+            .open(active.join(".autotrace-active.lock")).unwrap();
+        lock.lock().unwrap();
+        cleanup_stale_decrypt_in(&root);
+        assert!(!orphan.exists(),"orphaned sensitive data must be cleared at restart");
+        assert!(active.join("plaintext.sqlite3").exists(),"a live restore in another instance cannot be deleted");
+        assert!(legacy.exists(),"legacy folders without locks need the conservative grace period");
+        assert!(unrelated.join("important.txt").exists(),"foreign directories must survive cleanup");
+        drop(lock);
+        cleanup_stale_decrypt_in(&root);
+        assert!(!active.exists(),"once the OS releases the lock, a leftover archive must be purged");
+        assert!(legacy.exists());
+        assert!(unrelated.exists());
+        fs::remove_dir_all(&root).unwrap();
     }
     #[test]
     fn generated_recovery_key_is_high_entropy_and_portable(){
