@@ -25,6 +25,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # PR events default to a synthetic merge ref; release evidence must
+          # use the exact reviewed source commit instead.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Validate current browser model and desktop bridge
         run: |
           node --check site/app.js
@@ -42,6 +46,10 @@ jobs:
       AUTOTRACE_GOOGLE_OAUTH_CLIENT_ID: ${{ vars.AUTOTRACE_GOOGLE_OAUTH_CLIENT_ID }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # PR events default to a synthetic merge ref; release evidence must
+          # use the exact reviewed source commit instead.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable verified 2026-10-24
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:

@@ -30,6 +30,10 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # PR events default to a synthetic merge ref; release evidence must
+          # use the exact reviewed source commit instead.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable verified 2026-10-24
       - name: Install reviewed cargo-audit version
         run: cargo install cargo-audit --version 0.22.2 --locked
@@ -43,6 +47,10 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # PR events default to a synthetic merge ref; release evidence must
+          # use the exact reviewed source commit instead.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       - name: Cross-version age v1 scrypt archive compatibility and tamper rejection
         run: bash scripts/check_age_passphrase_compatibility.sh

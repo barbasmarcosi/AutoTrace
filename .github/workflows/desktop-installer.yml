@@ -25,6 +25,10 @@ jobs:
     timeout-minutes: 75
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # PR events default to a synthetic merge ref; release evidence must
+          # use the exact reviewed source commit instead.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable verified 2026-10-24
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
@@ -68,10 +72,15 @@ jobs:
           if ($exes.Count -ne 1) { throw "Expected exactly one NSIS installer" }
           $exe = $exes[0]
           $sha = (Get-FileHash -LiteralPath $exe.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          $checkoutSha = (& git rev-parse HEAD).Trim().ToLowerInvariant()
+          $expectedSourceSha = '${{ github.event.pull_request.head.sha || github.sha }}'
+          if ($checkoutSha -cne $expectedSourceSha -or $checkoutSha -notmatch '^[a-f0-9]{40}$') {
+            throw "Checkout SHA differs from reviewed PR HEAD; provenance manifest rejected"
+          }
           $record = [ordered]@{
             schema = 'autotrace-installer-preflight-v1'
             repository = 'barbasmarcosi/AutoTrace'
-            commitSha = $env:GITHUB_SHA
+            commitSha = $checkoutSha
             workflowRunId = $env:GITHUB_RUN_ID
             installerKind = 'windows-nsis-preview'
             installerName = $exe.Name
@@ -90,7 +99,7 @@ jobs:
           Copy-Item docs/desktop/ACCEPTANCE_PACKAGE_U0_U7.md (Join-Path $dir 'ACCEPTANCE_PACKAGE_U0_U7.md')
           Copy-Item docs/desktop/PHYSICAL_ACCEPTANCE_RECORD_TEMPLATE.json (Join-Path $dir 'PHYSICAL_ACCEPTANCE_RECORD_TEMPLATE.json')
           $check = Join-Path $dir 'verify-acceptance-installer.ps1'
-          & $check -Installer $exe.FullName -Manifest $manifest -ExpectedCommit $env:GITHUB_SHA -EvidenceFile (Join-Path $env:RUNNER_TEMP 'acceptance-preflight-ci.json')
+          & $check -Installer $exe.FullName -Manifest $manifest -ExpectedCommit $checkoutSha -EvidenceFile (Join-Path $env:RUNNER_TEMP 'acceptance-preflight-ci.json')
           if (-not (Test-Path (Join-Path $env:RUNNER_TEMP 'acceptance-preflight-ci.json'))) {
             throw 'Sanitized preflight evidence was not created'
           }
@@ -112,7 +121,7 @@ jobs:
             $file.WriteByte([byte]($original -bxor 1))
           } finally { $file.Dispose() }
           $rejected = $false
-          try { & $check -Installer $tampered -Manifest $manifest -ExpectedCommit $env:GITHUB_SHA | Out-Null }
+          try { & $check -Installer $tampered -Manifest $manifest -ExpectedCommit $checkoutSha | Out-Null }
           catch { $rejected = $true }
           if (-not $rejected) { throw 'Modified installer passed checksum verification' }
           Write-Host 'ACCEPTANCE KIT PASS: trusted SHA, checksum and tamper rejection. Physical U0-U7 remain pending.'
