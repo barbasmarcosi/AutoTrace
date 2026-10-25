@@ -59,12 +59,43 @@ fn effective_client_id(settings:&Settings)->Result<String,String>{
         _=>Err("Google Drive directo todavía no está activado en esta edición de AutoTrace. Los respaldos locales siguen funcionando.".into())
     }
 }
+/// Replace a settings file in one same-volume filesystem operation.
+/// On Windows std::fs::rename cannot reliably replace an existing file, so
+/// use MoveFileExW with REPLACE_EXISTING and WRITE_THROUGH instead. No
+/// delete-then-rename window is permitted for backup provenance metadata.
+#[cfg(windows)]
+fn replace_settings_file(temp:&std::path::Path,target:&std::path::Path)->std::io::Result<()>{
+    use std::{iter,os::windows::ffi::OsStrExt};
+    #[link(name="kernel32")]
+    unsafe extern "system" {
+        fn MoveFileExW(existing:*const u16,new:*const u16,flags:u32)->i32;
+    }
+    let from=temp.as_os_str().encode_wide().chain(iter::once(0)).collect::<Vec<_>>();
+    let to=target.as_os_str().encode_wide().chain(iter::once(0)).collect::<Vec<_>>();
+    // 0x1 = REPLACE_EXISTING; 0x8 = WRITE_THROUGH; never COPY_ALLOWED.
+    if unsafe { MoveFileExW(from.as_ptr(),to.as_ptr(),0x1|0x8) }!=0{Ok(())}
+    else{Err(std::io::Error::last_os_error())}
+}
+#[cfg(not(windows))]
+fn replace_settings_file(temp:&std::path::Path,target:&std::path::Path)->std::io::Result<()>{
+    fs::rename(temp,target)
+}
+fn save_settings_file(path:&std::path::Path,state:&Settings)->Result<(),String>{
+    let temp=path.with_extension(format!("{}.tmp",uuid::Uuid::new_v4().simple()));
+    struct Cleanup(PathBuf);
+    impl Drop for Cleanup {fn drop(&mut self){let _=fs::remove_file(&self.0);}}
+    let _cleanup=Cleanup(temp.clone());
+    let encoded=serde_json::to_vec(state).map_err(|e|e.to_string())?;
+    let mut file=fs::OpenOptions::new().write(true).create_new(true).open(&temp)
+        .map_err(|e|e.to_string())?;
+    use std::io::Write;
+    file.write_all(&encoded).map_err(|e|e.to_string())?;
+    file.sync_all().map_err(|e|e.to_string())?;
+    drop(file);
+    replace_settings_file(&temp,path).map_err(|_|"No se pudo guardar de forma segura el estado de Google Drive en Windows".to_string())
+}
 fn save(app:&tauri::AppHandle,state:&Settings)->Result<(),String>{
-    let p=config_path(app)?;
-    let tmp=p.with_extension(format!("{}.tmp",uuid::Uuid::new_v4().simple()));
-    fs::write(&tmp,serde_json::to_vec(state).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
-    if let Err(e)=fs::rename(&tmp,&p){let _=fs::remove_file(tmp);return Err(e.to_string());}
-    Ok(())
+    save_settings_file(&config_path(app)?,state)
 }
 fn queue_dir(app:&tauri::AppHandle)->Result<PathBuf,String>{
     let dir=home(app)?.join("drive-api-encrypted-pending");
@@ -285,6 +316,32 @@ mod tests{
         for (input,expected) in cases{
             assert_eq!(super::classify_sync_failure(input),expected);
         }
+    }
+    #[test] fn repeated_drive_settings_updates_replace_existing_file_atomically(){
+        use std::fs;
+        let temp=std::env::temp_dir().join(format!("autotrace-drive-settings-replace-{}",uuid::Uuid::new_v4()));
+        fs::create_dir_all(&temp).unwrap();
+        let path=temp.join("google-drive-api.json");
+        for revision in 0..10 {
+            let settings=super::Settings{
+                client_id:"test-public-client.apps.googleusercontent.com".into(),
+                last_verified_upload_at:Some(format!("2026-10-25T05:00:{revision:02}Z")),
+                last_verified_file_id:Some(format!("test-file-{revision}")),
+                last_sync_state:Some("remote_verified".into()),
+            };
+            super::save_settings_file(&path,&settings).unwrap();
+            let decoded:super::Settings=serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            assert_eq!(decoded.last_verified_file_id,settings.last_verified_file_id,
+                "replacing an existing Windows settings JSON must persist current upload metadata");
+            assert_eq!(decoded.last_verified_upload_at,settings.last_verified_upload_at);
+            assert_eq!(fs::read_dir(&temp).unwrap().count(),1,"no leftover .tmp settings files");
+        }
+        let last=fs::read(&path).unwrap();
+        let missing=temp.join("missing-directory").join("drive.json");
+        assert!(super::save_settings_file(&missing,&super::Settings::default()).is_err());
+        assert_eq!(fs::read(&path).unwrap(),last,
+            "a failed unrelated save must not alter the last verified upload");
+        fs::remove_dir_all(temp).unwrap();
     }
     #[test] fn empty_queue_does_not_fabricate_success_or_reset_a_provider_failure(){
         assert_eq!(super::sync_outcome(&Ok(0)),None);
