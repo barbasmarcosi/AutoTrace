@@ -34,6 +34,7 @@ try{
         if(args.passphrase!==phrase)throw Error('Wrong mock phrase');
         return 'AutoTrace_test.atbackup.age';
       }
+      if(cmd==='choose_sqlite_import')return {data,filename:'synthetic-legacy.sqlite3',verified:false};
       throw Error('Unexpected native command: '+cmd);
     }}};
   },{phrase});
@@ -101,6 +102,29 @@ try{
   const calls=await page.evaluate(()=>window.__AUTOTRACE_TEST_CALLS__);
   assert.equal(calls.filter(x=>x.cmd==='export_portable_encrypted_backup').length,1);
   assert.equal(await page.locator('#modal-content').innerText(),'');
+
+  // E3/E7: a SQLite file without a matching manifest is *not* an authenticated
+  // backup. The user must independently acknowledge that risk before the
+  // regular replace-all-data confirmation, even though the JSON is parseable.
+  await page.locator('[data-action="restore-sqlite-desktop"]').click();
+  await page.locator('#confirm-dialog[open]').waitFor();
+  assert.match(await page.locator('#confirm-title').innerText(),/Base sin integridad verificada/);
+  assert.match(await page.locator('#confirm-message').innerText(),/no se puede demostrar su origen/);
+  await page.locator('#confirm-dialog [value="cancel"]').click();
+  await page.locator('#confirm-dialog[open]').waitFor({state:'hidden'});
+  assert.equal((await page.evaluate(()=>window.__AUTOTRACE_TEST_CALLS__)).filter(x=>x.cmd==='backup_now'||x.cmd==='save_state').length,0,
+    'Declining the unverified import must never back up or modify live workshop data');
+
+  // Accepting the risk is NOT itself permission to replace the database.
+  await page.locator('[data-action="restore-sqlite-desktop"]').click();
+  await page.locator('#confirm-dialog[open]').waitFor();
+  await page.locator('#confirm-accept').click();
+  await page.getByText('Restaurar desde SQLite',{exact:true}).waitFor();
+  await page.locator('#confirm-dialog [value="cancel"]').click();
+  await page.locator('#confirm-dialog[open]').waitFor({state:'hidden'});
+  assert.equal((await page.evaluate(()=>window.__AUTOTRACE_TEST_CALLS__)).filter(x=>x.cmd==='backup_now'||x.cmd==='save_state').length,0,
+    'Canceling second-stage replacement must preserve workshop data');
+
   assert.deepEqual(errors,[],'Chromium must not throw runtime errors');
   console.log('Desktop mocked UI smoke OK: offline recovery kit and export, without OAuth.');
 }finally{await browser.close();}
