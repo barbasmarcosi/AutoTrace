@@ -13,8 +13,13 @@ fn vault()->Result<keyring::Entry,String>{
     keyring::Entry::new(SERVICE,USER).map_err(|_|"No se pudo acceder a credenciales seguras de Windows".into())
 }
 pub(crate) fn authorized()->bool{vault().is_ok_and(|v|v.get_password().is_ok())}
+/// Do not report a successful disconnect while Windows still stores a
+/// refresh token. Revocation at Google remains a separate user action.
 pub(crate) fn forget()->Result<(),String>{
-    let _=vault()?.delete_credential();Ok(())
+    match vault()?.delete_credential(){
+        Ok(())|Err(keyring::Error::NoEntry)=>Ok(()),
+        Err(_)=>Err("Windows no pudo eliminar la autorización local de Google. No se confirmó la desconexión.".into()),
+    }
 }
 pub(crate) fn client_id_valid(s:&str)->bool{
     s.len()>35&&s.len()<300&&s.ends_with(".apps.googleusercontent.com")
@@ -34,7 +39,13 @@ fn exchange(fields:&[(&str,&str)])->Result<Tokens,String>{
 pub(crate) fn token(client_id:&str)->Result<String,String>{
     let refresh=vault()?.get_password().map_err(|_|"No hay autorización guardada. Conectá Google Drive desde Ajustes.")?;
     let result=exchange(&[("client_id",client_id),("grant_type","refresh_token"),("refresh_token",&refresh)])?;
-    result.access_token.filter(|s|!s.is_empty()).ok_or("Google no entregó acceso".into())
+    let access=result.access_token.filter(|s|!s.is_empty()).ok_or("Google no entregó acceso")?;
+    // A provider may rotate refresh tokens. Store a replacement before using
+    // the access token; never rely on an already invalidated old credential.
+    if let Some(replacement)=result.refresh_token.filter(|s|!s.is_empty()&&s!=&refresh){
+        vault()?.set_password(&replacement).map_err(|_|"Windows no pudo proteger la nueva autorización de Google")?;
+    }
+    Ok(access)
 }
 fn challenge(v:&str)->String{URL_SAFE_NO_PAD.encode(Sha256::digest(v.as_bytes()))}
 fn verifier()->(String,String,String){
@@ -43,6 +54,36 @@ fn verifier()->(String,String,String){
     let hash=challenge(&random);
     (random,hash,state)
 }
+#[derive(Debug,PartialEq,Eq)]
+enum Callback {
+    Code(String),
+    Denied,
+    Ignored,
+}
+/// Accept exactly one state and authorization code. Unexpected callback
+/// paths, duplicate query fields and unsolicited loopback traffic must not
+/// obtain a token exchange, nor stop the legitimate OAuth attempt.
+fn parse_callback(target:&str,expected:&str)->Callback{
+    if !target.starts_with("/callback?"){return Callback::Ignored;}
+    let Ok(url)=Url::parse(&format!("http://localhost{target}")) else{return Callback::Ignored};
+    if url.path()!="/callback"{return Callback::Ignored;}
+    let (mut state,mut code,mut error)=(None,None,None);
+    for (k,v) in url.query_pairs(){
+        match k.as_ref(){
+            "state"=>{if state.replace(v.into_owned()).is_some(){return Callback::Ignored;}},
+            "code"=>{if code.replace(v.into_owned()).is_some(){return Callback::Ignored;}},
+            "error"=>{if error.replace(v.into_owned()).is_some(){return Callback::Ignored;}},
+            _=>{},
+        }
+    }
+    if state.as_deref()!=Some(expected){return Callback::Ignored;}
+    if error.is_some(){return Callback::Denied;}
+    match code{
+        Some(value) if !value.is_empty()&&value.len()<=2048&&
+            !value.chars().any(|c|c.is_control()||c.is_whitespace())=>Callback::Code(value),
+        _=>Callback::Ignored,
+    }
+}
 fn wait_callback(listener:TcpListener,expected:&str)->Result<String,String>{
     listener.set_nonblocking(true).map_err(|_|"No se pudo escuchar el callback de Google")?;
     let deadline=Instant::now()+Duration::from_secs(180);
@@ -50,23 +91,29 @@ fn wait_callback(listener:TcpListener,expected:&str)->Result<String,String>{
         match listener.accept(){
             Ok((mut sock,peer))=>{
                 if !peer.ip().is_loopback(){continue;}
-                sock.set_read_timeout(Some(Duration::from_secs(3))).map_err(|_|"Conexión OAuth inválida")?;
+                if sock.set_read_timeout(Some(Duration::from_secs(3))).is_err(){continue;}
                 let mut buf=[0u8;8192];
-                let n=sock.read(&mut buf).map_err(|_|"Callback OAuth incompleto")?;
-                let line=std::str::from_utf8(&buf[..n]).map_err(|_|"Solicitud OAuth inválida")?
-                    .lines().next().unwrap_or("").to_string();
-                let path=line.strip_prefix("GET ").and_then(|r|r.split(' ').next()).unwrap_or("");
-                let u=Url::parse(&format!("http://localhost{path}")).map_err(|_|"Callback inválido")?;
-                let state=u.query_pairs().find(|(k,_)|k=="state").map(|(_,v)|v.into_owned());
-                let code=u.query_pairs().find(|(k,_)|k=="code").map(|(_,v)|v.into_owned());
-                let valid=u.path()=="/callback"&&state.as_deref()==Some(expected)&&code.is_some();
-                let response=if valid {
-                    "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\n\r\n<html><body>AutoTrace conectado. Ya podés cerrar esta pestaña.</body></html>"
-                }else{
-                    "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nAutorizacion invalida"
+                let n=match sock.read(&mut buf){Ok(n)=>n,Err(_)=>continue};
+                let line=match std::str::from_utf8(&buf[..n]){
+                    Ok(value)=>value.lines().next().unwrap_or(""),
+                    Err(_)=>continue,
+                };
+                let target=line.strip_prefix("GET ").and_then(|r|r.split(' ').next()).unwrap_or("");
+                let callback=parse_callback(target,expected);
+                let response=match &callback{
+                    Callback::Code(_)=>
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n<html><body>Autorización recibida. Volvé a AutoTrace para confirmar la conexión.</body></html>",
+                    Callback::Denied=>
+                        "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain; charset=utf-8\r\nCache-Control: no-store\r\nConnection: close\r\n\r\nAutorización cancelada",
+                    Callback::Ignored=>
+                        "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain; charset=utf-8\r\nCache-Control: no-store\r\nConnection: close\r\n\r\nSolicitud no válida",
                 };
                 let _=sock.write_all(response.as_bytes());
-                if valid{return Ok(code.unwrap_or_default());}
+                match callback{
+                    Callback::Code(code)=>return Ok(code),
+                    Callback::Denied=>return Err("Google canceló la autorización. No se guardaron credenciales.".into()),
+                    Callback::Ignored=>continue,
+                }
             },
             Err(e) if e.kind()==std::io::ErrorKind::WouldBlock=>thread::sleep(Duration::from_millis(100)),
             Err(_)=>return Err("No se pudo recibir autorización OAuth".into())
@@ -104,6 +151,22 @@ mod tests{
         assert_eq!(h.len(),43);
         assert_eq!(s.len(),32);
         assert_eq!(SCOPE,"https://www.googleapis.com/auth/drive.file");
+    }
+    #[test] fn oauth_callback_rejects_wrong_state_duplicate_codes_and_handles_denial(){
+        let state="synthetic-state-abc";
+        assert_eq!(parse_callback("/callback?state=synthetic-state-abc&code=abc-123",state),
+                   Callback::Code("abc-123".into()));
+        assert_eq!(parse_callback("/callback?state=wrong&code=abc-123",state),Callback::Ignored);
+        assert_eq!(parse_callback("/callback?state=synthetic-state-abc&code=1&code=2",state),Callback::Ignored);
+        assert_eq!(parse_callback("/callback?state=synthetic-state-abc&state=synthetic-state-abc&code=1",state),Callback::Ignored);
+        assert_eq!(parse_callback("/callback?state=synthetic-state-abc&code=",state),Callback::Ignored);
+        assert_eq!(parse_callback("/other?state=synthetic-state-abc&code=abc",state),Callback::Ignored);
+        assert_eq!(parse_callback("/callback?state=synthetic-state-abc&error=access_denied",state),Callback::Denied);
+        assert_eq!(parse_callback("/callback?state=synthetic-state-abc&code=abc&error=access_denied",state),Callback::Denied);
+        assert_eq!(parse_callback("/callback?state=synthetic-state-abc&code=a%0Ab",state),Callback::Ignored);
+    }
+    #[test] fn vault_disconnect_missing_credential_is_idempotent(){
+        assert!(matches!(keyring::Error::NoEntry,keyring::Error::NoEntry));
     }
     #[test] fn rejects_wrong_oauth_client(){
         assert!(client_id_valid("012345678901-abc.apps.googleusercontent.com"));
