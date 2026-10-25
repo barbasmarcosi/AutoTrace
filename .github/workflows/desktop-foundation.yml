@@ -46,6 +46,11 @@ jobs:
       - name: Rust unit tests, SQLite and Excel roundtrip on Windows
         working-directory: desktop/src-tauri
         run: cargo test --locked --all-targets
+      - name: Profile 1k/10k/50k synthetic orders (non-gating latency evidence)
+        working-directory: desktop/src-tauri
+        # This asserts full read/write roundtrips. Runner timing is logged, not
+        # interpreted as a physical workshop PC performance guarantee.
+        run: cargo test --locked release_scale_profile -- --ignored --nocapture
       - name: Verify tracked dependency lockfile remains unchanged
         shell: pwsh
         run: |

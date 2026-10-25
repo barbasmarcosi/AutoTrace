@@ -48,6 +48,15 @@ class ReleasePolicyTests(unittest.TestCase):
         p.write_text(json.dumps(config), encoding="utf-8")
         self.assertTrue(any("unsafe-eval" in e for e in failures(self.root)))
 
+    def test_rejects_vulnerable_crypto_bigint_regression(self):
+        p = self.root / "desktop/src-tauri/Cargo.lock"
+        p.write_text(
+            p.read_text(encoding="utf-8")
+            + '\n[[package]]\nname = "crypto-bigint"\nversion = "0.5.5"\n',
+            encoding="utf-8",
+        )
+        self.assertTrue(any("RUSTSEC-2026-0387" in e for e in failures(self.root)))
+
     def test_rejects_unprotected_ci_secrets(self):
         p = self.root / ".github/workflows/desktop-installer.yml"
         p.write_text(p.read_text(encoding="utf-8")+"\n# secrets.USER_TOKEN\n",encoding="utf-8")

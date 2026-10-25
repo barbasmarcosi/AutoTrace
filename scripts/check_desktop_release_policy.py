@@ -60,6 +60,16 @@ def failures(root: Path = ROOT) -> list[str]:
     if re.search(r'(?m)^source = "git\+http:', lock):
         failures_found.append("Unencrypted git dependency source in Cargo.lock")
 
+    # Reject a known vulnerable transitive crypto dependency even offline.
+    # cargo-audit remains authoritative for all packages and future advisories.
+    for package in lock.split("[[package]]")[1:]:
+        name = re.search(r'(?m)^name = "([^"]+)"$', package)
+        version = re.search(r'(?m)^version = "([^"]+)"$', package)
+        if name and version and name.group(1) == "crypto-bigint":
+            numbers = tuple(int(v) for v in version.group(1).split("-")[0].split(".")[:3])
+            if numbers < (0, 7, 6):
+                failures_found.append("RUSTSEC-2026-0387: vulnerable crypto-bigint in release lockfile")
+
     installer = content[".github/workflows/desktop-installer.yml"]
     foundation = content[".github/workflows/desktop-foundation.yml"]
     for name, workflow in (("installer", installer), ("foundation", foundation)):
