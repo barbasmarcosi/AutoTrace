@@ -670,6 +670,47 @@ mod tests {
         assert_eq!(after.data.settings.accounts.len(),1);
     }
 
+    #[test]
+    fn existing_v1_sqlite_file_reopens_without_data_loss_and_future_version_is_rejected(){
+        let path=std::env::temp_dir().join(format!("autotrace-v1-compat-{}.sqlite3",uuid::Uuid::new_v4()));
+        let payload=serde_json::json!({
+            "clients":[{"id":"c","name":"Cliente de prueba","phone":"","email":"","notes":"","createdAt":""}],
+            "vehicles":[{"id":"v","clientId":"c","plate":"AF012BC","make":"Ford","model":"Ka",
+              "year":2021,"mileage":1234.5,"vin":"","color":"","nextServiceDate":"","notes":"","createdAt":""}],
+            "orders":[{"id":"o","vehicleId":"v","title":"Servicio anterior","category":"Mecánica","status":"done",
+              "openedAt":"","completedAt":"","mileage":1234.5,"description":"","partsCost":33.33,
+              "laborCost":11.11,"charged":99.99,"paid":20.20,"notes":"","createdAt":""}],
+            "settings":{"garageName":"Taller histórico","currency":"ARS","demo":false}
+        });
+        let original:AppData=serde_json::from_value(payload).unwrap();
+        {
+            let mut legacy=Connection::open(&path).unwrap();
+            legacy.pragma_update(None,"foreign_keys","ON").unwrap();
+            legacy.execute_batch(SCHEMA).unwrap();
+            write(&mut legacy,&original,0).unwrap();
+            assert_eq!(legacy.query_row("PRAGMA user_version",[],|r|r.get::<_,i64>(0)).unwrap(),1);
+        }
+        // Simulates installing the new binary while retaining the old local database file.
+        {
+            let mut reopened=open(&path).unwrap();
+            let snapshot=read(&reopened).unwrap();
+            assert_eq!(snapshot.revision,1);
+            assert_eq!(serde_json::to_value(&snapshot.data).unwrap(),serde_json::to_value(&original).unwrap());
+            assert_eq!(write(&mut reopened,&snapshot.data,snapshot.revision).unwrap().revision,2);
+            assert_eq!(reopened.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+        }
+        {
+            let raw=Connection::open(&path).unwrap();
+            raw.execute_batch("PRAGMA user_version=999;").unwrap();
+        }
+        assert!(open(&path).is_err(),"future schema must fail closed, not auto-downgrade");
+        let unmodified=Connection::open(&path).unwrap();
+        assert_eq!(unmodified.query_row("PRAGMA user_version",[],|r|r.get::<_,i64>(0)).unwrap(),999);
+        assert_eq!(unmodified.query_row("SELECT COUNT(*) FROM orders",[],|r|r.get::<_,i64>(0)).unwrap(),1);
+        drop(unmodified);
+        fs::remove_file(path).unwrap();
+    }
+
     /// G1 performance protocol. Intentionally ignored by CI: Windows operator
     /// hardware and SSD performance are part of the acceptance evidence.
     /// Run: cargo test --locked release_scale_profile -- --ignored --nocapture
