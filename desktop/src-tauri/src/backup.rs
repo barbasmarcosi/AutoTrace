@@ -58,13 +58,27 @@ fn flush_verified_file(path:&Path)->Result<(),String>{
 /// existence check followed by rename/copy can lose a race to another backup
 /// writer, especially on Unix where rename replaces an existing destination.
 /// Track ownership immediately, so failure cleanup never deletes foreign files.
-fn publish_new_file(source:&Path,destination:&Path,owned:&mut Vec<PathBuf>)->Result<(),String>{
+/// The copier is injected only for deterministic I/O-failure tests.
+/// The production copier is std::io::copy; ownership is acquired BEFORE I/O,
+/// allowing the calling transaction to remove every partially written file.
+fn publish_new_file_with<F>(
+    source:&Path,destination:&Path,owned:&mut Vec<PathBuf>,copy:F
+)->Result<(),String>
+where F:FnOnce(&mut fs::File,&mut fs::File)->std::io::Result<u64>{
     let mut out=fs::OpenOptions::new().write(true).create_new(true)
         .open(destination).map_err(err)?;
     owned.push(destination.to_path_buf());
     let mut input=fs::File::open(source).map_err(err)?;
-    std::io::copy(&mut input,&mut out).map_err(err)?;
+    copy(&mut input,&mut out).map_err(err)?;
     out.sync_all().map_err(err)
+}
+fn publish_new_file(source:&Path,destination:&Path,owned:&mut Vec<PathBuf>)->Result<(),String>{
+    publish_new_file_with(source,destination,owned,std::io::copy)
+}
+fn rollback_owned_files(owned:Vec<PathBuf>){
+    // Only paths created by this specific operation are eligible for cleanup.
+    // Never remove an existing destination that another process owns.
+    for path in owned { let _=fs::remove_file(path); }
 }
 // Bounded verifier for untrusted external backup triplets. Streaming SHA-256
 // does not protect the later manifest/XLSX parser from oversized allocations.
@@ -127,7 +141,7 @@ pub(crate) fn backup_pair(src:&Connection, dest:&Path, id:&str)->Result<BackupRe
         Ok(BackupResult{sqlite_path:db.display().to_string(),excel_path:excel.display().to_string(),manifest_path:manifest.display().to_string(),external_copy_ok:false,external_copy_error:None,drive_copy_ok:false,drive_copy_error:None,cloud_copy_ok:false,cloud_copy_error:None})
     })();
     let _=fs::remove_dir_all(staging);
-    if result.is_err(){for path in owned{let _=fs::remove_file(path);}}
+    if result.is_err(){rollback_owned_files(owned);}
     result
 }
 pub(crate) fn verify_pair_marker(path:&Path)->Result<(),String>{
@@ -260,7 +274,7 @@ fn mirror_pair(result:&BackupResult,directory:&Path)->Result<(),String>{
         verify_pair_marker(&files[2].1)
     })();
     let _=fs::remove_dir_all(staging);
-    if result_copy.is_err(){for p in owned{let _=fs::remove_file(p);}}
+    if result_copy.is_err(){rollback_owned_files(owned);}
     result_copy
 }
 fn latest_verified(directory:&Path)->Result<Option<u128>,String>{
@@ -685,6 +699,42 @@ mod tests {
         assert!(verify_pair_marker(manifest).is_ok());
         assert!(recovery_rehearsal(manifest).unwrap().sqlite_and_excel_match);
         fs::remove_dir_all(tmp).unwrap();
+    }
+    #[test]
+    fn simulated_full_disk_after_partial_write_rolls_back_without_touching_prior_backup(){
+        use std::io::{Read,Write};
+        let root=std::env::temp_dir().join(format!("autotrace-no-space-{}",uuid::Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        let source=root.join("source.synthetic");
+        let partial=root.join("AutoTrace_new.sqlite3");
+        let prior=root.join("AutoTrace_older.sqlite3");
+        let marker=root.join("AutoTrace_new.manifest.json");
+        fs::write(&source,b"synthetic-workshop-bytes-without-private-data").unwrap();
+        fs::write(&prior,b"previous-good-backup").unwrap();
+        let mut owned=Vec::new();
+        // Inject a disk-full-like error after the destination was exclusively
+        // created and some bytes have reached it. This exercises the exact
+        // same ownership/rollback mechanism as a real partial fs::copy error.
+        let result=publish_new_file_with(&source,&partial,&mut owned,|input,out|{
+            let mut prefix=[0u8;8];
+            input.read_exact(&mut prefix)?;
+            out.write_all(&prefix)?;
+            Err(std::io::Error::other("synthetic ENOSPC after partial write"))
+        });
+        assert!(result.is_err());
+        assert_eq!(fs::read(&partial).unwrap(),b"synthet");
+        assert_eq!(owned,vec![partial.clone()]);
+        assert!(!marker.exists(),"completion marker must not be published on I/O failure");
+        rollback_owned_files(owned);
+        assert!(!partial.exists(),"partial SQLite must be removed after failed publication");
+        assert_eq!(fs::read(&prior).unwrap(),b"previous-good-backup",
+            "failure rollback must never destroy an existing valid backup");
+        // A later healthy backup may retry with the same previously failed name.
+        let mut retry_owned=Vec::new();
+        publish_new_file(&source,&partial,&mut retry_owned).unwrap();
+        assert_eq!(fs::read(&partial).unwrap(),fs::read(&source).unwrap());
+        assert_eq!(fs::read(&prior).unwrap(),b"previous-good-backup");
+        fs::remove_dir_all(&root).unwrap();
     }
     #[test]
     fn file_promotion_refuses_existing_destination_and_tracks_only_owned_files(){
