@@ -127,9 +127,25 @@ pub(crate) fn verify_pair_marker(path:&Path)->Result<(),String>{
     }
     let conn=Connection::open_with_flags(&database,OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(err)?;
     verify_db(&conn)?;
-    let sqlite_data=store::read(&conn)?.data;
+    let sqlite_snapshot=store::read(&conn)?;
+    // A manifest must describe the exact committed SQLite snapshot. Digest
+    // equality alone does not prove its revision/count metadata is accurate.
+    let expected_revision=manifest["revision"].as_u64().ok_or(
+        "El manifiesto no tiene una revisión válida")?;
+    let expected_clients=manifest["clients"].as_u64().ok_or(
+        "El manifiesto no tiene una cantidad válida de clientes")?;
+    let expected_vehicles=manifest["vehicles"].as_u64().ok_or(
+        "El manifiesto no tiene una cantidad válida de vehículos")?;
+    let expected_orders=manifest["orders"].as_u64().ok_or(
+        "El manifiesto no tiene una cantidad válida de trabajos")?;
+    if expected_revision!=sqlite_snapshot.revision||
+       expected_clients!=sqlite_snapshot.data.clients_count() as u64||
+       expected_vehicles!=sqlite_snapshot.data.vehicles_count() as u64||
+       expected_orders!=sqlite_snapshot.data.orders_count() as u64{
+        return Err("El manifiesto no coincide con la revisión o los registros de SQLite".into());
+    }
     let workbook=excel::from_xlsx(&fs::read(&excel_path).map_err(err)?)?;
-    if excel::canonical_bytes(&sqlite_data)?!=excel::canonical_bytes(&workbook)? {
+    if excel::canonical_bytes(&sqlite_snapshot.data)?!=excel::canonical_bytes(&workbook)? {
         return Err("Los datos de Excel y SQLite difieren".into());
     }
     Ok(())
@@ -601,6 +617,44 @@ mod tests {
     fn same_volume_cannot_be_selected_as_independent_backup(){
         let base=std::env::temp_dir();
         assert!(check_distinct_volume(&base,&base.join("secondary")).is_err());
+    }
+    #[test]
+    fn manifest_revision_and_record_counts_must_match_actual_sqlite_snapshot(){
+        let tmp=std::env::temp_dir().join(format!("autotrace-manifest-audit-{}",uuid::Uuid::new_v4()));
+        fs::create_dir_all(&tmp).unwrap();
+        let mut original=Connection::open_in_memory().unwrap();
+        original.execute_batch(include_str!("../migrations/001_init.sql")).unwrap();
+        let payload:store::AppData=serde_json::from_value(serde_json::json!({
+          "clients":[{"id":"c1","name":"Cliente sintético","phone":"","email":"","notes":"","createdAt":""}],
+          "vehicles":[{"id":"v1","clientId":"c1","plate":"AF123BC","make":"Prueba","model":"Prueba","year":2020,
+                      "mileage":0,"vin":"","color":"","nextServiceDate":"","notes":"","createdAt":""}],
+          "orders":[],
+          "settings":{"garageName":"Taller QA","currency":"ARS","demo":false}
+        })).unwrap();
+        store::write(&mut original,&payload,0).unwrap();
+        let pair=backup_pair(&original,&tmp,"fixture").unwrap();
+        let manifest=Path::new(&pair.manifest_path);
+        let original_bytes=fs::read(manifest).unwrap();
+        assert!(verify_pair_marker(manifest).is_ok());
+        for (field,value) in [
+            ("revision",serde_json::json!(0)),
+            ("clients",serde_json::json!(2)),
+            ("vehicles",serde_json::json!(0)),
+            ("orders",serde_json::json!(1)),
+            ("revision",serde_json::json!("invalid")),
+        ]{
+            let mut metadata:serde_json::Value=serde_json::from_slice(&original_bytes).unwrap();
+            metadata[field]=value;
+            fs::write(manifest,serde_json::to_vec(&metadata).unwrap()).unwrap();
+            assert!(verify_pair_marker(manifest).is_err(),
+                "inconsistent manifest metadata must fail closed: {field}");
+            assert!(recovery_rehearsal(manifest).is_err(),
+                "inconsistent backup must not pass clean-room restore rehearsal");
+        }
+        fs::write(manifest,&original_bytes).unwrap();
+        assert!(verify_pair_marker(manifest).is_ok());
+        assert!(recovery_rehearsal(manifest).unwrap().sqlite_and_excel_match);
+        fs::remove_dir_all(tmp).unwrap();
     }
     #[test]
     fn backup_pair_contains_restorable_sqlite_and_excel() {
