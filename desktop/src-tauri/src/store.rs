@@ -637,10 +637,10 @@ mod tests {
         db.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
         db.execute_batch(SCHEMA).unwrap();
         let fixture=serde_json::json!({
-          "clients":[{"id":"c","name":"Cliente ficticio","createdAt":""}],
-          "vehicles":[{"id":"v","clientId":"c","plate":"AF012BC","make":"Ford","model":"Ka","year":2022,"mileage":0}],
+          "clients":[{"id":"c","name":"Cliente ficticio","phone":"","email":"","notes":"","createdAt":""}],
+          "vehicles":[{"id":"v","clientId":"c","plate":"AF012BC","make":"Ford","model":"Ka","year":2022,"mileage":0,"vin":"","color":"","nextServiceDate":"","notes":"","createdAt":""}],
           "orders":[{"id":"o","vehicleId":"v","title":"Servicio",
-             "status":"done","charged":100.01,"paid":40.01,"partsCost":10.10,"laborCost":20.20,
+             "status":"done","category":"","openedAt":"","completedAt":"","mileage":0,"description":"","notes":"","createdAt":"","charged":100.01,"paid":40.01,"partsCost":10.10,"laborCost":20.20,
              "payments":[{"id":"p","date":"2026-10-24","amount":40.01,"method":"transfer",
                "accountId":"acc","reference":"OP-ABC"}]}],
           "settings":{"garageName":"Taller ficticio","currency":"ARS","demo":false,
@@ -656,7 +656,7 @@ mod tests {
           ("ledger sum above aggregate",( |d:&mut AppData| d.orders[0].payments[0].amount=40.02)),
         ];
         for (name,mutate) in candidates{
-            let mut invalid=data.clone();
+            let mut invalid:AppData=serde_json::from_value(serde_json::to_value(&data).unwrap()).unwrap();
             mutate(&mut invalid);
             assert!(write(&mut db,&invalid,1).is_err(),"invalid case: {name}");
             let after=read(&db).unwrap();
