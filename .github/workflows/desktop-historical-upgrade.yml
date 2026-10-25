@@ -1,0 +1,90 @@
+name: Historical NSIS upgrade + rollback (synthetic v1)
+
+on:
+  # Temporary isolated-branch trigger to execute one real end-to-end proof.
+  # After proof, use workflow_dispatch with a fresh baseline artifact ID:
+  # preview artifacts expire after 7 days, so they must never be hard-coded
+  # into the general release CI gate.
+  push:
+    branches:
+      - quality/nsis-historical-upgrade-20261025
+    paths:
+      - desktop/scripts/check-upgrade-v1.py
+      - desktop/scripts/smoke-historical-upgrade.ps1
+      - .github/workflows/desktop-historical-upgrade.yml
+  workflow_dispatch:
+    inputs:
+      baseline_artifact_id:
+        description: "Artifact ID of an older, successfully smoke-tested NSIS installer"
+        required: true
+        type: string
+      baseline_sha:
+        description: "Full commit SHA that produced the baseline artifact"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  historical-upgrade:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      BASELINE_ARTIFACT_ID: ${{ inputs.baseline_artifact_id || '12584363271' }}
+      EXPECTED_BASELINE_SHA: ${{ inputs.baseline_sha || '64fddae86d822bf7fda3fcbaa0042cba5e9f1591' }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          workspaces: desktop/src-tauri -> target
+      - name: Retrieve historical unsigned NSIS artifact and verify exact provenance
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:BASELINE_ARTIFACT_ID -notmatch '^[0-9]+$' -or
+              $env:EXPECTED_BASELINE_SHA -notmatch '^[a-f0-9]{40}$') {
+            throw 'Invalid artifact reference or baseline commit SHA'
+          }
+          $headers = @{
+            Authorization = "Bearer $env:GH_TOKEN"
+            Accept = 'application/vnd.github+json'
+            'X-GitHub-Api-Version' = '2022-11-28'
+          }
+          $uri = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/actions/artifacts/$env:BASELINE_ARTIFACT_ID"
+          $artifact = Invoke-RestMethod -Uri $uri -Headers $headers
+          if ($artifact.expired -or $artifact.name -ne 'autotrace-desktop-windows-preview-unsigned') {
+            throw 'Expected installer artifact was removed, expired or misidentified'
+          }
+          if ($artifact.workflow_run.head_sha -ne $env:EXPECTED_BASELINE_SHA) {
+            throw "Installer provenance mismatch: $($artifact.workflow_run.head_sha)"
+          }
+          $archive = Join-Path $env:RUNNER_TEMP 'autotrace-previous-artifact.zip'
+          Invoke-WebRequest -Uri $artifact.archive_download_url -Headers $headers -OutFile $archive
+          $target = Join-Path $env:RUNNER_TEMP 'autotrace-previous'
+          Expand-Archive -Path $archive -DestinationPath $target
+          $exes = @(Get-ChildItem $target -File -Filter '*-setup.exe' -Recurse)
+          if ($exes.Count -ne 1) { throw 'Historical artifact must contain exactly one NSIS installer' }
+          $exe = $exes[0]
+          $checksum = "$($exe.FullName).sha256.txt"
+          if (-not (Test-Path $checksum)) { throw 'Historical artifact is missing its checksum' }
+          $expected = ((Get-Content $checksum -Raw).Trim() -split '\s+')[0]
+          $actual = (Get-FileHash $exe.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $expected.ToLowerInvariant()) { throw 'Historical installer sha256 mismatch' }
+          "HISTORICAL_NSIS=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "Historical installer provenance passed for SHA $env:EXPECTED_BASELINE_SHA, hash $actual"
+      - name: Build candidate unsigned NSIS on the same runner
+        working-directory: desktop/src-tauri
+        shell: pwsh
+        run: |
+          npm exec --yes --package="@tauri-apps/cli@2.12.3" -- tauri build --bundles nsis
+      - name: Validate old-to-new NSIS and rollback without data loss
+        shell: pwsh
+        run: |
+          $candidate = @(Get-ChildItem desktop/src-tauri/target/release/bundle/nsis -Filter '*-setup.exe' -File)
+          if ($candidate.Count -ne 1) { throw "Expected one candidate NSIS, found $($candidate.Count)" }
+          ./desktop/scripts/smoke-historical-upgrade.ps1 -PreviousInstaller $env:HISTORICAL_NSIS -CandidateInstaller $candidate[0].FullName
+          if ($LASTEXITCODE -ne 0) { throw "Historical upgrade smoke failed" }
