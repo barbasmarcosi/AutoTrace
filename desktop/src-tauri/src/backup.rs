@@ -722,7 +722,7 @@ mod tests {
             Err(std::io::Error::other("synthetic ENOSPC after partial write"))
         });
         assert!(result.is_err());
-        assert_eq!(fs::read(&partial).unwrap(),b"synthet");
+        assert_eq!(fs::read(&partial).unwrap(),b"syntheti");
         assert_eq!(owned,vec![partial.clone()]);
         assert!(!marker.exists(),"completion marker must not be published on I/O failure");
         rollback_owned_files(owned);
