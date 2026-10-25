@@ -9,6 +9,11 @@ $ErrorActionPreference = "Stop"
 $previous = (Resolve-Path -LiteralPath $PreviousInstaller -ErrorAction Stop).Path
 $candidate = (Resolve-Path -LiteralPath $CandidateInstaller -ErrorAction Stop).Path
 if ($previous -eq $candidate) { throw "Historical and candidate installers are identical paths" }
+$previousHash = (Get-FileHash -LiteralPath $previous -Algorithm SHA256).Hash
+$candidateHash = (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash
+if ($previousHash -eq $candidateHash) {
+    throw "Historical and candidate installer bytes are identical; this is not an upgrade rehearsal"
+}
 $root = (Resolve-Path (Join-Path $PSScriptRoot "../..")).Path
 $dataDir = Join-Path $env:LOCALAPPDATA "ar.com.autotrace.desktop"
 $database = Join-Path $dataDir "autotrace.sqlite3"

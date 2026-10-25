@@ -11,6 +11,8 @@ on:
       - release/desktop-quality-rc-20261025
     paths:
       - 'desktop/**'
+      - 'tests/**'
+      - 'site/**'
       - '.github/workflows/desktop-historical-upgrade.yml'
   workflow_dispatch:
     inputs:
@@ -26,6 +28,11 @@ on:
 permissions:
   contents: read
   actions: read
+
+# Only the newest RC merits an expensive Windows historical rehearsal.
+concurrency:
+  group: autotrace-historical-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   historical-upgrade:
