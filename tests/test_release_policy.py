@@ -52,7 +52,7 @@ class ReleasePolicyTests(unittest.TestCase):
         p = self.root / "desktop/src-tauri/Cargo.lock"
         p.write_text(
             p.read_text(encoding="utf-8")
-            + '\\n[[package]]\\nname = "crypto-bigint"\\nversion = "0.5.5"\\n',
+            + '\n[[package]]\nname = "crypto-bigint"\nversion = "0.5.5"\n',
             encoding="utf-8",
         )
         self.assertTrue(any("RUSTSEC-2026-0387" in e for e in failures(self.root)))
