@@ -416,6 +416,35 @@ pub(crate) fn backup_status(app:tauri::AppHandle)->Result<BackupStatus,String>{
         last_external_backup_unix_ms:last_external
     })
 }
+/// Publish a fully generated Excel export on the selected filesystem only
+/// after its bytes are complete and durable. Use the same atomic no-clobber
+/// operation as encrypted backup publication (MoveFileExW on Windows / hard
+/// link on POSIX), never a check-then-rename that could overwrite a competitor.
+fn publish_excel_export_with<F>(
+    destination:&Path,bytes:&[u8],before_publish:F
+)->Result<(),String> where F:FnOnce()->Result<(),String>{
+    let parent=destination.parent().ok_or("Destino de Excel inválido")?;
+    let stage=parent.join(format!(".autotrace-excel-{}.partial",uuid::Uuid::new_v4()));
+    struct Cleanup(PathBuf);
+    impl Drop for Cleanup{
+        fn drop(&mut self){let _=fs::remove_file(&self.0);}
+    }
+    let _cleanup=Cleanup(stage.clone());
+    let mut out=fs::OpenOptions::new().write(true).create_new(true)
+        .open(&stage).map_err(err)?;
+    use std::io::Write;
+    out.write_all(bytes).map_err(err)?;
+    out.sync_all().map_err(err)?;
+    drop(out);
+    if sha(&stage)?!=format!("{:x}",Sha256::digest(bytes)){
+        return Err("Verificación del Excel exportado fallida".into());
+    }
+    before_publish()?;
+    crate::drive_transport::publish_verified_cipher(&stage,destination)
+}
+fn publish_excel_export(destination:&Path,bytes:&[u8])->Result<(),String>{
+    publish_excel_export_with(destination,bytes,||Ok(()))
+}
 #[tauri::command]
 pub(crate) fn export_excel_dialog(app:tauri::AppHandle)->Result<bool,String>{
     let file=rfd::FileDialog::new().set_file_name("AutoTrace_completo.xlsx").add_filter("Excel AutoTrace", &["xlsx"]).save_file();
@@ -430,9 +459,7 @@ pub(crate) fn export_excel_dialog(app:tauri::AppHandle)->Result<bool,String>{
         let saved=store::read(&Connection::open(&staging).map_err(err)?)?;
         let bytes=excel::to_xlsx(&saved.data)?;
         excel::from_xlsx(&bytes)?;
-        let temp=dir.join(format!(".autotrace-export-{id}.tmp"));
-        fs::write(&temp,bytes).map_err(err)?;
-        if let Err(e)=fs::rename(&temp,&path){let _=fs::remove_file(temp);return Err(err(e));}
+        publish_excel_export(&path,&bytes)?;
         Ok(true)
     })();
     let _=fs::remove_file(staging);
@@ -445,16 +472,8 @@ pub(crate) fn export_customer_excel_dialog(app:tauri::AppHandle,client_id:String
     let Some(path)=rfd::FileDialog::new().set_file_name("AutoTrace_informe_cliente.xlsx")
         .add_filter("Excel para cliente",&["xlsx"]).save_file() else{return Ok(false)};
     if path.exists(){return Err("Elegí un archivo nuevo: el informe no sobrescribe archivos existentes".into());}
-    let folder=path.parent().ok_or("Destino inválido")?;
-    let tmp=folder.join(format!(".autotrace-report-{}.tmp",uuid::Uuid::new_v4()));
-    let result=(||{
-        fs::write(&tmp,&bytes).map_err(err)?;
-        if sha(&tmp)?!=format!("{:x}",Sha256::digest(&bytes)){return Err("Verificación del informe fallida".into());}
-        fs::rename(&tmp,&path).map_err(err)?;
-        Ok(true)
-    })();
-    if result.is_err(){let _=fs::remove_file(tmp);}
-    result
+    publish_excel_export(&path,&bytes)?;
+    Ok(true)
 }
 // Only data from a verified and validated SQLite source enters the current app.
 // Copying a user-selected SQLite database directly to the live path is forbidden.
@@ -699,6 +718,31 @@ mod tests {
         assert!(verify_pair_marker(manifest).is_ok());
         assert!(recovery_rehearsal(manifest).unwrap().sqlite_and_excel_match);
         fs::remove_dir_all(tmp).unwrap();
+    }
+    #[test]
+    fn complete_and_customer_excel_exports_never_overwrite_concurrent_destinations(){
+        let root=std::env::temp_dir().join(format!("autotrace-excel-race-{}",uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let target=root.join("AutoTrace_completo.xlsx");
+        let report=root.join("AutoTrace_informe_cliente.xlsx");
+        let bytes=b"synthetic Excel fixture; publication semantics only";
+        // Inject the competing writer AFTER the staged export is synced and
+        // verified, in the exact check-then-rename race window.
+        let result=publish_excel_export_with(&target,bytes,||{
+            fs::write(&target,b"existing important user workbook").map_err(err)
+        });
+        assert!(result.is_err(),"an existing Excel may not be replaced by an export");
+        assert_eq!(fs::read(&target).unwrap(),b"existing important user workbook");
+        assert_eq!(fs::read_dir(&root).unwrap().count(),1,
+            "a rejected Excel export must not leak staging files");
+        publish_excel_export(&report,bytes).unwrap();
+        assert_eq!(fs::read(&report).unwrap(),bytes);
+        assert!(publish_excel_export(&report,b"another export").is_err(),
+            "repeating an export with the same name cannot overwrite its original");
+        assert_eq!(fs::read(&report).unwrap(),bytes);
+        assert_eq!(fs::read_dir(&root).unwrap().count(),2,
+            "successful export must leave only final Excel files, no .partial");
+        fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn simulated_full_disk_after_partial_write_rolls_back_without_touching_prior_backup(){
