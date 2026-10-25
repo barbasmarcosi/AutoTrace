@@ -42,14 +42,15 @@ Una PC Windows para un taller, operación local offline sin servidor, clientes, 
 ## Proceso y decisión
 
 1. Primero cerrar E0–E8 en PRs, con evidencia repetible del HEAD final.
-2. Solo entonces entregar un paquete concreto de aceptación (EXE + SHA + fixtures ficticios + runbook) para U0–U7.
+2. Solo entonces entregar un paquete concreto de aceptación (EXE + SHA + fixtures ficticios + runbook) para U0–U7. El paquete del PR #36 incluye manifiesto y verificador sin firmas; sus preflights no implican U aprobados.
 3. Cada FAIL de U vuelve a ingeniería; corregir y repetir las pruebas afectadas en un nuevo SHA.
 4. Si cualquier P0/P1 de seguridad o pérdida de datos sigue abierto: NO-GO, PR de release en Draft y main sin publicar.
 5. Drive de ChatGPT **no es** OAuth de AutoTrace. U5 exige configuración real de Google Cloud (Client ID público de tipo Desktop) bajo control del propietario.
 
 ## Registro inicial
 
-- [PR #16 integración](https://github.com/barbasmarcosi/AutoTrace/pull/16): Draft, NO-GO.
+- [PR #36 candidato integrado](https://github.com/barbasmarcosi/AutoTrace/pull/36): Draft, NO-GO; exigir evidencia E0–E8 del SHA final.
+- [PR #52 aceptación física](https://github.com/barbasmarcosi/AutoTrace/pull/52): paquete de U0–U7 incorporado a la rama candidata #36 con contenido idéntico.
 - [PR #19 dependencias](https://github.com/barbasmarcosi/AutoTrace/pull/19): Draft, mitigación de ZIP.
 - [PR #20 cifrado](https://github.com/barbasmarcosi/AutoTrace/pull/20): Draft, ensayos de compatibilidad age pendientes de CI final.
 - [Issue #17 aceptación física/OAuth](https://github.com/barbasmarcosi/AutoTrace/issues/17).

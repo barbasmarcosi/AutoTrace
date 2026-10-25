@@ -8,10 +8,10 @@
 4. En PowerShell de Windows, dentro de esa carpeta, ejecutá (reemplazando el SHA de ejemplo por el de GitHub):
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\verify-acceptance-installer.ps1 -Installer .\AutoTrace_0.1.1_x64-setup.exe -Manifest .\autotrace-release-manifest.json -ExpectedCommit SHA_COMPLETO_DE_40_CARACTERES -EvidenceFile .\installer-preflight.json
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\verify-acceptance-installer.ps1 -Installer .\AutoTrace_0.1.1_x64-setup.exe -Manifest .\autotrace-release-manifest.json -ExpectedCommit SHA_COMPLETO_DE_40_CARACTERES -ExpectedRunId NUMERO_RUN_ACTIONS -EvidenceFile .\installer-preflight.json
 ```
 
-El script no instala nada ni consulta Internet: exige nombre, tamaño, PE, SHA-256 exacto y que el commit coincida con uno obtenido de GitHub **por separado**. El JSON es una descripción del build, **NO** una firma digital/autenticidad frente a un atacante que pueda sustituir ZIP y JSON. Verificá la fuente y la advertencia de Windows/SmartScreen. Nunca omitas una alerta para ejecutar un binario de origen desconocido.
+El script no instala nada ni consulta Internet: exige nombre, tamaño, PE, SHA-256 exacto, coherencia con el archivo `.sha256.txt` y que tanto el commit como el número de ejecución coincidan con los datos obtenidos de GitHub **por separado**. El JSON es una descripción del build, **NO** una firma digital/autenticidad frente a un atacante que pueda sustituir ZIP y JSON. Verificá la fuente y la advertencia de Windows/SmartScreen. Nunca omitas una alerta para ejecutar un binario de origen desconocido.
 
 ## U0 — instalar y arrancar en Windows A
 Solo en equipo de prueba o perfil Windows dedicado, sin datos de clientes. Instalá el NSIS de preview **sin firma digital** que pasó el paso 0. Abrí, cerrá, reiniciá Windows y reabrí. Anotá en el registro U0 el build de Windows, versión de AutoTrace, resultado, fecha y SHA. Nunca informes PASS si no lo ejecutaste.

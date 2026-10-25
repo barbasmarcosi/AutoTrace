@@ -4,6 +4,10 @@ on:
   pull_request:
     paths:
       - '.github/workflows/desktop-installer.yml'
+      - 'scripts/verify-acceptance-installer.ps1'
+      - 'scripts/collect-physical-recovery-evidence.ps1'
+      - 'docs/desktop/ACCEPTANCE_PACKAGE_U0_U7.md'
+      - 'docs/desktop/PHYSICAL_ACCEPTANCE_RECORD_TEMPLATE.json'
       - 'desktop/**'
       - 'tests/**'
       - 'site/**'
@@ -99,7 +103,7 @@ jobs:
           Copy-Item docs/desktop/ACCEPTANCE_PACKAGE_U0_U7.md (Join-Path $dir 'ACCEPTANCE_PACKAGE_U0_U7.md')
           Copy-Item docs/desktop/PHYSICAL_ACCEPTANCE_RECORD_TEMPLATE.json (Join-Path $dir 'PHYSICAL_ACCEPTANCE_RECORD_TEMPLATE.json')
           $check = Join-Path $dir 'verify-acceptance-installer.ps1'
-          & $check -Installer $exe.FullName -Manifest $manifest -ExpectedCommit $checkoutSha -EvidenceFile (Join-Path $env:RUNNER_TEMP 'acceptance-preflight-ci.json')
+          & $check -Installer $exe.FullName -Manifest $manifest -ExpectedCommit $checkoutSha -ExpectedRunId $env:GITHUB_RUN_ID -EvidenceFile (Join-Path $env:RUNNER_TEMP 'acceptance-preflight-ci.json')
           if (-not (Test-Path (Join-Path $env:RUNNER_TEMP 'acceptance-preflight-ci.json'))) {
             throw 'Sanitized preflight evidence was not created'
           }
@@ -108,11 +112,17 @@ jobs:
           try { & $check -Installer $exe.FullName -Manifest $manifest -ExpectedCommit ('0' * 40) | Out-Null }
           catch { $rejected = $true }
           if (-not $rejected) { throw 'Wrong GitHub commit was accepted by preflight' }
+          # NEGATIVE: a manifest tied to a different workflow run must fail.
+          $rejected = $false
+          try { & $check -Installer $exe.FullName -Manifest $manifest -ExpectedCommit $checkoutSha -ExpectedRunId '99999999999' | Out-Null }
+          catch { $rejected = $true }
+          if (-not $rejected) { throw 'Incorrect workflow run ID was accepted by preflight' }
           # NEGATIVE: an installer modified after its manifest is created.
           $tamperDir = Join-Path $env:RUNNER_TEMP 'tampered-autotrace'
           New-Item -ItemType Directory -Path $tamperDir -Force | Out-Null
           $tampered = Join-Path $tamperDir $exe.Name
           Copy-Item -LiteralPath $exe.FullName -Destination $tampered
+          Copy-Item -LiteralPath "$($exe.FullName).sha256.txt" -Destination "$tampered.sha256.txt"
           $file = [System.IO.File]::Open($tampered,[System.IO.FileMode]::Open,[System.IO.FileAccess]::ReadWrite)
           try {
             [void]$file.Seek(4096,[System.IO.SeekOrigin]::Begin)
@@ -124,7 +134,20 @@ jobs:
           try { & $check -Installer $tampered -Manifest $manifest -ExpectedCommit $checkoutSha | Out-Null }
           catch { $rejected = $true }
           if (-not $rejected) { throw 'Modified installer passed checksum verification' }
-          Write-Host 'ACCEPTANCE KIT PASS: trusted SHA, checksum and tamper rejection. Physical U0-U7 remain pending.'
+          # NEGATIVE: a valid EXE with a replaced checksum sidecar must fail.
+          Copy-Item -LiteralPath $exe.FullName -Destination $tampered -Force
+          [System.IO.File]::WriteAllText("$tampered.sha256.txt", (('0' * 64) + " *$($exe.Name)" + [Environment]::NewLine))
+          $rejected = $false
+          try { & $check -Installer $tampered -Manifest $manifest -ExpectedCommit $checkoutSha | Out-Null }
+          catch { $rejected = $true }
+          if (-not $rejected) { throw 'Tampered checksum sidecar was accepted' }
+          # NEGATIVE: missing checksum sidecar must fail closed.
+          Remove-Item -LiteralPath "$tampered.sha256.txt" -Force
+          $rejected = $false
+          try { & $check -Installer $tampered -Manifest $manifest -ExpectedCommit $checkoutSha | Out-Null }
+          catch { $rejected = $true }
+          if (-not $rejected) { throw 'Missing checksum sidecar was accepted' }
+          Write-Host 'ACCEPTANCE KIT PASS: SHA/run identity, manifest, sidecar and tamper rejection. Physical U0-U7 remain pending.'
       - name: Upload preview installer + acceptance kit (UNSIGNED)
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
