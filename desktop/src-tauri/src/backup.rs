@@ -54,6 +54,18 @@ fn flush_verified_file(path:&Path)->Result<(),String>{
     fs::OpenOptions::new().write(true).open(path).map_err(err)?
         .sync_all().map_err(err)
 }
+/// Publish one new artifact with an atomic no-overwrite reservation. An
+/// existence check followed by rename/copy can lose a race to another backup
+/// writer, especially on Unix where rename replaces an existing destination.
+/// Track ownership immediately, so failure cleanup never deletes foreign files.
+fn publish_new_file(source:&Path,destination:&Path,owned:&mut Vec<PathBuf>)->Result<(),String>{
+    let mut out=fs::OpenOptions::new().write(true).create_new(true)
+        .open(destination).map_err(err)?;
+    owned.push(destination.to_path_buf());
+    let mut input=fs::File::open(source).map_err(err)?;
+    std::io::copy(&mut input,&mut out).map_err(err)?;
+    out.sync_all().map_err(err)
+}
 fn verify_db(conn:&Connection)->Result<(),String>{
     let v:String=conn.query_row("PRAGMA integrity_check",[],|r|r.get(0)).map_err(err)?;
     if v!="ok"{return Err(format!("SQLite integrity_check: {v}"));}
@@ -76,6 +88,7 @@ pub(crate) fn backup_pair(src:&Connection, dest:&Path, id:&str)->Result<BackupRe
     if [db.as_path(),excel.as_path(),manifest.as_path()].iter().any(|p|p.exists()) {return Err("Ya existe un respaldo con ese identificador".into());}
     let staging=dest.join(format!(".autotrace-{id}.partial"));
     fs::create_dir(&staging).map_err(err)?;
+    let mut owned=Vec::new();
     let result=(||{
         let temp_db=staging.join("data.sqlite3");
         snapshot(src,&temp_db)?;
@@ -95,14 +108,14 @@ pub(crate) fn backup_pair(src:&Connection, dest:&Path, id:&str)->Result<BackupRe
         // A power-loss test on real hardware remains a separate acceptance gate.
         for file in [&temp_db,&temp_xlsx,&temp_manifest]{flush_verified_file(file)?;}
         // Manifest acts as completion marker and is always promoted last.
-        fs::rename(&temp_db,&db).map_err(err)?;
-        fs::rename(&temp_xlsx,&excel).map_err(err)?;
-        fs::rename(&temp_manifest,&manifest).map_err(err)?;
+        publish_new_file(&temp_db,&db,&mut owned)?;
+        publish_new_file(&temp_xlsx,&excel,&mut owned)?;
+        publish_new_file(&temp_manifest,&manifest,&mut owned)?;
         if sha(&db)?!=metadata["sqliteSha256"].as_str().unwrap_or("") || sha(&excel)?!=metadata["excelSha256"].as_str().unwrap_or("") {return Err("Checksum no coincide después de copiar".into());}
         Ok(BackupResult{sqlite_path:db.display().to_string(),excel_path:excel.display().to_string(),manifest_path:manifest.display().to_string(),external_copy_ok:false,external_copy_error:None,drive_copy_ok:false,drive_copy_error:None,cloud_copy_ok:false,cloud_copy_error:None})
     })();
     let _=fs::remove_dir_all(staging);
-    if result.is_err(){let _=fs::remove_file(db);let _=fs::remove_file(excel);let _=fs::remove_file(manifest);}
+    if result.is_err(){for path in owned{let _=fs::remove_file(path);}}
     result
 }
 pub(crate) fn verify_pair_marker(path:&Path)->Result<(),String>{
@@ -218,6 +231,7 @@ fn mirror_pair(result:&BackupResult,directory:&Path)->Result<(),String>{
     if files.iter().any(|(_,p)|p.exists()){return Err("El respaldo ya existe en destino".into());}
     let staging=directory.join(format!(".{base}.partial"));
     fs::create_dir(&staging).map_err(err)?;
+    let mut owned=Vec::new();
     let result_copy=(||{
         for(i,(from,_))in files.iter().enumerate(){
             let tmp=staging.join(format!("{i}.part"));
@@ -226,12 +240,12 @@ fn mirror_pair(result:&BackupResult,directory:&Path)->Result<(),String>{
         }
         // Publicar el manifiesto último permite detectar pares incompletos.
         for(i,(_,dst))in files.iter().enumerate(){
-            fs::rename(staging.join(format!("{i}.part")),dst).map_err(err)?;
+            publish_new_file(&staging.join(format!("{i}.part")),dst,&mut owned)?;
         }
         verify_pair_marker(&files[2].1)
     })();
     let _=fs::remove_dir_all(staging);
-    if result_copy.is_err(){for(_,p)in files.iter(){let _=fs::remove_file(p);}}
+    if result_copy.is_err(){for p in owned{let _=fs::remove_file(p);}}
     result_copy
 }
 fn latest_verified(directory:&Path)->Result<Option<u128>,String>{
@@ -655,6 +669,31 @@ mod tests {
         assert!(verify_pair_marker(manifest).is_ok());
         assert!(recovery_rehearsal(manifest).unwrap().sqlite_and_excel_match);
         fs::remove_dir_all(tmp).unwrap();
+    }
+    #[test]
+    fn file_promotion_refuses_existing_destination_and_tracks_only_owned_files(){
+        let temp=std::env::temp_dir().join(format!("autotrace-publish-race-{}",uuid::Uuid::new_v4()));
+        fs::create_dir_all(&temp).unwrap();
+        let source=temp.join("synthetic-source.part");
+        let old=temp.join("protected-prior.sqlite3");
+        let new=temp.join("new-copy.sqlite3");
+        fs::write(&source,b"new-synthetic-payload").unwrap();
+        fs::write(&old,b"trusted-preexisting-backup").unwrap();
+        let mut owned=Vec::new();
+        assert!(publish_new_file(&source,&old,&mut owned).is_err(),
+            "create_new must refuse existing backup even in a cross-process race");
+        assert!(owned.is_empty(),"an existing file must never be marked as our cleanup target");
+        assert_eq!(fs::read(&old).unwrap(),b"trusted-preexisting-backup");
+        publish_new_file(&source,&new,&mut owned).unwrap();
+        assert_eq!(owned,vec![new.clone()]);
+        assert_eq!(fs::read(&new).unwrap(),b"new-synthetic-payload");
+        assert!(publish_new_file(&source,&new,&mut owned).is_err());
+        assert_eq!(owned,vec![new.clone()],"failed reservation must not gain ownership");
+        for path in owned{fs::remove_file(path).unwrap();}
+        assert!(old.exists(),"cleanup must preserve prior backup");
+        assert_eq!(fs::read(&old).unwrap(),b"trusted-preexisting-backup");
+        assert!(!new.exists());
+        fs::remove_dir_all(&temp).unwrap();
     }
     #[test]
     fn backup_pair_contains_restorable_sqlite_and_excel() {
