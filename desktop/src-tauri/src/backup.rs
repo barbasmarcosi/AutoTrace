@@ -54,23 +54,36 @@ fn flush_verified_file(path:&Path)->Result<(),String>{
     fs::OpenOptions::new().write(true).open(path).map_err(err)?
         .sync_all().map_err(err)
 }
-/// Publish one new artifact with an atomic no-overwrite reservation. An
-/// existence check followed by rename/copy can lose a race to another backup
-/// writer, especially on Unix where rename replaces an existing destination.
-/// Track ownership immediately, so failure cleanup never deletes foreign files.
-/// The copier is injected only for deterministic I/O-failure tests.
-/// The production copier is std::io::copy; ownership is acquired BEFORE I/O,
-/// allowing the calling transaction to remove every partially written file.
+/// Copy to a private sibling first. Neither the SQLite, Excel nor
+/// manifest destination may be visible until the entire file has been copied,
+/// fsynced and verified. The manifest is still published last as a commit
+/// marker; on a mid-copy ENOSPC there is no final partial file at all.
+///
+/// The copier is injected only for deterministic I/O-failure tests; production
+/// uses std::io::copy. Only completed destinations are registered for rollback.
 fn publish_new_file_with<F>(
     source:&Path,destination:&Path,owned:&mut Vec<PathBuf>,copy:F
 )->Result<(),String>
 where F:FnOnce(&mut fs::File,&mut fs::File)->std::io::Result<u64>{
+    let parent=destination.parent().ok_or("Destino de respaldo inválido")?;
+    let stage=parent.join(format!(".autotrace-promote-{}.partial",uuid::Uuid::new_v4()));
+    struct Cleanup(PathBuf);
+    impl Drop for Cleanup{
+        fn drop(&mut self){let _=fs::remove_file(&self.0);}
+    }
+    let _cleanup=Cleanup(stage.clone());
     let mut out=fs::OpenOptions::new().write(true).create_new(true)
-        .open(destination).map_err(err)?;
-    owned.push(destination.to_path_buf());
+        .open(&stage).map_err(err)?;
     let mut input=fs::File::open(source).map_err(err)?;
-    copy(&mut input,&mut out).map_err(err)?;
-    out.sync_all().map_err(err)
+    let expected=input.metadata().map_err(err)?.len();
+    let copied=copy(&mut input,&mut out).map_err(err)?;
+    if copied!=expected{return Err("Respaldo incompleto: no se publicó".into());}
+    out.sync_all().map_err(err)?;
+    drop(out);
+    if sha(&stage)?!=sha(source)?{return Err("Respaldo copiado con diferencias: no se publicó".into());}
+    crate::drive_transport::publish_verified_cipher(&stage,destination)?;
+    owned.push(destination.to_path_buf());
+    Ok(())
 }
 fn publish_new_file(source:&Path,destination:&Path,owned:&mut Vec<PathBuf>)->Result<(),String>{
     publish_new_file_with(source,destination,owned,std::io::copy)
@@ -766,11 +779,15 @@ mod tests {
             Err(std::io::Error::other("synthetic ENOSPC after partial write"))
         });
         assert!(result.is_err());
-        assert_eq!(fs::read(&partial).unwrap(),b"syntheti");
-        assert_eq!(owned,vec![partial.clone()]);
+        assert!(!partial.exists(),
+            "the final SQLite filename must NEVER become visible after partial write failure");
+        assert!(owned.is_empty(),
+            "an unpublished or incomplete file must never enter the rollback ownership list");
         assert!(!marker.exists(),"completion marker must not be published on I/O failure");
+        assert_eq!(fs::read_dir(&root).unwrap().count(),2,
+            "all temporary staging files must be removed on I/O failure");
         rollback_owned_files(owned);
-        assert!(!partial.exists(),"partial SQLite must be removed after failed publication");
+        assert!(!partial.exists(),"no incomplete final SQLite may survive the failure");
         assert_eq!(fs::read(&prior).unwrap(),b"previous-good-backup",
             "failure rollback must never destroy an existing valid backup");
         // A later healthy backup may retry with the same previously failed name.
