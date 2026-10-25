@@ -64,7 +64,7 @@ fn effective_client_id(settings:&Settings)->Result<String,String>{
 /// use MoveFileExW with REPLACE_EXISTING and WRITE_THROUGH instead. No
 /// delete-then-rename window is permitted for backup provenance metadata.
 #[cfg(windows)]
-fn replace_settings_file(temp:&std::path::Path,target:&std::path::Path)->std::io::Result<()>{
+pub(crate) fn replace_settings_file(temp:&std::path::Path,target:&std::path::Path)->std::io::Result<()>{
     use std::{iter,os::windows::ffi::OsStrExt};
     #[link(name="kernel32")]
     unsafe extern "system" {
@@ -77,7 +77,7 @@ fn replace_settings_file(temp:&std::path::Path,target:&std::path::Path)->std::io
     else{Err(std::io::Error::last_os_error())}
 }
 #[cfg(not(windows))]
-fn replace_settings_file(temp:&std::path::Path,target:&std::path::Path)->std::io::Result<()>{
+pub(crate) fn replace_settings_file(temp:&std::path::Path,target:&std::path::Path)->std::io::Result<()>{
     fs::rename(temp,target)
 }
 fn save_settings_file(path:&std::path::Path,state:&Settings)->Result<(),String>{
