@@ -1,13 +1,13 @@
-# AutoTrace — protocolo de aceptación física y release (PR #16)
+# AutoTrace — protocolo de aceptación física y release (candidato PR #36)
 
-**Estado inicial:** PENDIENTE. Este documento NO certifica que se hayan realizado pruebas en hardware. Usar instalador **del SHA final**, no un preview anterior. Ningún dato real ni contraseña de recuperación se sube a GitHub Actions.
+**Estado inicial:** PENDIENTE. Este documento NO certifica que se hayan realizado pruebas en hardware. Usar instalador **del SHA final**, no un preview anterior. El paquete práctico con verificadores, manifiesto y registro no sensible está en [ACCEPTANCE_PACKAGE_U0_U7.md](./ACCEPTANCE_PACKAGE_U0_U7.md). Ningún dato real ni contraseña de recuperación se sube a GitHub Actions.
 
 ## Identificación de evidencia
 
 | Campo | Completar |
 |---|---|
 | Fecha UTC / evaluador | PENDIENTE |
-| Commit SHA de PR #16 | PENDIENTE |
+| Commit SHA de PR #36 | PENDIENTE |
 | Workflow y SHA-256 del instalador NSIS | PENDIENTE |
 | Windows A (versión y DPI) | PENDIENTE |
 | Windows B limpio (versión y DPI) | PENDIENTE |
@@ -35,6 +35,6 @@
 
 ## Decisión
 
-Si cualquier P0/P1 de pérdida de datos o recuperación sigue abierto: **NO-GO**. Mantener PR #16 en Draft y main sin alteraciones.
+Si cualquier P0/P1 de pérdida de datos o recuperación sigue abierto: **NO-GO**. Mantener PR #36 en Draft y main sin alteraciones.
 
 Puede plantearse posteriormente una edición **offline** sin Drive, pero solo con G0–G4 y G6–G8 demostrados y sin representar G5 como completado. El producto completo 10/10 requiere G0–G8.
