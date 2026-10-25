@@ -1,17 +1,17 @@
 name: Historical NSIS upgrade + rollback (synthetic v1)
 
 on:
-  # Temporary isolated-branch trigger to execute one real end-to-end proof.
-  # After proof, use workflow_dispatch with a fresh baseline artifact ID:
-  # preview artifacts expire after 7 days, so they must never be hard-coded
-  # into the general release CI gate.
+  # Historical NSIS rehearsal is deliberately run on a dedicated release
+  # candidate, not every PR. The previous artifact is verified by hash + SHA.
+  # For later RCs supply a fresh baseline via workflow_dispatch before the
+  # seven-day artifact expires.
   push:
     branches:
       - quality/nsis-historical-upgrade-20261025
+      - release/desktop-quality-rc-20261025
     paths:
-      - desktop/scripts/check-upgrade-v1.py
-      - desktop/scripts/smoke-historical-upgrade.ps1
-      - .github/workflows/desktop-historical-upgrade.yml
+      - 'desktop/**'
+      - '.github/workflows/desktop-historical-upgrade.yml'
   workflow_dispatch:
     inputs:
       baseline_artifact_id:
