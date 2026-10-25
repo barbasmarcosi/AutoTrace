@@ -6,6 +6,7 @@ on:
       - '.github/workflows/desktop-installer.yml'
       - 'scripts/verify-acceptance-installer.ps1'
       - 'scripts/collect-physical-recovery-evidence.ps1'
+      - 'scripts/test-physical-usb-preflight.ps1'
       - 'docs/desktop/ACCEPTANCE_PACKAGE_U0_U7.md'
       - 'docs/desktop/PHYSICAL_ACCEPTANCE_RECORD_TEMPLATE.json'
       - 'desktop/**'
@@ -46,6 +47,9 @@ jobs:
         run: |
           python scripts/check_desktop_release_policy.py
           python -m unittest discover -s tests -p test_release_policy.py -v
+      - name: Test USB preflight failure cases without real media
+        shell: pwsh
+        run: ./scripts/test-physical-usb-preflight.ps1
       - name: Build unsigned Windows installer (NSIS)
         working-directory: desktop/src-tauri
         shell: pwsh

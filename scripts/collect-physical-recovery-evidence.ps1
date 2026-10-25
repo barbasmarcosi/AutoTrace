@@ -13,6 +13,23 @@ param(
     [string]$EvidencePath = ".\\autotrace-usb-preflight.json"
 )
 $ErrorActionPreference = 'Stop'
+# A drive letter alone cannot prove physical independence when an ancestor is
+# a junction, symlink, mounted folder or other Windows reparse point.
+# Reject redirected paths BEFORE checking drive/partition metadata.
+function Assert-NoReparsePoint([string]$GivenPath) {
+    $cursor = [System.IO.Path]::GetFullPath($GivenPath)
+    while ($cursor) {
+        $entry = Get-Item -LiteralPath $cursor -Force -ErrorAction Stop
+        if (($entry.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Se detectaron redirecciones (junction/symlink/mount point). Usá rutas locales directas para la prueba física."
+        }
+        $parent = [System.IO.Directory]::GetParent($cursor)
+        if ($null -eq $parent) { break }
+        $cursor = $parent.FullName
+    }
+}
+Assert-NoReparsePoint $PrimaryDataDirectory
+Assert-NoReparsePoint $PortableArchive
 $primary = (Resolve-Path -LiteralPath $PrimaryDataDirectory -ErrorAction Stop).Path
 $archive = (Resolve-Path -LiteralPath $PortableArchive -ErrorAction Stop).Path
 if (-not $archive.EndsWith(".atbackup.age", [System.StringComparison]::OrdinalIgnoreCase)) {
@@ -21,6 +38,19 @@ if (-not $archive.EndsWith(".atbackup.age", [System.StringComparison]::OrdinalIg
 $filesize = (Get-Item -LiteralPath $archive -ErrorAction Stop).Length
 if ($filesize -lt 100 -or $filesize -gt 600000000) {
     throw "Archivo portable vacío o fuera del límite permitido"
+}
+# Read only a tiny encrypted-envelope prefix. This rejects renamed SQLite,
+# Excel and random files; without the phrase it cannot authenticate the archive.
+$stream = [System.IO.File]::OpenRead($archive)
+try {
+    $headerBytes = New-Object byte[] 512
+    $count = $stream.Read($headerBytes, 0, $headerBytes.Length)
+    $header = [System.Text.Encoding]::ASCII.GetString($headerBytes, 0, $count)
+    if ($header -cnotmatch '\Aage-encryption\.org/v1\n-> scrypt [^\r\n]{1,160}\n') {
+        throw "No se reconoce la cabecera cifrada age/scrypt. No se puede emitir preflight."
+    }
+} finally {
+    $stream.Dispose()
 }
 $primaryRoot = [System.IO.Path]::GetPathRoot($primary)
 $archiveRoot = [System.IO.Path]::GetPathRoot($archive)
@@ -50,12 +80,13 @@ $evidence = [ordered]@{
     driveOAuthPassed = $false
     collectedAtUtc = [DateTime]::UtcNow.ToString('o')
     windowsVersion = $os
-    sourceDiskNumber = $primaryDisk.Number
-    targetDiskNumber = $archiveDisk.Number
+    physicalDisksDistinct = $true
     targetBusType = $archiveDisk.BusType.ToString()
+    reparsePointsRejected = $true
+    encryptedEnvelopeHeaderChecked = $true
     encryptedArchiveBytes = $filesize
     encryptedArchiveSha256 = $hash
-    warning = 'Este control no verifica contenido, frase ni recuperación en otra PC.'
+    warning = 'Solo verifica cabecera sin autenticar, medios y hash; no valida frase, contenido ni recuperación en otra PC.'
 }
 $target = [System.IO.Path]::GetFullPath($EvidencePath)
 if (Test-Path -LiteralPath $target) {

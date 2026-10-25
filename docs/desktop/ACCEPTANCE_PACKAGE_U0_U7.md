@@ -26,7 +26,7 @@ Creá el kit de recuperación, **guardá la frase en papel separado** y exportá
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\collect-physical-recovery-evidence.ps1 -PrimaryDataDirectory "$env:LOCALAPPDATA\ar.com.autotrace.desktop" -PortableArchive "E:\AutoTrace_prueba.atbackup.age" -EvidencePath .\usb-preflight.json
 ```
 
-Este script comprueba disco físico diferente, `BusType=USB` y SHA-256 sin leer datos ni frase. **Solo acredita MEDIA_PREFLIGHT_ONLY**, no la recuperación. Guardá varias copias cifradas con distintos nombres; mantené los datos de prueba y nada más en el pendrive.
+Este script rechaza archivos sin cabecera `age/scrypt`, rutas con junctions/symlinks/mount points, discos físicos coincidentes y dispositivos que no indiquen `BusType=USB`. Lee únicamente la cabecera cifrada y calcula el SHA-256; **no descifra ni autentica el respaldo**, ni prueba la frase de recuperación. Su JSON omite rutas y números de disco, e informa únicamente `MEDIA_PREFLIGHT_ONLY`, no U2/U3 aprobados. Guardá varias copias cifradas con distintos nombres; mantené los datos de prueba y nada más en el pendrive.
 
 ## U3 — recuperación de desastre en Windows B
 PC **físicamente distinta** o instalación Windows limpia independiente, sin acceso a perfil, Google, disco ni claves de A y **sin Internet**. Llevá solamente el pendrive y la frase en papel por separado. Instalá exactamente el mismo EXE verificado, elegí “Probar copia cifrada portátil” y luego “Recuperar copia portátil”. Cotejá los IDs, contactos ficticios, autos, renglones, pagos, cuentas, saldos y Excel reconstruido. Registrar únicamente diferencias, conteos y resultados, no nombres ni capturas con datos.
