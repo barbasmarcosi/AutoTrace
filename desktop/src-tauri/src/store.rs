@@ -631,6 +631,45 @@ mod tests {
         assert!(write(&mut db, &data, 0).is_err());
         assert_eq!(read(&db).unwrap().revision, 0);
     }
+    #[test]
+    fn financial_ledger_validation_never_partially_mutates_persisted_state(){
+        let mut db=Connection::open_in_memory().unwrap();
+        db.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        db.execute_batch(SCHEMA).unwrap();
+        let fixture=serde_json::json!({
+          "clients":[{"id":"c","name":"Cliente ficticio","createdAt":""}],
+          "vehicles":[{"id":"v","clientId":"c","plate":"AF012BC","make":"Ford","model":"Ka","year":2022,"mileage":0}],
+          "orders":[{"id":"o","vehicleId":"v","title":"Servicio",
+             "status":"done","charged":100.01,"paid":40.01,"partsCost":10.10,"laborCost":20.20,
+             "payments":[{"id":"p","date":"2026-10-24","amount":40.01,"method":"transfer",
+               "accountId":"acc","reference":"OP-ABC"}]}],
+          "settings":{"garageName":"Taller ficticio","currency":"ARS","demo":false,
+            "accounts":[{"id":"acc","name":"Cuenta del taller","kind":"bank","alias":"alias.de.prueba"}]}
+        });
+        let mut data:AppData=serde_json::from_value(fixture).unwrap();
+        assert_eq!(write(&mut db,&data,0).unwrap().revision,1);
+        let original=serde_json::to_value(read(&db).unwrap().data).unwrap();
+        let candidates:[(&str,fn(&mut AppData));4]=[
+          ("overpaid",( |d:&mut AppData| d.orders[0].paid=100.02)),
+          ("fractional cents",( |d:&mut AppData| d.orders[0].payments[0].amount=40.001)),
+          ("deleted linked account",( |d:&mut AppData| d.settings.accounts.clear())),
+          ("ledger sum above aggregate",( |d:&mut AppData| d.orders[0].payments[0].amount=40.02)),
+        ];
+        for (name,mutate) in candidates{
+            let mut invalid=data.clone();
+            mutate(&mut invalid);
+            assert!(write(&mut db,&invalid,1).is_err(),"invalid case: {name}");
+            let after=read(&db).unwrap();
+            assert_eq!(after.revision,1,"revision changed for {name}");
+            assert_eq!(serde_json::to_value(after.data).unwrap(),original,"data changed for {name}");
+        }
+        data.orders[0].payments[0].amount=40.00;
+        assert_eq!(write(&mut db,&data,1).unwrap().revision,2);
+        let after=read(&db).unwrap();
+        assert_eq!(after.data.orders[0].payments[0].amount,40.00);
+        assert_eq!(after.data.settings.accounts.len(),1);
+    }
+
     /// G1 performance protocol. Intentionally ignored by CI: Windows operator
     /// hardware and SSD performance are part of the acceptance evidence.
     /// Run: cargo test --locked release_scale_profile -- --ignored --nocapture
