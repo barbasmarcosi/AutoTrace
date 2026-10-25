@@ -235,7 +235,7 @@ fn verify_pending_archives(files:&[PathBuf],passphrase:&str)->Result<(),String>{
 }
 pub(crate) fn unlock_for_api(passphrase:String,files:&[PathBuf])->Result<(),String>{
     ensure_phrase_consistent(&passphrase)?;
-    verify_pending_archives(files.as_ref(),&passphrase)?;
+    verify_pending_archives(files,&passphrase)?;
     set_secret(Some(SecretString::from(passphrase)))
 }
 /// Export a fresh, fully verified encrypted disaster-recovery snapshot to
