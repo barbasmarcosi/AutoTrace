@@ -70,14 +70,22 @@ fn queue_dir(app:&tauri::AppHandle)->Result<PathBuf,String>{
     let dir=home(app)?.join("drive-api-encrypted-pending");
     fs::create_dir_all(&dir).map_err(|e|e.to_string())?;Ok(dir)
 }
-fn pending(app:&tauri::AppHandle)->Result<Vec<PathBuf>,String>{
+fn queued_files(dir:&std::path::Path)->Result<Vec<PathBuf>,String>{
     let mut found=Vec::new();
-    for entry in fs::read_dir(queue_dir(app)?).map_err(|e|e.to_string())?{
+    for entry in fs::read_dir(dir).map_err(|e|e.to_string())?{
         let path=entry.map_err(|e|e.to_string())?.path();
-        if path.is_file()&&path.file_name().and_then(|x|x.to_str())
-            .is_some_and(|n|n.starts_with("AutoTrace_")&&n.ends_with(".atbackup.age")){found.push(path);}
+        if !path.file_name().and_then(|x|x.to_str())
+            .is_some_and(|n|n.starts_with("AutoTrace_")&&n.ends_with(".atbackup.age")){continue;}
+        let meta=fs::symlink_metadata(&path).map_err(|_|"La cola cifrada cambió inesperadamente")?;
+        if !meta.file_type().is_file()||meta.file_type().is_symlink(){
+            return Err("La cola Drive contiene una ruta no segura. No se sincronizará ningún archivo hasta corregirla.".into());
+        }
+        found.push(path);
     }
     found.sort();Ok(found)
+}
+fn pending(app:&tauri::AppHandle)->Result<Vec<PathBuf>,String>{
+    queued_files(&queue_dir(app)?)
 }
 #[tauri::command]
 pub(crate) fn drive_api_status(app:tauri::AppHandle)->Result<ApiStatus,String>{
@@ -283,6 +291,28 @@ mod tests{
         assert_eq!(super::sync_outcome(&Ok(1)),Some("remote_verified"));
         assert_eq!(super::sync_outcome(&Err("Google Drive devolvió HTTP 401".into())),Some("reconnect_required"));
         assert_eq!(super::sync_outcome(&Err("Google Drive devolvió HTTP 503".into())),Some("provider_unavailable"));
+    }
+    #[test] fn drive_queue_rejects_nonfiles_and_preserves_valid_file_list(){
+        use std::fs;
+        let temp=std::env::temp_dir().join(format!("autotrace-queue-test-{}",uuid::Uuid::new_v4()));
+        fs::create_dir_all(&temp).unwrap();
+        let legitimate=temp.join("AutoTrace_2026.atbackup.age");
+        fs::write(&legitimate,b"synthetic fixture only").unwrap();
+        fs::write(temp.join("ignore-this.sqlite3"),b"unrelated").unwrap();
+        assert_eq!(super::queued_files(&temp).unwrap(),vec![legitimate.clone()]);
+        let unwanted=temp.join("AutoTrace_unexpected.atbackup.age");
+        fs::create_dir(&unwanted).unwrap();
+        assert!(super::queued_files(&temp).is_err(),
+            "directories masquerading as backup names cannot be silently ignored");
+        fs::remove_dir_all(&unwanted).unwrap();
+        #[cfg(unix)]
+        {
+            let target=temp.join("customer-private.sqlite3");
+            fs::write(&target,b"fake customer data").unwrap();
+            std::os::unix::fs::symlink(&target,&unwanted).unwrap();
+            assert!(super::queued_files(&temp).is_err(),"symbolic links must fail closed");
+        }
+        fs::remove_dir_all(temp).unwrap();
     }
     #[test] fn cloud_api_never_needs_google_secret_on_disk(){
         assert!(super::drive_oauth::client_id_valid("012345678901-abc.apps.googleusercontent.com"));

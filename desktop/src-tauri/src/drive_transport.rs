@@ -3,12 +3,38 @@
 use md5;
 use reqwest::{blocking::{Body,Client},header::{CONTENT_LENGTH,CONTENT_RANGE,CONTENT_TYPE,LOCATION,RANGE}};
 use serde::{Serialize,Deserialize};
-use std::{fs,io::{Read,Seek,SeekFrom},path::Path,thread,time::Duration};
+use std::{fs,io::{BufRead,BufReader,Read,Seek,SeekFrom},path::Path,thread,time::Duration};
 use url::Url;
 const API:&str="https://www.googleapis.com/drive/v3/files";
 const UPLOAD:&str="https://www.googleapis.com/upload/drive/v3/files";
 const MAX:u64=600_000_000;
 const CHUNK:u64=8*1024*1024;
+/// Never send a user-controlled file to Google merely because its filename
+/// ends in .age. A local plaintext SQLite/XLSX, or a symlink to one, must be
+/// rejected before any HTTP request. This verifies the age-v1 scrypt envelope,
+/// NOT the full ciphertext authentication (which needs the recovery phrase).
+fn preflight_ciphertext(path:&Path)->Result<u64,String>{
+    let metadata=fs::symlink_metadata(path).map_err(|_|"No se pudo abrir copia cifrada pendiente")?;
+    if !metadata.file_type().is_file()||metadata.file_type().is_symlink()||
+        metadata.len()<100||metadata.len()>MAX{
+        return Err("La cola de Drive contiene un archivo inválido o enlace; no se envió".into());
+    }
+    let mut reader=BufReader::new(fs::File::open(path).map_err(|_|"No se pudo leer respaldo cifrado")?);
+    // Cap line reads on malformed files; genuine age scrypt header is short.
+    let mut first=Vec::new();
+    reader.by_ref().take(256).read_until(b'\n',&mut first)
+        .map_err(|_|"Cabecera age ilegible")?;
+    let mut second=Vec::new();
+    reader.by_ref().take(512).read_until(b'\n',&mut second)
+        .map_err(|_|"Cabecera age ilegible")?;
+    if first!=b"age-encryption.org/v1\n"||!second.starts_with(b"-> scrypt ")||
+       !second.ends_with(b"\n"){
+        return Err("El archivo pendiente no es un respaldo age/scrypt de AutoTrace. No se envió".into());
+    }
+    age::Decryptor::new(BufReader::new(fs::File::open(path).map_err(|_|"No se pudo leer el archivo")?))
+        .map_err(|_|"Cabecera age dañada o incompleta")?;
+    Ok(metadata.len())
+}
 fn file_md5(path:&Path)->Result<String,String>{
     let mut file=fs::File::open(path).map_err(|e|e.to_string())?;
     let mut digest=md5::Context::new();
@@ -124,8 +150,7 @@ pub(crate) fn upload(token:&str,path:&Path)->Result<String,String>{
     let client=http()?;
     let name=path.file_name().and_then(|n|n.to_str()).ok_or("Archivo sin nombre")?;
     if !name.starts_with("AutoTrace_")||!name.ends_with(".atbackup.age"){return Err("Solo se admiten archivos AutoTrace cifrados".into());}
-    let size=fs::metadata(path).map_err(|e|e.to_string())?.len();
-    if size==0||size>MAX{return Err("Archivo cifrado fuera del tamaño permitido".into());}
+    let size=preflight_ciphertext(path)?;
     let checksum=file_md5(path)?;
     // Retry idempotently, including a completed request whose local acknowledgement was lost.
     if let Some(id)=already_uploaded(&listed(&client,token)?,name,size,&checksum)?{return Ok(id);}
@@ -291,6 +316,28 @@ fn receive_verified<R:Read>(stream:R,size:u64,expected_md5:&str,destination:&Pat
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[test] fn never_upload_plaintext_or_falsely_renamed_files_from_drive_queue(){
+        use std::io::Write;
+        let root=std::env::temp_dir().join(format!("autotrace-queued-age-{}",uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let plain=root.join("AutoTrace_fake.atbackup.age");
+        fs::write(&plain,b"SQLite format 3\0FAKE UNENCRYPTED CUSTOMER CONTENT").unwrap();
+        assert!(preflight_ciphertext(&plain).is_err());
+        assert!(upload("no-real-google-token",&plain).is_err(),
+            "plaintext must fail before attempting any HTTP upload");
+        let forged=root.join("AutoTrace_forged.atbackup.age");
+        fs::write(&forged,b"age-encryption.org/v1\n-> scrypt fake fake\nNOT A VALID AGE ARCHIVE").unwrap();
+        assert!(preflight_ciphertext(&forged).is_err(),"a fake header cannot bypass age parsing");
+
+        let good=root.join("AutoTrace_valid.atbackup.age");
+        let pw=age::secrecy::SecretString::from("AUTOTRACE-TEST-ONLY-NOT-A-RECOVERY-KEY".to_owned());
+        let enc=age::Encryptor::with_user_passphrase(pw);
+        let mut writer=enc.wrap_output(fs::File::create(&good).unwrap()).unwrap();
+        writer.write_all(b"AUTOTRACE-DRIVE-1\nSYNTHETIC-NOT-PRIVATE").unwrap();
+        writer.finish().unwrap();
+        assert_eq!(preflight_ciphertext(&good).unwrap(),fs::metadata(&good).unwrap().len());
+        fs::remove_dir_all(root).unwrap();
+    }
     #[test] fn mock_google_http_errors_are_safe_and_non_retryable_without_bytes(){
         use std::io::{Read,Write};
         use std::net::TcpListener;
