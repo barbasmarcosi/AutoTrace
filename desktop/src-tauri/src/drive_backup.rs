@@ -495,6 +495,11 @@ pub(crate) fn cleanup_stale_decrypt_directories(){
     cleanup_stale_decrypt_in(&std::env::temp_dir());
 }
 fn read_archive(path:&Path,passphrase:&str)->Result<RestoredArchive,String>{
+    read_archive_in(path,passphrase,&std::env::temp_dir())
+}
+/// Testable recovery sandbox. An error must never leave a decrypted SQLite,
+/// Excel or manifest on disk, nor touch the active workshop database.
+fn read_archive_in(path:&Path,passphrase:&str,temp_root:&Path)->Result<RestoredArchive,String>{
     let meta=fs::metadata(path).map_err(|e|e.to_string())?;
     if !meta.is_file()||meta.len()>600_000_000||meta.len()<100 {
         return Err("Archivo cifrado vacío o demasiado grande".into());
@@ -504,7 +509,7 @@ fn read_archive(path:&Path,passphrase:&str)->Result<RestoredArchive,String>{
     let identity=age::scrypt::Identity::new(SecretString::from(passphrase.to_owned()));
     let reader=decryptor.decrypt(std::iter::once(&identity as &dyn age::Identity))
       .map_err(|_|"Clave incorrecta o archivo cifrado alterado")?;
-    let location=std::env::temp_dir().join(format!("autotrace-drive-decrypt-{}",uuid::Uuid::new_v4()));
+    let location=temp_root.join(format!("autotrace-drive-decrypt-{}",uuid::Uuid::new_v4()));
     fs::create_dir(&location).map_err(|_|"No se pudo preparar la recuperación temporal")?;
     struct Cleanup(PathBuf);
     impl Drop for Cleanup {fn drop(&mut self){let _=fs::remove_dir_all(&self.0);}}
@@ -654,6 +659,60 @@ mod tests {
         assert!(paths_overlap(Path::new("G:/Mi unidad"),Path::new("G:/Mi unidad/AutoTrace")));
         assert!(paths_overlap(Path::new("G:/Mi unidad/AutoTrace"),Path::new("G:/Mi unidad/AutoTrace/plain")));
         assert!(!paths_overlap(Path::new("D:/USB/backups"),Path::new("G:/Mi unidad/AutoTrace")));
+    }
+    #[test]
+    fn failed_or_finished_encrypted_recovery_cleans_plaintext_and_preserves_workshop(){
+        let root=std::env::temp_dir().join(format!("autotrace-isolated-restore-{}",uuid::Uuid::new_v4()));
+        let local=root.join("source");
+        let encrypted=root.join("encrypted");
+        let sandbox=root.join("decrypted-sandbox");
+        for dir in [&local,&encrypted,&sandbox]{fs::create_dir_all(dir).unwrap();}
+        let mut conn=Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("../migrations/001_init.sql")).unwrap();
+        let payload:store::AppData=serde_json::from_value(serde_json::json!({
+            "clients":[{"id":"c","name":"Cliente prueba","phone":"","email":"","notes":"","createdAt":""}],
+            "vehicles":[],"orders":[],
+            "settings":{"garageName":"Taller prueba","currency":"ARS","demo":false}
+        })).unwrap();
+        store::write(&mut conn,&payload,0).unwrap();
+        let original=serde_json::to_value(store::read(&conn).unwrap().data).unwrap();
+        let pair=backup::backup_pair(&conn,&local,"fixture").unwrap();
+        let password=SecretString::from("synthetic recovery passphrase to test cleanup".to_owned());
+        let path=seal(&pair,&encrypted,&password).unwrap();
+        let encrypted_bytes=fs::read(&path).unwrap();
+        let assert_empty=||{
+            assert_eq!(fs::read_dir(&sandbox).unwrap().count(),0,
+                "failed or completed recovery may not leave decrypted SQLite or Excel in Temp");
+        };
+        assert_empty();
+        assert!(read_archive_in(&path,"synthetic wrong phrase at least 16 chars",&sandbox).is_err());
+        assert_empty();
+        for cut in [0,encrypted_bytes.len()/2,encrypted_bytes.len()-1]{
+            let corrupted=encrypted.join(format!("truncated-{cut}.atbackup.age"));
+            fs::write(&corrupted,&encrypted_bytes[..cut]).unwrap();
+            assert!(read_archive_in(&corrupted,password.expose_secret_for_restore(),&sandbox).is_err());
+            assert_empty();
+        }
+        let mut tampered=encrypted_bytes.clone();
+        tampered[tampered.len()-33]^=0x5a;
+        let corrupted=encrypted.join("tampered.atbackup.age");
+        fs::write(&corrupted,&tampered).unwrap();
+        assert!(read_archive_in(&corrupted,password.expose_secret_for_restore(),&sandbox).is_err());
+        assert_empty();
+
+        // A successful read must hold the temp folder until the caller finishes
+        // the rehearsal, and remove it immediately on scope exit.
+        {
+            let recovered=read_archive_in(&path,password.expose_secret_for_restore(),&sandbox).unwrap();
+            assert_eq!(fs::read_dir(&sandbox).unwrap().count(),1);
+            let (decoded,verified)=backup::read_sqlite_candidate(&recovered.sqlite).unwrap();
+            assert!(verified);
+            assert_eq!(serde_json::to_value(decoded).unwrap(),original);
+        }
+        assert_empty();
+        assert_eq!(serde_json::to_value(store::read(&conn).unwrap().data).unwrap(),original,
+            "failed restores must never mutate the currently open workshop");
+        fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn cloud_archive_is_encrypted_recovers_both_formats_and_rejects_wrong_key(){
