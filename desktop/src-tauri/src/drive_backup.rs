@@ -116,7 +116,9 @@ pub(crate) fn check_existing_archives(app:&tauri::AppHandle,passphrase:&str)->Re
     ensure_phrase_consistent(passphrase)?;
     if let Some(folder)=configured_directory(app)?{
         let archives=archives_in(&folder)?;
-        // Both ends are checked: oldest and newest can have different legacy phrases.
+        verify_synced_archive_keys(&archives,passphrase)?;
+        // Full content-integrity checks for both oldest and newest snapshots.
+        // Middle archives are independently verified on actual restore.
         if let Some(oldest)=archives.first(){let _=read_archive(oldest,passphrase)?;}
         if let Some(newest)=archives.last(){
             if archives.first()!=Some(newest){let _=read_archive(newest,passphrase)?;}
@@ -146,6 +148,33 @@ fn archives_in(folder:&Path)->Result<Vec<PathBuf>,String>{
     }
     paths.sort();
     Ok(paths)
+}
+/// A folder may contain several generations of encrypted backups. Testing
+/// only its newest file can silently accept a history mixed across different
+/// recovery phrases. Verify the authenticated beginning of *every* archive;
+/// avoid decrypting all large SQLite/Excel bodies just to check their keys.
+/// Full integrity is still checked separately for the endpoints and at restore.
+fn verify_synced_archive_keys(paths:&[PathBuf],passphrase:&str)->Result<(),String>{
+    for path in paths {
+        verify_archive_key(path,passphrase).map_err(|_|
+            "Al menos una copia cifrada de la carpeta no coincide con la frase o tiene la cabecera dañada. No se configuró ni desbloqueó el historial.".to_string())?;
+    }
+    Ok(())
+}
+fn verify_archive_key(path:&Path,passphrase:&str)->Result<(),String>{
+    let meta=fs::metadata(path).map_err(|e|e.to_string())?;
+    if !meta.is_file()||meta.len()<100||meta.len()>600_000_000{
+        return Err("Archivo cifrado fuera de tamaño permitido".into());
+    }
+    let decryptor=age::Decryptor::new(BufReader::new(fs::File::open(path).map_err(|e|e.to_string())?))
+        .map_err(|_|"Archivo cifrado sin encabezado age válido")?;
+    let identity=age::scrypt::Identity::new(SecretString::from(passphrase.to_owned()));
+    let mut reader=decryptor.decrypt(std::iter::once(&identity as &dyn age::Identity))
+        .map_err(|_|"Frase de recuperación incompatible")?;
+    let mut magic=vec![0u8;MAGIC.len()];
+    reader.read_exact(&mut magic).map_err(|_|"Cabecera cifrada incompleta")?;
+    if magic!=MAGIC{return Err("Formato de archivo cifrado incompatible".into());}
+    Ok(())
 }
 #[derive(Serialize)]
 #[serde(rename_all="camelCase")]
@@ -196,6 +225,8 @@ pub(crate) fn configure_drive_backup(app:tauri::AppHandle,passphrase:String)->Re
     reject_plaintext_in_sync_folder(&directory)?;
     // An already-populated destination cannot silently start using a different key.
     let existing=archives_in(&directory)?;
+    verify_synced_archive_keys(&existing,&passphrase)?;
+    // Preserve the deep end-to-end checksum check on the freshest file.
     if let Some(first)=existing.last(){
         let _=read_archive(first,&passphrase)?;
     }
@@ -212,7 +243,9 @@ pub(crate) fn unlock_drive_backup(app:tauri::AppHandle,passphrase:String)->Resul
     check_pass(&passphrase)?;
     let dir=configured_directory(&app)?.ok_or("Configurá primero una carpeta cifrada.")?;
     // Verify decryptability and inner SQLite/Excel checksums BEFORE accepting the key.
-    if let Some(first)=archives_in(&dir)?.last(){let _=read_archive(first,&passphrase)?;}
+    let history=archives_in(&dir)?;
+    verify_synced_archive_keys(&history,&passphrase)?;
+    if let Some(first)=history.last(){let _=read_archive(first,&passphrase)?;}
     set_secret(Some(SecretString::from(passphrase)))?;
     Ok(true)
 }
@@ -642,6 +675,12 @@ mod tests {
         fs::create_dir_all(&other_dir).unwrap();
         let wrong_key=SecretString::from("another very long synthetic recovery passphrase".to_owned());
         let mismatched=seal(&pair,&other_dir,&wrong_key).unwrap();
+        // A folder can have the *first and last* backups under the correct
+        // phrase while a middle historical snapshot was encrypted differently.
+        // Checking only both ends used to accept this unsafe folder.
+        let mixed_history=[cloud.clone(),mismatched.clone(),cloud.clone()];
+        assert!(verify_synced_archive_keys(&mixed_history,password.expose_secret_for_restore()).is_err());
+        assert!(verify_synced_archive_keys(&[cloud.clone(),cloud.clone()],password.expose_secret_for_restore()).is_ok());
         assert!(verify_pending_archives(&[cloud.clone(),mismatched],password.expose_secret_for_restore()).is_err());
         assert!(verify_pending_archives(&vec![cloud.clone();51],password.expose_secret_for_restore()).is_err());
         assert!(read_archive(&cloud,"wrong passphrase more than sixteen").is_err());
