@@ -51,6 +51,23 @@ jobs:
         # This asserts full read/write roundtrips. Runner timing is logged, not
         # interpreted as a physical workshop PC performance guarantee.
         run: cargo test --locked release_scale_profile -- --ignored --nocapture
+      - name: Classify advisory warnings in Windows dependency tree
+        working-directory: desktop/src-tauri
+        shell: pwsh
+        run: |
+          # RustSec intentionally scans the full lockfile including Linux-only deps.
+          # Print Windows-target reachability, without hiding/ignoring advisories.
+          $resolved = @(cargo tree --locked --target x86_64-pc-windows-msvc --edges normal,build --prefix none --format '{p}')
+          if ($LASTEXITCODE -ne 0) { throw "Could not resolve the Windows-target dependency tree" }
+          foreach ($package in @('basic-toml','proc-macro-error','proc-macro-error2','zbus_names','zvariant','zvariant_derive','glib')) {
+            $pattern = '^' + [regex]::Escape($package) + ' v'
+            $found = @($resolved | Where-Object { $_ -match $pattern } | Select-Object -Unique)
+            if ($found.Count -eq 0) {
+              Write-Host "WINDOWS_TARGET_ABSENT: $package"
+            } else {
+              Write-Host "WINDOWS_TARGET_PRESENT: $package :: $($found -join ', ')"
+            }
+          }
       - name: Verify tracked dependency lockfile remains unchanged
         shell: pwsh
         run: |
