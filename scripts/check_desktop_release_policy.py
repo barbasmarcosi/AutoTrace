@@ -60,6 +60,69 @@ def failures(root: Path = ROOT) -> list[str]:
     if re.search(r'(?m)^source = "git\+http:', lock):
         failures_found.append("Unencrypted git dependency source in Cargo.lock")
 
+    # Defense in depth: refuse the affected crypto-bigint family even when
+    # a developer runs the offline release policy without GitHub or cargo-audit.
+    # RustSec still detects future issues in the whole dependency graph.
+    for package in lock.split("[[package]]")[1:]:
+        name = re.search(r'(?m)^name = "([^"]+)"
+    foundation = content[".github/workflows/desktop-foundation.yml"]
+    for name, workflow in (("installer", installer), ("foundation", foundation)):
+        if "pull_request_target:" in workflow or "secrets." in workflow:
+            failures_found.append(f"Unsafe GitHub Actions event or secret use in {name}")
+        if "permissions:\n  contents: read" not in workflow:
+            failures_found.append(f"Unexpected GitHub Actions permissions in {name}")
+        if "desktop/**" not in workflow or "tests/**" not in workflow:
+            failures_found.append(f"Missing Desktop/test change coverage in {name}")
+    if "UNSIGNED" not in installer or "retention-days: 7" not in installer:
+        failures_found.append("Unsigned preview artifact must be clearly identified and short-lived")
+    if "sha256.txt" not in installer or "smoke-installer.ps1" not in installer:
+        failures_found.append("NSIS installer checksum or installation smoke missing")
+    upload_section = installer.split("name: Upload preview installer", 1)
+    if len(upload_section) != 2 or re.search(r"\*\.sqlite|\*\.xlsx|\.atbackup\.age", upload_section[1]):
+        failures_found.append("Release artifacts may expose private workshop data")
+
+    return failures_found
+
+if __name__ == "__main__":
+    errors = failures()
+    if errors:
+        for issue in errors:
+            print(f"RELEASE POLICY FAIL: {issue}", file=sys.stderr)
+        sys.exit(1)
+    print("RELEASE POLICY PASS: local security and distribution invariants")
+, package)
+        version = re.search(r'(?m)^version = "([^"]+)"
+    foundation = content[".github/workflows/desktop-foundation.yml"]
+    for name, workflow in (("installer", installer), ("foundation", foundation)):
+        if "pull_request_target:" in workflow or "secrets." in workflow:
+            failures_found.append(f"Unsafe GitHub Actions event or secret use in {name}")
+        if "permissions:\n  contents: read" not in workflow:
+            failures_found.append(f"Unexpected GitHub Actions permissions in {name}")
+        if "desktop/**" not in workflow or "tests/**" not in workflow:
+            failures_found.append(f"Missing Desktop/test change coverage in {name}")
+    if "UNSIGNED" not in installer or "retention-days: 7" not in installer:
+        failures_found.append("Unsigned preview artifact must be clearly identified and short-lived")
+    if "sha256.txt" not in installer or "smoke-installer.ps1" not in installer:
+        failures_found.append("NSIS installer checksum or installation smoke missing")
+    upload_section = installer.split("name: Upload preview installer", 1)
+    if len(upload_section) != 2 or re.search(r"\*\.sqlite|\*\.xlsx|\.atbackup\.age", upload_section[1]):
+        failures_found.append("Release artifacts may expose private workshop data")
+
+    return failures_found
+
+if __name__ == "__main__":
+    errors = failures()
+    if errors:
+        for issue in errors:
+            print(f"RELEASE POLICY FAIL: {issue}", file=sys.stderr)
+        sys.exit(1)
+    print("RELEASE POLICY PASS: local security and distribution invariants")
+, package)
+        if name and version and name.group(1) == "crypto-bigint":
+            numbers = tuple(int(v) for v in version.group(1).split("-")[0].split(".")[:3])
+            if numbers < (0, 7, 6):
+                failures_found.append("RUSTSEC-2026-0387: vulnerable crypto-bigint in release lockfile")
+
     installer = content[".github/workflows/desktop-installer.yml"]
     foundation = content[".github/workflows/desktop-foundation.yml"]
     for name, workflow in (("installer", installer), ("foundation", foundation)):
