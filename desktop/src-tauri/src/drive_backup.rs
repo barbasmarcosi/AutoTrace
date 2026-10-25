@@ -219,10 +219,23 @@ pub(crate) fn unlock_drive_backup(app:tauri::AppHandle,passphrase:String)->Resul
 #[tauri::command]
 pub(crate) fn lock_drive_backup()->Result<(),String>{set_secret(None)}
 pub(crate) fn unlocked_phrase()->Result<Option<SecretString>,String>{phrase_for_backup()}
+/// A queued cloud backup may outlive the current process. Never authorize a
+/// new recovery phrase by testing only the first of several queued archives.
+/// The API writer limits pending backups to 50: refuse an unexpectedly larger
+/// directory rather than silently sampling and misrepresenting its safety.
+fn verify_pending_archives(files:&[PathBuf],passphrase:&str)->Result<(),String>{
+    if files.len()>50{
+        return Err("Hay más de 50 respaldos cifrados pendientes. Revisá la cola antes de desbloquearla.".into());
+    }
+    for file in files{
+        let _=read_archive(file,passphrase).map_err(|_|
+            "Al menos un respaldo cifrado pendiente no puede recuperarse con esta frase. No se desbloqueó la cola.".to_string())?;
+    }
+    Ok(())
+}
 pub(crate) fn unlock_for_api(passphrase:String,files:&[PathBuf])->Result<(),String>{
     ensure_phrase_consistent(&passphrase)?;
-    // An existing encrypted pending queue MUST decrypt with the supplied phrase.
-    if let Some(first)=files.first(){let _=read_archive(first,&passphrase)?;}
+    verify_pending_archives(files.as_ref(),&passphrase)?;
     set_secret(Some(SecretString::from(passphrase)))
 }
 /// Export a fresh, fully verified encrypted disaster-recovery snapshot to
@@ -622,6 +635,15 @@ mod tests {
         assert_eq!(rehearsal.clients,1);
         assert_eq!(rehearsal.vehicles,1);
         assert_eq!(rehearsal.orders,1);
+        assert!(verify_pending_archives(&[cloud.clone()],password.expose_secret_for_restore()).is_ok());
+        // A corrupted/mismatched SECOND item must never be ignored just because
+        // the FIRST encrypted backup validates with the supplied recovery key.
+        let other_dir=temp.join("different-key");
+        fs::create_dir_all(&other_dir).unwrap();
+        let wrong_key=SecretString::from("another very long synthetic recovery passphrase".to_owned());
+        let mismatched=seal(&pair,&other_dir,&wrong_key).unwrap();
+        assert!(verify_pending_archives(&[cloud.clone(),mismatched],password.expose_secret_for_restore()).is_err());
+        assert!(verify_pending_archives(&vec![cloud.clone();51],password.expose_secret_for_restore()).is_err());
         assert!(read_archive(&cloud,"wrong passphrase more than sixteen").is_err());
         assert!(seal(&pair,&drive,&password).is_err(),"must never overwrite earlier cloud backups");
         let mut damaged=raw.clone();let idx=damaged.len()-33;damaged[idx]^=0x6a;
