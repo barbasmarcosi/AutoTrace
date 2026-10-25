@@ -15,11 +15,14 @@ fn vault()->Result<keyring::Entry,String>{
 pub(crate) fn authorized()->bool{vault().is_ok_and(|v|v.get_password().is_ok())}
 /// Do not report a successful disconnect while Windows still stores a
 /// refresh token. Revocation at Google remains a separate user action.
-pub(crate) fn forget()->Result<(),String>{
-    match vault()?.delete_credential(){
+fn finish_forget(result:Result<(),keyring::Error>)->Result<(),String>{
+    match result{
         Ok(())|Err(keyring::Error::NoEntry)=>Ok(()),
         Err(_)=>Err("Windows no pudo eliminar la autorización local de Google. No se confirmó la desconexión.".into()),
     }
+}
+pub(crate) fn forget()->Result<(),String>{
+    finish_forget(vault()?.delete_credential())
 }
 pub(crate) fn client_id_valid(s:&str)->bool{
     s.len()>35&&s.len()<300&&s.ends_with(".apps.googleusercontent.com")
@@ -166,7 +169,8 @@ mod tests{
         assert_eq!(parse_callback("/callback?state=synthetic-state-abc&code=a%0Ab",state),Callback::Ignored);
     }
     #[test] fn vault_disconnect_missing_credential_is_idempotent(){
-        assert!(matches!(keyring::Error::NoEntry,keyring::Error::NoEntry));
+        assert!(finish_forget(Ok(())).is_ok());
+        assert!(finish_forget(Err(keyring::Error::NoEntry)).is_ok());
     }
     #[test] fn rejects_wrong_oauth_client(){
         assert!(client_id_valid("012345678901-abc.apps.googleusercontent.com"));
