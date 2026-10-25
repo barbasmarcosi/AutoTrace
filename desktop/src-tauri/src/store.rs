@@ -880,8 +880,9 @@ mod tests {
         let bytes=raw.parse::<u64>().map_err(|e|format!("Invalid Windows peak working set: {e}"))?;
         Ok(bytes.div_ceil(1024*1024))
     }
-    /// G1 performance protocol. Intentionally ignored by CI: Windows operator
-    /// hardware and SSD performance are part of the acceptance evidence.
+    /// E6 synthetic storage regression budget. The Windows Actions CI invokes
+    /// this ignored-by-default profile explicitly. Bounds prevent catastrophic
+    /// slowdowns but are not desktop UI or customer-hardware latency SLAs.
     /// Run: cargo test --locked release_scale_profile -- --ignored --nocapture
     #[test]
     #[ignore = "manual 1k/10k/50k hardware timing; never assert CI runner latency"]
@@ -926,6 +927,19 @@ mod tests {
             write(&mut db,&data,1).unwrap();
             let single_edit=initial.elapsed();
             assert_eq!(read(&db).unwrap().data.clients[0].name,"Cliente actualizado");
+            #[cfg(windows)]
+            if n==50_000 {
+                // The usual debug runner measurement is approximately
+                // 2s initial write, 0.6s read, 1.2s small edit. Allow
+                // generous headroom for CI variability but never a 10x
+                // performance regression to slip through silently.
+                assert!(bulk.as_secs_f64()<25.0,
+                    "E6: initial 50k-order write exceeded the 25s Windows CI budget");
+                assert!(read_time.as_secs_f64()<6.0,
+                    "E6: 50k-order read exceeded the 6s Windows CI budget");
+                assert!(single_edit.as_secs_f64()<6.0,
+                    "E6: small edit at 50k orders exceeded the 6s Windows CI budget");
+            }
             #[cfg(windows)]
             {
                 let peak_mib=windows_peak_working_set_mib()
