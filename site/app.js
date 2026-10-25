@@ -1155,6 +1155,10 @@ async function restoreSqliteDesktop(){
     if(!preview)return;
     const next=validateData(preview.data);
     const provenance=preview.verified?'El checksum del manifiesto coincide.':'No hay manifiesto: el origen no está autenticado.';
+    if(!preview.verified && !await confirmAction(
+      'Base sin integridad verificada',
+      'Este archivo SQLite no tiene el manifiesto AutoTrace de verificación. Se comprobó su estructura, pero no se puede demostrar su origen ni que no haya sido alterado. Importalo únicamente si reconocés y confiás en este archivo. Tus datos actuales todavía no se modificarán.',
+      'Entiendo el riesgo'))return;
     const detail='Archivo: '+preview.filename+'. '+provenance+' Incluye '+next.clients.length+' clientes, '+next.vehicles.length+' vehículos y '+next.orders.length+' trabajos. Se REEMPLAZARÁ todo. Se creará primero un respaldo.';
     if(!await confirmAction('Restaurar desde SQLite',detail,'Respaldar y recuperar'))return;
     if(!await createDesktopBackup(true))throw Error('No pudo crearse el respaldo previo.');
