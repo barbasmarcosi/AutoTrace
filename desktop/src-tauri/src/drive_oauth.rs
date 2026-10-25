@@ -33,22 +33,33 @@ fn http()->Result<Client,String>{
 }
 #[derive(Deserialize)]
 struct Tokens {access_token:Option<String>,refresh_token:Option<String>}
-fn exchange(fields:&[(&str,&str)])->Result<Tokens,String>{
-    let resp=http()?.post("https://oauth2.googleapis.com/token")
-        .form(fields).send().map_err(|_|"No se pudo comunicar con OAuth de Google")?;
+/// Dependency-injected HTTP boundary allows repeatable local-provider tests;
+/// the production endpoint remains hard-coded to the official Google origin.
+fn exchange_with(client:&Client,endpoint:&str,fields:&[(&str,&str)])->Result<Tokens,String>{
+    let resp=client.post(endpoint).form(fields).send()
+        .map_err(|_|"No se pudo comunicar con OAuth de Google")?;
     if !resp.status().is_success(){return Err(format!("Google OAuth rechazó el acceso (HTTP {}). Revisá el Client ID o volvé a conectar.",resp.status().as_u16()));}
     resp.json().map_err(|_|"La respuesta de Google OAuth no es válida".into())
+}
+fn exchange(fields:&[(&str,&str)])->Result<Tokens,String>{
+    exchange_with(&http()?,"https://oauth2.googleapis.com/token",fields)
+}
+/// The rotated refresh token must be persisted before the access token is
+/// returned. A vault failure cannot be represented as an authenticated user.
+fn access_from_refresh_reply(
+    reply:Tokens,previous:&str,mut persist:impl FnMut(&str)->Result<(),String>
+)->Result<String,String>{
+    let access=reply.access_token.filter(|s|!s.is_empty()).ok_or("Google no entregó acceso")?;
+    if let Some(replacement)=reply.refresh_token.filter(|s|!s.is_empty()&&s!=previous){
+        persist(&replacement)?;
+    }
+    Ok(access)
 }
 pub(crate) fn token(client_id:&str)->Result<String,String>{
     let refresh=vault()?.get_password().map_err(|_|"No hay autorización guardada. Conectá Google Drive desde Ajustes.")?;
     let result=exchange(&[("client_id",client_id),("grant_type","refresh_token"),("refresh_token",&refresh)])?;
-    let access=result.access_token.filter(|s|!s.is_empty()).ok_or("Google no entregó acceso")?;
-    // A provider may rotate refresh tokens. Store a replacement before using
-    // the access token; never rely on an already invalidated old credential.
-    if let Some(replacement)=result.refresh_token.filter(|s|!s.is_empty()&&s!=&refresh){
-        vault()?.set_password(&replacement).map_err(|_|"Windows no pudo proteger la nueva autorización de Google")?;
-    }
-    Ok(access)
+    access_from_refresh_reply(result,&refresh,|replacement|
+        vault()?.set_password(replacement).map_err(|_|"Windows no pudo proteger la nueva autorización de Google".into()))
 }
 fn challenge(v:&str)->String{URL_SAFE_NO_PAD.encode(Sha256::digest(v.as_bytes()))}
 fn verifier()->(String,String,String){
@@ -167,6 +178,63 @@ mod tests{
         assert_eq!(parse_callback("/callback?state=synthetic-state-abc&error=access_denied",state),Callback::Denied);
         assert_eq!(parse_callback("/callback?state=synthetic-state-abc&code=abc&error=access_denied",state),Callback::Denied);
         assert_eq!(parse_callback("/callback?state=synthetic-state-abc&code=a%0Ab",state),Callback::Ignored);
+    }
+    #[test] fn refresh_token_rotation_is_saved_before_access_and_fails_closed_on_vault_error(){
+        let reply=Tokens{access_token:Some("synthetic-access-1".into()),
+            refresh_token:Some("synthetic-rotated-refresh-2".into())};
+        let mut written=Vec::new();
+        let access=access_from_refresh_reply(reply,"synthetic-old-refresh",|new|{
+            written.push(new.to_owned());Ok(())
+        }).unwrap();
+        assert_eq!(access,"synthetic-access-1");
+        assert_eq!(written,vec!["synthetic-rotated-refresh-2"]);
+        let failure=access_from_refresh_reply(
+            Tokens{access_token:Some("synthetic-access-1".into()),refresh_token:Some("replacement".into())},
+            "old",|_|Err("synthetic vault failure".into()));
+        assert!(failure.is_err(),"the access token must not escape if credential persistence failed");
+        let mut writes=0;
+        let stable=access_from_refresh_reply(
+            Tokens{access_token:Some("stable-access".into()),refresh_token:Some("old".into())},
+            "old",|_|{writes+=1;Ok(())}).unwrap();
+        assert_eq!(stable,"stable-access");
+        assert_eq!(writes,0,"unchanged token must not rewrite Windows vault");
+        assert!(access_from_refresh_reply(Tokens{access_token:None,refresh_token:None},
+            "old",|_|Ok(())).is_err());
+    }
+    #[test] fn oauth_refresh_http_rejects_provider_errors_and_malformed_responses(){
+        use std::{io::{Read,Write},net::TcpListener};
+        for (status,body,accepted) in [
+            (200,r#"{"access_token":"test-access","refresh_token":"test-rotated"}"#,true),
+            (401,r#"{"error":"invalid_grant"}"#,false),
+            (200,"THIS IS NOT JSON",false),
+            (200,r#"{"refresh_token":"rotated-but-no-access"}"#,false),
+        ]{
+            let listener=TcpListener::bind("127.0.0.1:0").unwrap();
+            let endpoint=format!("http://{}/mock-token",listener.local_addr().unwrap());
+            let server=std::thread::spawn(move||{
+                let (mut socket,_)=listener.accept().unwrap();
+                socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                let mut request=Vec::new();
+                let mut buf=[0u8;2048];
+                loop{
+                    let n=socket.read(&mut buf).unwrap();
+                    assert!(n>0,"mock provider request disconnected");
+                    request.extend_from_slice(&buf[..n]);
+                    let Some(head)=request.windows(4).position(|w|w==b"\r\n\r\n") else{continue;};
+                    let headers=String::from_utf8_lossy(&request[..head]).to_ascii_lowercase();
+                    let len=headers.lines().find_map(|line|
+                        line.strip_prefix("content-length:").and_then(|v|v.trim().parse::<usize>().ok()))
+                        .unwrap_or(0);
+                    if request.len()>=head+4+len{break;}
+                }
+                write!(socket,"HTTP/1.1 {status} TEST\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
+            });
+            let fields=[("grant_type","refresh_token"),("refresh_token","synthetic-only")];
+            let result=exchange_with(&http().unwrap(),&endpoint,&fields)
+                .and_then(|response|access_from_refresh_reply(response,"synthetic-only",|_|Ok(())));
+            assert_eq!(result.is_ok(),accepted,"mock OAuth status {status} must never fabricate access");
+            server.join().unwrap();
+        }
     }
     #[test] fn vault_disconnect_missing_credential_is_idempotent(){
         assert!(finish_forget(Ok(())).is_ok());
