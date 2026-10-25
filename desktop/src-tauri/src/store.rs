@@ -773,16 +773,16 @@ mod tests {
         db.execute("UPDATE orders SET charged_cents=9999 WHERE id='o'",[]).unwrap();
         let check:String=db.query_row("PRAGMA integrity_check",[],|r|r.get(0)).unwrap();
         assert_eq!(check,"ok");
-        assert!(read(&db).unwrap_err().contains("inconsistentes"));
+        assert!(read(&db).err().expect("projection mismatch must be rejected").contains("inconsistentes"));
         // A caller cannot silently heal or overwrite corrupted SQL with a
         // logically different JSON snapshot without revision checks.
         db.execute("UPDATE orders SET charged_cents=10000 WHERE id='o'",[]).unwrap();
         assert_eq!(read(&db).unwrap().revision,1);
         db.execute("UPDATE vehicles SET plate='AG234CD' WHERE id='v'",[]).unwrap();
-        assert!(read(&db).unwrap_err().contains("inconsistentes"));
+        assert!(read(&db).err().expect("projection mismatch must be rejected").contains("inconsistentes"));
         db.execute("UPDATE vehicles SET plate='AF123BC' WHERE id='v'",[]).unwrap();
         db.execute("UPDATE clients SET name='Otra persona' WHERE id='c'",[]).unwrap();
-        assert!(read(&db).unwrap_err().contains("inconsistentes"));
+        assert!(read(&db).err().expect("projection mismatch must be rejected").contains("inconsistentes"));
         db.execute("UPDATE clients SET name='Cliente sintético' WHERE id='c'",[]).unwrap();
         assert_eq!(read(&db).unwrap().revision,1);
     }
