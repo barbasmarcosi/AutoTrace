@@ -841,7 +841,7 @@ mod tests {
         let mut duplicate=copied.orders[0].clone();
         duplicate.id="o-copy".into();
         copied.orders.push(duplicate);
-        let err=write(&mut db,&copied,2).unwrap_err();
+        let err=write(&mut db,&copied,2).err().expect("duplicate identity must be rejected");
         assert!(err.contains("Cobro duplicado"),"{err}");
         let snap=read(&db).unwrap();
         assert_eq!(snap.revision,2);
@@ -850,7 +850,7 @@ mod tests {
         copied.orders[0].source_fingerprint="a".repeat(64);
         copied.orders[1].source_fingerprint="a".repeat(64);
         copied.orders[1].payments[0].id="p-copy".into();
-        let err=write(&mut db,&copied,2).unwrap_err();
+        let err=write(&mut db,&copied,2).err().expect("duplicate identity must be rejected");
         assert!(err.contains("Documento de origen duplicado"),"{err}");
         let snap=read(&db).unwrap();
         assert_eq!(snap.revision,2);
