@@ -60,6 +60,36 @@ try{
   assert.equal(await page.locator('#modal-content').innerText(),'','Secret dialog must be removed after success');
   await page.locator('[data-action="export-portable-backup"]').click();
   await page.locator('#entity-form[data-kind="drive-portable-export"]').waitFor();
+  // E7: Native modal dialogs must hold keyboard focus, never leak tabs to the
+  // disabled background, and remain fully within a narrow touch viewport.
+  const insideForm=()=>page.evaluate(()=>{
+    const dialog=document.querySelector('#form-dialog');
+    return dialog.open && dialog.contains(document.activeElement);
+  });
+  assert.equal(await insideForm(),true,'Opening the recovery dialog must move focus inside it');
+  await page.keyboard.press('Tab');
+  assert.equal(await insideForm(),true,'Tab must remain in the modal');
+  await page.keyboard.press('Shift+Tab');
+  assert.equal(await insideForm(),true,'Reverse keyboard navigation must remain in the modal');
+  await page.setViewportSize({width:390,height:640});
+  const modalLayout=await page.evaluate(()=>{
+    const dialog=document.querySelector('#form-dialog');
+    const body=dialog.querySelector('.modal-body');
+    const bounds=dialog.getBoundingClientRect();
+    return {
+      left:bounds.left,right:bounds.right,width:innerWidth,
+      contentWidth:body.clientWidth,overflowWidth:body.scrollWidth,
+      dialogOpen:dialog.open,
+    };
+  });
+  assert.equal(modalLayout.dialogOpen,true,'Resizing cannot close an active restore form');
+  assert.ok(modalLayout.left>=-1 && modalLayout.right<=modalLayout.width+1,
+    'A recovery form cannot be clipped outside the phone viewport');
+  assert.ok(modalLayout.overflowWidth<=modalLayout.contentWidth+2,
+    'The recovery form must not create horizontal scrolling at 390px');
+  await page.keyboard.press('Tab');
+  assert.equal(await insideForm(),true,'Mobile keyboard focus must stay inside the dialog');
+  await page.setViewportSize({width:1180,height:800});
   // Reject mismatched phrases BEFORE any native export.
   await page.locator('[name="drivePassphrase"]').fill(phrase);
   await page.locator('[name="drivePassphraseRepeat"]').fill('different-long-test-phrase');
