@@ -1,0 +1,32 @@
+name: Temporary age passphrase lockfile trial
+on:
+  push:
+    branches:
+      - security/age-passphrase-audit-20261024
+    paths:
+      - '.github/workflows/desktop-age-compatibility-probe.yml'
+permissions:
+  contents: write
+jobs:
+  regenerate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: true
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - name: Regenerate tracked lockfile using Cargo resolver, no manual edits
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${GITHUB_REF_NAME}" = "security/age-passphrase-audit-20261024"
+          cargo update --manifest-path desktop/src-tauri/Cargo.toml -p age --precise 0.11.5
+          cargo metadata --format-version 1 --manifest-path desktop/src-tauri/Cargo.toml --locked --no-deps >/dev/null
+          if grep -q '^name = "crypto-bigint"$' desktop/src-tauri/Cargo.lock; then
+            echo "crypto-bigint still present in lockfile: not yet a security pass"
+          fi
+          git add desktop/src-tauri/Cargo.lock
+          git diff --cached --quiet && { echo "No lockfile changes"; exit 1; }
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m "build(rust): regenerate Cargo.lock for age 0.11.5 trial"
+          git push origin HEAD:security/age-passphrase-audit-20261024
