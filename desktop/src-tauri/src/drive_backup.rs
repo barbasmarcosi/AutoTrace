@@ -201,6 +201,28 @@ pub(crate) fn drive_backup_status(app:tauri::AppHandle)->Result<DriveStatus,Stri
         note:"Archivo cifrado creado localmente; comprobá en Google Drive que terminó de sincronizar.",
     })
 }
+/// The synced-folder configuration is updated multiple times during the
+/// lifetime of a workshop. On Windows std::fs::rename does not atomically
+/// replace an existing destination. Reuse the same durable, cross-platform
+/// replacement already tested by the direct Drive API settings.
+fn save_synced_folder_configuration(path:&Path,directory:&Path)->Result<(),String>{
+    let temporary=path.with_extension(format!("{}.tmp",uuid::Uuid::new_v4().simple()));
+    struct Cleanup(PathBuf);
+    impl Drop for Cleanup{
+        fn drop(&mut self){let _=fs::remove_file(&self.0);}
+    }
+    let _cleanup=Cleanup(temporary.clone());
+    use std::io::Write;
+    let mut output=fs::OpenOptions::new().create_new(true).write(true)
+        .open(&temporary).map_err(|e|e.to_string())?;
+    let content=serde_json::to_vec(&serde_json::json!({"directory":directory}))
+        .map_err(|e|e.to_string())?;
+    output.write_all(&content).map_err(|e|e.to_string())?;
+    output.sync_all().map_err(|e|e.to_string())?;
+    drop(output);
+    crate::drive_api::replace_settings_file(&temporary,path)
+        .map_err(|_|"No se pudo guardar la configuración cifrada en Windows sin perder el estado previo".into())
+}
 #[tauri::command]
 pub(crate) fn configure_drive_backup(app:tauri::AppHandle,passphrase:String)->Result<Option<String>,String>{
     check_pass(&passphrase)?;
@@ -231,10 +253,7 @@ pub(crate) fn configure_drive_backup(app:tauri::AppHandle,passphrase:String)->Re
         let _=read_archive(first,&passphrase)?;
     }
     let cfg=config_path(&app)?;
-    let staged=cfg.with_extension("json.tmp");
-    let payload=serde_json::to_vec(&serde_json::json!({"directory":directory})).map_err(|e|e.to_string())?;
-    fs::write(&staged,payload).map_err(|e|e.to_string())?;
-    if let Err(e)=fs::rename(&staged,&cfg){let _=fs::remove_file(staged);return Err(e.to_string());}
+    save_synced_folder_configuration(&cfg,&directory)?;
     set_secret(Some(SecretString::from(passphrase)))?;
     Ok(Some(directory.display().to_string()))
 }
@@ -560,6 +579,26 @@ mod tests {
     use super::*;
     use crate::store;
     use rusqlite::Connection;
+    #[test]
+    fn synced_folder_configuration_can_reconfigure_repeatedly_on_windows(){
+        let root=std::env::temp_dir().join(format!("autotrace-synced-config-{}",uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let config=root.join("drive-encrypted-backup.json");
+        for revision in 0..8{
+            let chosen=root.join(format!("synthetic-{revision}"));
+            save_synced_folder_configuration(&config,&chosen).unwrap();
+            let parsed:serde_json::Value=serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+            assert_eq!(parsed["directory"].as_str(),Some(chosen.to_str().unwrap()));
+            assert_eq!(fs::read_dir(&root).unwrap().count(),1,
+                "reconfiguring must not leave temporary settings files");
+        }
+        let original=fs::read(&config).unwrap();
+        let bad=root.join("missing").join("drive-encrypted-backup.json");
+        assert!(save_synced_folder_configuration(&bad,&root).is_err());
+        assert_eq!(fs::read(&config).unwrap(),original,
+            "an unsuccessful reconfiguration must preserve previous settings");
+        fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn plaintext_backup_names_are_blocked_in_a_sync_directory(){
         assert!(is_plain_workshop_backup_name("AutoTrace_2026-01.sqlite3"));
