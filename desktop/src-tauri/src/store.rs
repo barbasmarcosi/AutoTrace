@@ -795,6 +795,20 @@ mod tests {
         fs::remove_file(path).unwrap();
     }
 
+    /// Measure the current Rust test process rather than assuming SQLite
+    /// latency implies a safe memory footprint. PeakWorkingSet64 is a Windows
+    /// OS counter and does not include WebView2's separate renderer process.
+    #[cfg(windows)]
+    fn windows_peak_working_set_mib()->Result<u64,String>{
+        let query=format!("(Get-Process -Id {}).PeakWorkingSet64",std::process::id());
+        let output=std::process::Command::new("powershell")
+            .args(["-NoProfile","-NonInteractive","-Command",query.as_str()])
+            .output().map_err(|e|format!("PowerShell memory profiler unavailable: {e}"))?;
+        if !output.status.success(){return Err("Windows could not return the process memory counter".into());}
+        let raw=std::str::from_utf8(&output.stdout).map_err(|e|e.to_string())?.trim();
+        let bytes=raw.parse::<u64>().map_err(|e|format!("Invalid Windows peak working set: {e}"))?;
+        Ok(bytes.div_ceil(1024*1024))
+    }
     /// G1 performance protocol. Intentionally ignored by CI: Windows operator
     /// hardware and SSD performance are part of the acceptance evidence.
     /// Run: cargo test --locked release_scale_profile -- --ignored --nocapture
@@ -841,7 +855,16 @@ mod tests {
             write(&mut db,&data,1).unwrap();
             let single_edit=initial.elapsed();
             assert_eq!(read(&db).unwrap().data.clients[0].name,"Cliente actualizado");
-            println!("synthetic_orders={n} bulk_write_ms={} read_ms={} single_edit_ms={}",
+            #[cfg(windows)]
+            {
+                let peak_mib=windows_peak_working_set_mib()
+                    .expect("Windows CI must produce a real OS peak working-set measurement");
+                println!("synthetic_orders={n} bulk_write_ms={} read_ms={} single_edit_ms={} peak_rust_working_set_mib={peak_mib}",
+                    bulk.as_millis(),read_time.as_millis(),single_edit.as_millis());
+                assert!(peak_mib<=1024,"A 50k synthetic-order Rust storage session must remain under 1GiB");
+            }
+            #[cfg(not(windows))]
+            println!("synthetic_orders={n} bulk_write_ms={} read_ms={} single_edit_ms={} peak_rust_working_set_mib=not_measured",
                 bulk.as_millis(),read_time.as_millis(),single_edit.as_millis());
         }
     }
