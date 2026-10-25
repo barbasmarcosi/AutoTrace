@@ -10,6 +10,7 @@ on:
       - '.github/workflows/desktop-installer.yml'
       - '.github/workflows/desktop-security.yml'
       - '.github/workflows/pwa-browser-smoke.yml'
+      - 'scripts/check_age_passphrase_compatibility.sh'
   workflow_dispatch:
   schedule:
     - cron: '23 8 * * 1'
@@ -32,3 +33,14 @@ jobs:
         run: cargo install cargo-audit --version 0.22.2 --locked
       - name: Check RustSec advisories for the tracked lockfile
         run: cargo audit --file desktop/src-tauri/Cargo.lock
+
+  # Separate compatibility proof: the old library is compiled only in a
+  # disposable, synthetic CI fixture, never in AutoTrace's release lockfile.
+  age-backup-compatibility:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - name: Cross-version age v1 scrypt archive compatibility and tamper rejection
+        run: bash scripts/check_age_passphrase_compatibility.sh
