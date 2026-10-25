@@ -66,6 +66,18 @@ fn publish_new_file(source:&Path,destination:&Path,owned:&mut Vec<PathBuf>)->Res
     std::io::copy(&mut input,&mut out).map_err(err)?;
     out.sync_all().map_err(err)
 }
+// Bounded verifier for untrusted external backup triplets. Streaming SHA-256
+// does not protect the later manifest/XLSX parser from oversized allocations.
+const MAX_VERIFIED_SQLITE_BYTES:u64=512_000_000;
+const MAX_VERIFIED_EXCEL_BYTES:u64=25_000_000;
+const MAX_VERIFIED_MANIFEST_BYTES:u64=16_384;
+fn bounded_backup_file(path:&Path,max:u64)->Result<(),String>{
+    let metadata=fs::symlink_metadata(path).map_err(err)?;
+    if !metadata.is_file()||metadata.file_type().is_symlink()||metadata.len()==0||metadata.len()>max{
+        return Err("Respaldo inválido: archivo ausente, enlace simbólico o tamaño fuera de límites".into());
+    }
+    Ok(())
+}
 fn verify_db(conn:&Connection)->Result<(),String>{
     let v:String=conn.query_row("PRAGMA integrity_check",[],|r|r.get(0)).map_err(err)?;
     if v!="ok"{return Err(format!("SQLite integrity_check: {v}"));}
@@ -119,6 +131,7 @@ pub(crate) fn backup_pair(src:&Connection, dest:&Path, id:&str)->Result<BackupRe
     result
 }
 pub(crate) fn verify_pair_marker(path:&Path)->Result<(),String>{
+    bounded_backup_file(path,MAX_VERIFIED_MANIFEST_BYTES)?;
     let manifest:serde_json::Value=serde_json::from_slice(&fs::read(path).map_err(err)?).map_err(err)?;
     if manifest["kind"]!="autotrace-dual-backup" || manifest["version"]!=1 {
         return Err("Manifiesto de respaldo no reconocido".into());
@@ -134,6 +147,8 @@ pub(crate) fn verify_pair_marker(path:&Path)->Result<(),String>{
     }
     let database=dir.join(format!("AutoTrace_{id}.sqlite3"));
     let excel_path=dir.join(format!("AutoTrace_{id}.xlsx"));
+    bounded_backup_file(&database,MAX_VERIFIED_SQLITE_BYTES)?;
+    bounded_backup_file(&excel_path,MAX_VERIFIED_EXCEL_BYTES)?;
     if sha(&database)?!=manifest["sqliteSha256"].as_str().unwrap_or("") ||
        sha(&excel_path)?!=manifest["excelSha256"].as_str().unwrap_or("") {
         return Err("Checksum de los archivos de respaldo incorrecto".into());
@@ -437,6 +452,7 @@ pub(crate) fn read_sqlite_candidate(path:&Path)->Result<(store::AppData,bool),St
     let mut verified=false;
     let marker=path.with_extension("manifest.json");
     if marker.exists(){
+        bounded_backup_file(&marker,MAX_VERIFIED_MANIFEST_BYTES)?;
         let doc:serde_json::Value=serde_json::from_slice(&fs::read(&marker).map_err(err)?).map_err(err)?;
         if doc["kind"]!="autotrace-dual-backup" || doc["version"]!=1 ||
             doc["sqliteSha256"].as_str()!=Some(sha(path)?.as_str()) {
@@ -694,6 +710,32 @@ mod tests {
         assert_eq!(fs::read(&old).unwrap(),b"trusted-preexisting-backup");
         assert!(!new.exists());
         fs::remove_dir_all(&temp).unwrap();
+    }
+    #[test]
+    fn oversized_external_manifest_and_excel_are_rejected_before_loading(){
+        let root=std::env::temp_dir().join(format!("autotrace-bounded-backups-{}",uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let source=Connection::open_in_memory().unwrap();
+        source.execute_batch(include_str!("../migrations/001_init.sql")).unwrap();
+        let pair=backup_pair(&source,&root,"fixture").unwrap();
+        let manifest=Path::new(&pair.manifest_path);
+        let sqlite=Path::new(&pair.sqlite_path);
+        let workbook=Path::new(&pair.excel_path);
+        assert!(verify_pair_marker(manifest).is_ok());
+        let original_manifest=fs::read(manifest).unwrap();
+        fs::OpenOptions::new().write(true).open(manifest).unwrap()
+            .set_len(MAX_VERIFIED_MANIFEST_BYTES+1).unwrap();
+        assert!(verify_pair_marker(manifest).unwrap_err().contains("tamaño fuera de límites"));
+        assert!(read_sqlite_candidate(sqlite).err().expect("oversized marker must fail")
+            .contains("tamaño fuera de límites"));
+        fs::write(manifest,&original_manifest).unwrap();
+        let original_excel=fs::read(workbook).unwrap();
+        fs::OpenOptions::new().write(true).open(workbook).unwrap()
+            .set_len(MAX_VERIFIED_EXCEL_BYTES+1).unwrap();
+        assert!(verify_pair_marker(manifest).unwrap_err().contains("tamaño fuera de límites"));
+        fs::write(workbook,&original_excel).unwrap();
+        assert!(verify_pair_marker(manifest).is_ok());
+        fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn backup_pair_contains_restorable_sqlite_and_excel() {
