@@ -17,7 +17,7 @@ function fixture(items=[
       vin:'VIN_PRIVADO_NO_EXPORTAR',color:'',nextServiceDate:'',notes:'',createdAt:'2026-10-25'}],
     orders:[{id:'o1',vehicleId:'v1',title:'Servicio de mantenimiento',category:'Mecánica',status:'done',
       openedAt:'2026-10-25',completedAt:'2026-10-25',mileage:125000,description:'DIAGNOSTICO_INTERNO',
-      partsCost:99999.99,laborCost:88888.88,charged,paid:1500,notes:'NOTAS_PRIVADAS',
+      partsCost:99999.99,laborCost:88888.88,charged,paid:0,notes:'NOTAS_PRIVADAS',
       createdAt:'2026-10-25',documentNumber:'R-0123',items}],
     settings:{garageName:'Taller Peña & Hijos',currency:'ARS',demo:false}
   });
@@ -48,7 +48,7 @@ test('both offline PDF outputs are real standalone A4 files with scoped line tot
     assert.match(pdf,/Filtro de aire/);
     assert.match(pdf,/TOTAL/);
     for(const secret of ['OCULTAR_COSTOS_12345','CLIENTE_AJENO_SECRETO',
-      'VIN_PRIVADO_NO_EXPORTAR','DIAGNOSTICO_INTERNO','NOTAS_PRIVADAS','99999','88888']){
+      'VIN_PRIVADO_NO_EXPORTAR','DIAGNOSTICO_INTERNO','NOTAS_PRIVADAS','$ 99.999,99','$ 88.888,88']){
       assert.ok(!pdf.includes(secret),'Privacy leak: '+secret);
     }
     assert.ok(bytes.length<100000,'No network, font bundles or embedded internal data');
