@@ -8,6 +8,8 @@ on:
       - 'scripts/collect-physical-recovery-evidence.ps1'
       - 'scripts/test-physical-usb-preflight.ps1'
       - 'docs/desktop/ACCEPTANCE_PACKAGE_U0_U7.md'
+      - 'docs/desktop/V1_OFFLINE_RELEASE_SCOPE.md'
+      - 'docs/desktop/V1_QUICK_WINDOWS_CHECK.md'
       - 'docs/desktop/PHYSICAL_ACCEPTANCE_RECORD_TEMPLATE.json'
       - 'desktop/**'
       - 'tests/**'
@@ -105,6 +107,8 @@ jobs:
           Copy-Item scripts/verify-acceptance-installer.ps1 (Join-Path $dir 'verify-acceptance-installer.ps1')
           Copy-Item scripts/collect-physical-recovery-evidence.ps1 (Join-Path $dir 'collect-physical-recovery-evidence.ps1')
           Copy-Item docs/desktop/ACCEPTANCE_PACKAGE_U0_U7.md (Join-Path $dir 'ACCEPTANCE_PACKAGE_U0_U7.md')
+          Copy-Item docs/desktop/V1_OFFLINE_RELEASE_SCOPE.md (Join-Path $dir 'V1_OFFLINE_RELEASE_SCOPE.md')
+          Copy-Item docs/desktop/V1_QUICK_WINDOWS_CHECK.md (Join-Path $dir 'V1_QUICK_WINDOWS_CHECK.md')
           Copy-Item docs/desktop/PHYSICAL_ACCEPTANCE_RECORD_TEMPLATE.json (Join-Path $dir 'PHYSICAL_ACCEPTANCE_RECORD_TEMPLATE.json')
           $check = Join-Path $dir 'verify-acceptance-installer.ps1'
           & $check -Installer $exe.FullName -Manifest $manifest -ExpectedCommit $checkoutSha -ExpectedRunId $env:GITHUB_RUN_ID -EvidenceFile (Join-Path $env:RUNNER_TEMP 'acceptance-preflight-ci.json')
@@ -163,6 +167,8 @@ jobs:
             desktop/src-tauri/target/release/bundle/nsis/verify-acceptance-installer.ps1
             desktop/src-tauri/target/release/bundle/nsis/collect-physical-recovery-evidence.ps1
             desktop/src-tauri/target/release/bundle/nsis/ACCEPTANCE_PACKAGE_U0_U7.md
+            desktop/src-tauri/target/release/bundle/nsis/V1_OFFLINE_RELEASE_SCOPE.md
+            desktop/src-tauri/target/release/bundle/nsis/V1_QUICK_WINDOWS_CHECK.md
             desktop/src-tauri/target/release/bundle/nsis/PHYSICAL_ACCEPTANCE_RECORD_TEMPLATE.json
           retention-days: 7
           if-no-files-found: error

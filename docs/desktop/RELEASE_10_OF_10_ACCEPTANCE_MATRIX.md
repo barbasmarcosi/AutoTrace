@@ -2,6 +2,8 @@
 
 **Fecha: 2026-10-24. ESTADO: NO-GO.** Este contrato establece condiciones de aceptación: no demuestra por sí solo que se cumplieron.
 
+**Alcance v1 offline alternativo (aprobado por el propietario):** los gates físicos U2–U5 NO bloquean esa primera edición. Conservan estado NO PROBADO/BLOCKED, nunca PASS. La v1 offline requiere E0–E8 del mismo SHA y U0/U1/U6/U7 conforme a [V1_OFFLINE_RELEASE_SCOPE.md](./V1_OFFLINE_RELEASE_SCOPE.md). El presente documento define la edición COMPLETA y permanece vigente para su certificación posterior.
+
 ## Alcance
 
 Una PC Windows para un taller, operación local offline sin servidor, clientes, vehículos, órdenes, presupuestos, cobros, cuentas, Excel y backups cifrados independientes. La sincronización directa con Google Drive pertenece a la edición completa; una edición offline podrá entregarse por separado y etiquetarse sin Drive. Multiusuario, agenda, inventario y facturación fiscal quedan fuera de esta versión.

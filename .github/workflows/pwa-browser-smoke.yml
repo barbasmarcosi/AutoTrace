@@ -55,3 +55,6 @@ jobs:
           # Exercise Desktop recovery dialogs with a synthetic Tauri bridge,
           # without making OAuth requests or touching real customer files.
           CHROME_PATH="$(command -v google-chrome || command -v chromium || command -v chromium-browser)" node tests/desktop-browser-smoke.mjs
+          # End-to-end Desktop contract: synthetic native persistence across
+          # full browser reload, money ledger, and rejected optimistic writes.
+          CHROME_PATH="$(command -v google-chrome || command -v chromium || command -v chromium-browser)" node tests/desktop-workflow-browser-smoke.mjs
