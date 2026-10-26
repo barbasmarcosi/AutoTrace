@@ -38,6 +38,7 @@ jobs:
           node --check site/browser-backup.mjs
       - name: Serve isolated LAB locally
         run: |
+          python3 -m unittest discover -s tests -p 'test_pages_preview_builder.py'
           python3 scripts/build-pages-preview.py site site /tmp/autotrace-smoke
           node --check /tmp/autotrace-smoke/lab/app.js
       - name: Install Playwright driver

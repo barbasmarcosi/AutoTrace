@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Build a stable Pages root and independent AutoTrace XLSX LAB subdirectory."""
 import json
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -26,7 +27,12 @@ def build(stable, lab, destination):
     f=copy/"sw.js"
     code=f.read_text(encoding="utf-8")
     code=replace_one(code,"const PREFIX = 'autotrace-shell-';","const PREFIX = 'autotrace-lab-shell-';")
-    code=replace_one(code,"const CACHE = 'autotrace-shell-v9';","const CACHE = 'autotrace-lab-shell-v8';")
+    # Keep the LAB cache version synchronized with the source PWA without
+    # hardcoding a single release's cache number into the build pipeline.
+    cache_pattern=r"(?m)^const CACHE = 'autotrace-shell-v([0-9]+)';$"
+    if len(re.findall(cache_pattern,code))!=1:
+        raise ValueError("Expected exactly one versioned AutoTrace cache declaration")
+    code=re.sub(cache_pattern,lambda m:f"const CACHE = 'autotrace-lab-shell-v{m.group(1)}';",code)
     f.write_text(code,encoding="utf-8")
     f=copy/"index.html"
     code=f.read_text(encoding="utf-8")

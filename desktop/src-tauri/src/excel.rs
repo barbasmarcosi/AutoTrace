@@ -268,7 +268,9 @@ mod tests {
             "vehicles":[{"id":"v1","clientId":"c1","plate":"AF012BC","make":"Toyota","model":"Hilux","year":"","mileage":200,"vin":"","color":"","nextServiceDate":"","notes":"","createdAt":""}],
             "orders":[{"id":"o1","vehicleId":"v1","title":"Service","category":"Mecánica","status":"done","openedAt":"2026-10-23","completedAt":"2026-10-23",
                        "mileage":200,"description":"","partsCost":500.0,"laborCost":200.0,"charged":3000.0,"paid":1500.0,"notes":"","createdAt":"2026-10-23",
-                       "payments":[{"id":"p1","date":"2026-10-23","amount":1000.0,"method":"transfer","accountId":"bank-1","reference":"AB123"}]}],
+                       "payments":[{"id":"p1","date":"2026-10-23","amount":1000.0,"method":"transfer","accountId":"bank-1","reference":"AB123"},
+                                   {"id":"p2","date":"2026-10-23","amount":250.0,"method":"cash","accountId":"","reference":"CANCELLED",
+                                    "voidedAt":"2026-10-25","voidReason":"Cobro recibido por error y anulado"}]}],
             "settings":{"garageName":"Taller","currency":"ARS","demo":false,
                         "accounts":[{"id":"bank-1","name":"Banco principal","kind":"bank","alias":"taller.test"}]}
         });
@@ -277,6 +279,10 @@ mod tests {
         let bytes=to_xlsx(&data).unwrap();
         let restored=from_xlsx(&bytes).unwrap();
         assert_eq!(canonical_bytes(&data).unwrap(),canonical_bytes(&restored).unwrap());
+        let voided=restored.orders[0].payments.iter().find(|p|p.id=="p2").unwrap();
+        assert_eq!(voided.amount,250.0);
+        assert_eq!(voided.voided_at,"2026-10-25");
+        assert_eq!(voided.void_reason,"Cobro recibido por error y anulado");
         let mut invalid=serde_json::to_value(restored).unwrap();
         invalid["settings"]["accounts"]=serde_json::json!([]);
         let invalid:AppData=serde_json::from_value(invalid).unwrap();
