@@ -40,7 +40,12 @@ const browser=await chromium.launch({headless:true,executablePath,args:['--no-sa
 const page=await browser.newPage({viewport:{width:1180,height:800}});
 const failures=[];
 page.on('pageerror',e=>failures.push('pageerror: '+e.message));
-page.on('console',m=>{if(m.type()==='error')failures.push('console: '+m.text());});
+page.on('console',m=>{
+  // The deliberate rejected revision must be surfaced to the operator. The
+  // frontend logs that expected failure, but all other console errors fail CI.
+  if(m.type()==='error'&&!m.text().includes('Conflicto de revisión'))
+    failures.push('console: '+m.text());
+});
 page.on('requestfailed',r=>failures.push('HTTP: '+r.url()+' '+r.failure()?.errorText));
 await page.exposeFunction('__autoTraceTestNativeRpc',rpc);
 await page.addInitScript(()=>{
@@ -63,7 +68,7 @@ try {
   const clientId=state.data.clients[0].id;
   assert.ok(!clientId.startsWith('demo-'),'Desktop must never load PWA fixtures');
 
-  await page.locator('[data-action="new-vehicle"]').first().click();
+  await page.locator('[data-action="new-vehicle"][data-client="'+clientId+'"]').click();
   await modal('vehicle').waitFor();
   assert.equal(await page.locator('#f-clientId').inputValue(),clientId);
   await page.locator('#f-plate').fill('AF012BC');
@@ -75,7 +80,7 @@ try {
   assert.equal(state.data.vehicles[0].clientId,clientId);
   const vehicleId=state.data.vehicles[0].id;
 
-  await page.locator('[data-action="new-order"]').first().click();
+  await page.locator('[data-action="new-order"][data-vehicle="'+vehicleId+'"]').click();
   await modal('order').waitFor();
   assert.equal(await page.locator('#f-vehicleId').inputValue(),vehicleId);
   await page.locator('#f-title').fill('Revisión de frenos');
