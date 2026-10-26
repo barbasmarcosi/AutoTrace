@@ -37,6 +37,7 @@ jobs:
           node --check site/browser-excel.mjs
           node --check site/browser-backup.mjs
           node --check site/workshop-pdf.mjs
+          for script in tests/*smoke.mjs; do node --check "$script"; done
       - name: Serve isolated LAB locally
         run: |
           python3 -m unittest discover -s tests -p 'test_pages_preview_builder.py'
