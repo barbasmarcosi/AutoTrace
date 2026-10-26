@@ -83,7 +83,16 @@ try{
     const request=page.waitForEvent('download');
     await page.locator('[data-action="'+action+'"][data-id="'+newOrder.id+'"]').click();
     const downloaded=await request;
-    assert.match(downloaded.suggestedFilename(),new RegExp('AutoTrace_'+name+'_AK112BC_.*\\.pdf and its new destination without leaving the order.
+    const filename=downloaded.suggestedFilename();
+    assert.ok(filename.startsWith('AutoTrace_'+name+'_AK112BC_'));
+    assert.ok(filename.endsWith('.pdf'));
+    const bytes=readFileSync(await downloaded.path());
+    const pdf=bytes.toString('latin1');
+    assert.ok(pdf.startsWith('%PDF-1.4'));
+    assert.match(pdf,new RegExp(heading));
+    assert.ok(!pdf.includes('NOTA_DE_TALLER')&&!pdf.includes('PRIVADO_CLIENTE'));
+  }
+  // Register an electronic payment and its new destination without leaving the order.
   await page.locator('[data-action="add-payment"][data-id="'+newOrder.id+'"]').click();
   await page.locator('#entity-form[data-kind="payment"]').waitFor({timeout:10000});
   await page.locator('[name="payment"]').fill('10000');
