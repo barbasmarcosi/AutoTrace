@@ -1,0 +1,519 @@
+//! Strict Google Drive v3 encrypted-file transport.
+//! All HTTP destinations are Google HTTPS endpoints; no public sharing endpoints.
+use md5;
+use reqwest::{blocking::{Body,Client},header::{CONTENT_LENGTH,CONTENT_RANGE,CONTENT_TYPE,LOCATION,RANGE}};
+use serde::{Serialize,Deserialize};
+use std::{fs,io::{BufRead,BufReader,Read,Seek,SeekFrom},path::Path,thread,time::Duration};
+use url::Url;
+const API:&str="https://www.googleapis.com/drive/v3/files";
+const UPLOAD:&str="https://www.googleapis.com/upload/drive/v3/files";
+const MAX:u64=600_000_000;
+const CHUNK:u64=8*1024*1024;
+/// Never send a user-controlled file to Google merely because its filename
+/// ends in .age. A local plaintext SQLite/XLSX, or a symlink to one, must be
+/// rejected before any HTTP request. This verifies the age-v1 scrypt envelope,
+/// NOT the full ciphertext authentication (which needs the recovery phrase).
+fn preflight_ciphertext(path:&Path)->Result<u64,String>{
+    let metadata=fs::symlink_metadata(path).map_err(|_|"No se pudo abrir copia cifrada pendiente")?;
+    if !metadata.file_type().is_file()||metadata.file_type().is_symlink()||
+        metadata.len()<100||metadata.len()>MAX{
+        return Err("La cola de Drive contiene un archivo inválido o enlace; no se envió".into());
+    }
+    let mut reader=BufReader::new(fs::File::open(path).map_err(|_|"No se pudo leer respaldo cifrado")?);
+    // Cap line reads on malformed files; genuine age scrypt header is short.
+    let mut first=Vec::new();
+    reader.by_ref().take(256).read_until(b'\n',&mut first)
+        .map_err(|_|"Cabecera age ilegible")?;
+    let mut second=Vec::new();
+    reader.by_ref().take(512).read_until(b'\n',&mut second)
+        .map_err(|_|"Cabecera age ilegible")?;
+    if first!=b"age-encryption.org/v1\n"||!second.starts_with(b"-> scrypt ")||
+       !second.ends_with(b"\n"){
+        return Err("El archivo pendiente no es un respaldo age/scrypt de AutoTrace. No se envió".into());
+    }
+    age::Decryptor::new(BufReader::new(fs::File::open(path).map_err(|_|"No se pudo leer el archivo")?))
+        .map_err(|_|"Cabecera age dañada o incompleta")?;
+    Ok(metadata.len())
+}
+fn file_md5(path:&Path)->Result<String,String>{
+    let mut file=fs::File::open(path).map_err(|e|e.to_string())?;
+    let mut digest=md5::Context::new();
+    let mut buf=[0u8;128*1024];
+    loop{
+        let n=file.read(&mut buf).map_err(|e|e.to_string())?;
+        if n==0{break;}
+        digest.consume(&buf[..n]);
+    }
+    Ok(format!("{:x}",digest.compute()))
+}
+#[derive(Debug,Clone,Serialize,Deserialize)]
+#[serde(rename_all="camelCase")]
+pub(crate) struct CloudFile {
+    pub id:String,
+    pub name:String,
+    pub size:Option<String>,
+    pub md5_checksum:Option<String>,
+    pub created_time:Option<String>,
+}
+fn http()->Result<Client,String>{
+    Client::builder().timeout(Duration::from_secs(90)).build().map_err(|_|"No se pudo iniciar HTTPS".into())
+}
+fn identifier(id:&str)->Result<&str,String>{
+    if id.len()<8||id.len()>160||!id.bytes().all(|c|c.is_ascii_alphanumeric()||c==b'-'||c==b'_'){
+        return Err("ID remoto inválido".into());
+    }
+    Ok(id)
+}
+fn json_get(client:&Client,token:&str,url:&str)->Result<serde_json::Value,String>{
+    let r=client.get(url).bearer_auth(token).send().map_err(|_|"No hay conexión con Google Drive")?;
+    if !r.status().is_success(){return Err(format!("Google Drive devolvió HTTP {}. Revisá la cuenta, la cuota o la conexión.",r.status().as_u16()));}
+    r.json().map_err(|_|"La respuesta de Drive no es válida".into())
+}
+fn json_post(client:&Client,token:&str,url:&str,data:&serde_json::Value)->Result<serde_json::Value,String>{
+    let r=client.post(url).bearer_auth(token).json(data).send().map_err(|_|"No se pudo contactar con Google Drive")?;
+    if !r.status().is_success(){return Err(format!("Google Drive rechazó la creación: HTTP {}",r.status().as_u16()));}
+    r.json().map_err(|_|"La respuesta de Drive no es válida".into())
+}
+fn list_query(client:&Client,token:&str,q:&str,fields:&str)->Result<Vec<serde_json::Value>,String>{
+    let mut all=Vec::new();
+    let mut cursor:Option<String>=None;
+    for _page in 0..20 {
+        let mut url=Url::parse(API).map_err(|e|e.to_string())?;
+        url.query_pairs_mut().append_pair("q",q).append_pair("fields",fields)
+            .append_pair("pageSize","1000");
+        if let Some(ref token)=cursor{url.query_pairs_mut().append_pair("pageToken",token);}
+        let doc=json_get(client,token,url.as_str())?;
+        let page=doc["files"].as_array().ok_or("Google no devolvió una lista de archivos")?;
+        all.extend(page.iter().cloned());
+        cursor=doc["nextPageToken"].as_str().filter(|v|!v.is_empty()).map(str::to_owned);
+        if cursor.is_none(){return Ok(all);}
+    }
+    Err("Se alcanzó el límite de paginación de Drive. Se conservarán todas las copias; revisá la política de retención remota.".into())
+}
+fn folder(client:&Client,token:&str)->Result<String,String>{
+    let q="trashed = false and mimeType = 'application/vnd.google-apps.folder' and appProperties has { key='autotraceKind' and value='backups' }";
+    let list=list_query(client,token,q,"nextPageToken,files(id,name)")?;
+    // Two tagged backup folders are ambiguous: never silently split a
+    // recoverable history between them.
+    if list.len()>1{return Err("Hay varias carpetas AutoTrace en Drive. Revisalas antes de continuar para no dividir los respaldos.".into());}
+    if let Some(f)=list.first(){return Ok(identifier(f["id"].as_str().ok_or("Carpeta sin ID")?)?.to_owned());}
+    let create=serde_json::json!({
+        "name":"AutoTrace Backups","mimeType":"application/vnd.google-apps.folder",
+        "appProperties":{"autotraceKind":"backups"}
+    });
+    let result=json_post(client,token,API,&create)?;
+    Ok(identifier(result["id"].as_str().ok_or("Falta ID de carpeta creada")?)?.to_owned())
+}
+fn listed(client:&Client,token:&str)->Result<Vec<CloudFile>,String>{
+    let q="trashed = false and appProperties has { key='autotraceBackup' and value='age-v1' }";
+    let raw=list_query(client,token,q,"nextPageToken,files(id,name,size,md5Checksum,createdTime)")?;
+    let mut files=Vec::new();
+    for item in raw{
+        let f:CloudFile=serde_json::from_value(item).map_err(|_|"Archivo remoto no válido")?;
+        if f.name.starts_with("AutoTrace_")&&f.name.ends_with(".atbackup.age")&&identifier(&f.id).is_ok(){files.push(f);}
+    }
+    files.sort_by(|a,b|b.created_time.cmp(&a.created_time));
+    Ok(files)
+}
+pub(crate) fn list(token:&str)->Result<Vec<CloudFile>,String>{listed(&http()?,token)}
+/// A remote name alone is not an identity. Ambiguous names are not a verified
+/// backup and must be reconciled manually rather than silently accepted.
+fn already_uploaded(files:&[CloudFile],name:&str,size:u64,checksum:&str)->Result<Option<String>,String>{
+    let matches:Vec<_>=files.iter().filter(|f|f.name==name).collect();
+    if matches.len()>1{
+        return Err("Hay varias copias de igual nombre en Drive. No se puede verificar unívocamente; revisalas antes de reintentar.".into());
+    }
+    let Some(existing)=matches.first() else{return Ok(None)};
+    if existing.size.as_deref()==Some(size.to_string().as_str())&&
+       existing.md5_checksum.as_deref()==Some(checksum){
+        return Ok(Some(existing.id.clone()));
+    }
+    Err("Ya existe un backup remoto de igual nombre y distinto contenido. No se sobrescribe.".into())
+}
+fn next_offset(range:Option<&str>,size:u64)->Result<u64,String>{
+    let Some(r)=range else {return Ok(0)};
+    let v=r.strip_prefix("bytes=0-").ok_or("Google devolvió un rango inesperado")?
+        .parse::<u64>().map_err(|_|"Rango de subida inválido")?;
+    if v>=size{return Err("Rango confirmado excede el archivo".into());}
+    Ok(v+1)
+}
+/// Never accept a server acknowledgement for bytes that this client did
+/// not actually attempt to upload. This is checked both for 308 and probes.
+fn acknowledged_offset(range:Option<&str>,size:u64,last_sent_end:u64)->Result<u64,String>{
+    let offset=next_offset(range,size)?;
+    if offset>last_sent_end.saturating_add(1){
+        return Err("Drive confirmó bytes fuera del fragmento enviado. No se puede verificar la copia.".into());
+    }
+    Ok(offset)
+}
+pub(crate) fn upload(token:&str,path:&Path)->Result<String,String>{
+    let client=http()?;
+    let name=path.file_name().and_then(|n|n.to_str()).ok_or("Archivo sin nombre")?;
+    if !name.starts_with("AutoTrace_")||!name.ends_with(".atbackup.age"){return Err("Solo se admiten archivos AutoTrace cifrados".into());}
+    let size=preflight_ciphertext(path)?;
+    let checksum=file_md5(path)?;
+    // Retry idempotently, including a completed request whose local acknowledgement was lost.
+    if let Some(id)=already_uploaded(&listed(&client,token)?,name,size,&checksum)?{return Ok(id);}
+    let parent=folder(&client,token)?;
+    let info=serde_json::json!({
+        "name":name,"mimeType":"application/octet-stream","parents":[parent],
+        "appProperties":{"autotraceBackup":"age-v1"}
+    });
+    let init=client.post(format!("{UPLOAD}?uploadType=resumable&fields=id,name,size,md5Checksum"))
+        .bearer_auth(token).header("X-Upload-Content-Type","application/octet-stream")
+        .header("X-Upload-Content-Length",size.to_string()).json(&info).send()
+        .map_err(|_|"No se pudo iniciar la subida reanudable a Google Drive")?;
+    if !init.status().is_success(){return Err(format!("Google rechazó la subida: HTTP {}",init.status()));}
+    let session=init.headers().get(LOCATION).and_then(|x|x.to_str().ok()).ok_or("Falta sesión de subida de Google")?;
+    let url=Url::parse(session).map_err(|_|"Sesión de subida inválida")?;
+    if url.scheme()!="https"||url.host_str()!=Some("www.googleapis.com")||
+       !url.path().starts_with("/upload/drive/v3/files"){
+        return Err("Google entregó una URL de subida no confiable".into());
+    }
+    let id=upload_chunks(&client,token,&url,path,size,CHUNK)?;
+
+    let mut url=Url::parse(&format!("{API}/{id}")).map_err(|e|e.to_string())?;
+    url.query_pairs_mut().append_pair("fields","id,size,md5Checksum,appProperties");
+    let remote=json_get(&client,token,url.as_str())?;
+    if remote["size"].as_str()!=Some(size.to_string().as_str())||
+       remote["md5Checksum"].as_str()!=Some(checksum.as_str())||
+       remote["appProperties"]["autotraceBackup"]!="age-v1"{
+        return Err("La copia está subida pero falló la verificación de tamaño y checksum.".into());
+    }
+    Ok(id)
+}
+/// Transfer a resumable session in bounded chunks. Keeping this separate
+/// allows deterministic loopback tests without Google credentials.
+fn upload_chunks(client:&Client,token:&str,url:&Url,path:&Path,size:u64,chunk_size:u64)->Result<String,String>{
+    if chunk_size==0{return Err("Tamaño de fragmento inválido".into());}
+    let mut offset=0u64;
+    let mut retries=0usize;
+    let mut id=None;
+    while offset<size {
+        let end=(offset+chunk_size).min(size)-1;
+        let mut f=fs::File::open(path).map_err(|e|e.to_string())?;
+        f.seek(SeekFrom::Start(offset)).map_err(|e|e.to_string())?;
+        let len=end-offset+1;
+        let response=client.put(url.clone()).bearer_auth(token)
+            .header(CONTENT_TYPE,"application/octet-stream")
+            .header(CONTENT_RANGE,format!("bytes {offset}-{end}/{size}"))
+            .header(CONTENT_LENGTH,len.to_string())
+            .body(Body::sized(f.take(len),len)).send();
+        match response {
+            Ok(r) if r.status().is_success()=>{
+                let doc:serde_json::Value=r.json().map_err(|_|"Respuesta de subida sin JSON")?;
+                id=Some(identifier(doc["id"].as_str().ok_or("Falta ID de subida")?)?.to_owned());break;
+            },
+            Ok(r) if r.status().as_u16()==308=>{
+                let new=acknowledged_offset(r.headers().get(RANGE).and_then(|x|x.to_str().ok()),size,end)?;
+                if new<=offset {
+                    // Google may return 308 without Range before persisting a chunk.
+                    // Do not claim progress; retry after a bounded status probe.
+                    retries+=1;
+                }else{
+                    offset=new;retries=0;
+                }
+            },
+            Ok(r) if r.status().is_server_error()||r.status().as_u16()==429=>{retries+=1;},
+            Err(_)=>{retries+=1;},
+            Ok(r)=>return Err(format!("Drive rechazó el archivo (HTTP {})",r.status())),
+        }
+        if retries>4{return Err("Subida interrumpida. La copia cifrada sigue pendiente localmente.".into());}
+        if retries>0{
+            thread::sleep(Duration::from_secs(1u64<<retries.min(3)));
+            let probe=client.put(url.clone()).bearer_auth(token)
+                .header(CONTENT_RANGE,format!("bytes */{size}"))
+                .header(CONTENT_LENGTH,"0").send().map_err(|_|"No se pudo reanudar la carga")?;
+            if probe.status().as_u16()==308{
+                offset=acknowledged_offset(probe.headers().get(RANGE).and_then(|x|x.to_str().ok()),size,end)?;
+            }else if probe.status().is_success(){
+                let doc:serde_json::Value=probe.json().map_err(|_|"Confirmación remota inválida")?;
+                id=Some(identifier(doc["id"].as_str().ok_or("Falta ID remoto")?)?.to_owned());break;
+            }else{return Err("No se pudo reanudar la subida. La copia sigue pendiente localmente.".into());}
+        }
+    }
+    id.ok_or("No se completó la subida de Drive".into())
+}
+pub(crate) fn download(token:&str,id:&str,destination:&Path)->Result<(),String>{
+    let client=http()?;
+    let selected=listed(&client,token)?.into_iter().find(|x|x.id==id)
+        .ok_or("El archivo no pertenece a las copias de AutoTrace en esta cuenta")?;
+    identifier(id)?;
+    let size=selected.size.as_deref().ok_or("Drive no devuelve el tamaño")?
+        .parse::<u64>().map_err(|_|"Tamaño remoto inválido")?;
+    if size==0||size>MAX{return Err("Copia remota fuera de tamaño permitido".into());}
+    let response=client.get(format!("{API}/{id}?alt=media")).bearer_auth(token).send()
+        .map_err(|_|"Error descargando desde Google Drive")?;
+    if !response.status().is_success(){return Err(format!("Drive rechazó descarga (HTTP {})",response.status()));}
+    let expected_md5=selected.md5_checksum.as_deref().ok_or("Drive no devolvió checksum del archivo")?;
+    receive_verified(response,size,expected_md5,destination)
+}
+/// Publish only a completed/verified ciphertext, never replacing a prior
+/// backup. On Windows MoveFileExW WITHOUT MOVEFILE_REPLACE_EXISTING performs
+/// an atomic same-volume no-clobber rename even on FAT/exFAT removable USB.
+/// Hard links alone would reject common removable filesystems.
+#[cfg(windows)]
+fn publish_completed_no_replace(stage:&Path,destination:&Path)->std::io::Result<()>{
+    use std::{os::windows::ffi::OsStrExt,iter};
+    #[link(name="kernel32")]
+    unsafe extern "system" {
+        fn MoveFileExW(existing:*const u16,new:*const u16,flags:u32)->i32;
+    }
+    let from=stage.as_os_str().encode_wide().chain(iter::once(0)).collect::<Vec<_>>();
+    let to=destination.as_os_str().encode_wide().chain(iter::once(0)).collect::<Vec<_>>();
+    // 0x8 = MOVEFILE_WRITE_THROUGH; no 0x1 REPLACE_EXISTING, no
+    // COPY_ALLOWED. The source and destination must be on the same disk.
+    if unsafe{MoveFileExW(from.as_ptr(),to.as_ptr(),0x8)}!=0{Ok(())}
+    else{Err(std::io::Error::last_os_error())}
+}
+#[cfg(not(windows))]
+fn publish_completed_no_replace(stage:&Path,destination:&Path)->std::io::Result<()>{
+    fs::hard_link(stage,destination)
+}
+pub(crate) fn publish_verified_cipher(stage:&Path,destination:&Path)->Result<(),String>{
+    if stage.parent()!=destination.parent(){
+        return Err("El respaldo cifrado debe publicarse en la misma unidad temporal".into());
+    }
+    publish_completed_no_replace(stage,destination).map_err(|e|{
+        if e.kind()==std::io::ErrorKind::AlreadyExists{
+            "Otro proceso ya creó el respaldo de destino. No se sobrescribió.".into()
+        }else{
+            format!("No se pudo publicar el respaldo sin sobrescribir en este disco: {e}")
+        }
+    })
+}
+/// Write only to an exclusive staging file; publish the downloaded ciphertext
+/// after comparing the exact remote size and checksum. Any network or integrity
+/// failure removes the temporary file and leaves the destination unchanged.
+fn receive_verified<R:Read>(stream:R,size:u64,expected_md5:&str,destination:&Path)->Result<(),String>{
+    if size==0||size>MAX{return Err("Tamaño de descarga fuera de los límites".into());}
+    if expected_md5.len()!=32||!expected_md5.bytes().all(|c|c.is_ascii_hexdigit()){
+        return Err("Checksum remoto ausente o inválido".into());
+    }
+    if destination.exists(){return Err("Ya existe un archivo en destino: no se sobrescribió".into());}
+    let parent=destination.parent().ok_or("Destino de descarga inválido")?;
+    let stage=parent.join(format!(".autotrace-download-{}.partial",uuid::Uuid::new_v4()));
+    struct RemoveStage(std::path::PathBuf);
+    impl Drop for RemoveStage{
+        fn drop(&mut self){let _=fs::remove_file(&self.0);}
+    }
+    let guard=RemoveStage(stage.clone());
+    let mut file=fs::OpenOptions::new().write(true).create_new(true)
+        .open(&stage).map_err(|e|e.to_string())?;
+    let copied=std::io::copy(&mut stream.take(size+1),&mut file).map_err(|_|"Descarga interrumpida")?;
+    if copied!=size{return Err("Copia descargada incompleta o fuera de tamaño".into());}
+    file.sync_all().map_err(|e|e.to_string())?;
+    drop(file);
+    if file_md5(&stage)?.to_ascii_lowercase()!=expected_md5.to_ascii_lowercase(){
+        return Err("Google devolvió una copia con checksum distinto".into());
+    }
+    publish_verified_cipher(&stage,destination)?;
+    // The completed ciphertext is now visible via a fully written hard-link.
+    // Deleting the private staging name leaves the destination's bytes intact.
+    drop(guard);
+    Ok(())
+}
+#[cfg(test)]
+mod tests{
+    use super::*;
+    #[test] fn never_upload_plaintext_or_falsely_renamed_files_from_drive_queue(){
+        use std::io::Write;
+        let root=std::env::temp_dir().join(format!("autotrace-queued-age-{}",uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let plain=root.join("AutoTrace_fake.atbackup.age");
+        fs::write(&plain,b"SQLite format 3\0FAKE UNENCRYPTED CUSTOMER CONTENT").unwrap();
+        assert!(preflight_ciphertext(&plain).is_err());
+        assert!(upload("no-real-google-token",&plain).is_err(),
+            "plaintext must fail before attempting any HTTP upload");
+        let forged=root.join("AutoTrace_forged.atbackup.age");
+        fs::write(&forged,b"age-encryption.org/v1\n-> scrypt fake fake\nNOT A VALID AGE ARCHIVE").unwrap();
+        assert!(preflight_ciphertext(&forged).is_err(),"a fake header cannot bypass age parsing");
+
+        let good=root.join("AutoTrace_valid.atbackup.age");
+        let pw=age::secrecy::SecretString::from("AUTOTRACE-TEST-ONLY-NOT-A-RECOVERY-KEY".to_owned());
+        let enc=age::Encryptor::with_user_passphrase(pw);
+        let mut writer=enc.wrap_output(fs::File::create(&good).unwrap()).unwrap();
+        writer.write_all(b"AUTOTRACE-DRIVE-1\nSYNTHETIC-NOT-PRIVATE").unwrap();
+        writer.finish().unwrap();
+        assert_eq!(preflight_ciphertext(&good).unwrap(),fs::metadata(&good).unwrap().len());
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test] fn mock_google_http_errors_are_safe_and_non_retryable_without_bytes(){
+        use std::io::{Read,Write};
+        use std::net::TcpListener;
+        for status in [401,403,429,500]{
+            let listener=TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr=listener.local_addr().unwrap();
+            let server=std::thread::spawn(move ||{
+                let (mut socket,_)=listener.accept().unwrap();
+                socket.set_read_timeout(Some(std::time::Duration::from_secs(4))).unwrap();
+                let mut request=[0u8;8192];
+                let _=socket.read(&mut request).unwrap();
+                let response=format!("HTTP/1.1 {status} MOCK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}");
+                socket.write_all(response.as_bytes()).unwrap();
+            });
+            let endpoint=format!("http://{addr}/drive/v3/files");
+            let result=json_get(&http().unwrap(),"synthetic-test-token",&endpoint);
+            assert!(result.is_err(),"status {status} cannot be treated as successful Drive verification");
+            assert!(result.unwrap_err().contains(&status.to_string()));
+            server.join().unwrap();
+        }
+    }
+    #[test] fn bad_mock_json_is_not_accepted_as_remote_confirmation(){
+        use std::io::{Read,Write};
+        use std::net::TcpListener;
+        let listener=TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr=listener.local_addr().unwrap();
+        let server=std::thread::spawn(move ||{
+            let (mut s,_)=listener.accept().unwrap();
+            s.set_read_timeout(Some(std::time::Duration::from_secs(4))).unwrap();
+            let mut req=[0u8;8192];let _=s.read(&mut req).unwrap();
+            s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nNOTJS").unwrap();
+        });
+        let result=json_get(&http().unwrap(),"synthetic-test-token",&format!("http://{addr}/drive/v3/files"));
+        assert!(result.is_err());
+        server.join().unwrap();
+    }
+    /// Simulate a provider that acknowledges chunk 0 with 308 and finishes
+    /// the next chunk. No Google credentials or network outside loopback.
+    #[test] fn resumable_transfer_obeys_server_confirmed_ranges(){
+        use std::io::{Read,Write};
+        use std::net::TcpListener;
+        let dir=std::env::temp_dir().join(format!("autotrace-drive-chunks-{}",uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let file=dir.join("encrypted.age");
+        fs::write(&file,b"ABCDEFGH").unwrap();
+        let listener=TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr=listener.local_addr().unwrap();
+        let server=std::thread::spawn(move ||{
+            let mut ranges=Vec::new();
+            for round in 0..2 {
+                let (mut socket,_)=listener.accept().unwrap();
+                socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                let mut collected=Vec::new();
+                let mut buf=[0u8;2048];
+                loop{
+                    let n=socket.read(&mut buf).unwrap();
+                    assert!(n>0,"upload request ended before content");
+                    collected.extend_from_slice(&buf[..n]);
+                    let Some(head_end)=collected.windows(4).position(|c|c==b"\r\n\r\n") else {continue};
+                    let headers=String::from_utf8_lossy(&collected[..head_end]).to_ascii_lowercase();
+                    let size=headers.lines().find_map(|line|line.strip_prefix("content-length:"))
+                        .unwrap().trim().parse::<usize>().unwrap();
+                    if collected.len()<head_end+4+size{continue;}
+                    let range=headers.lines().find(|line|line.starts_with("content-range:")).unwrap().to_owned();
+                    ranges.push(range);
+                    let body=&collected[head_end+4..head_end+4+size];
+                    assert_eq!(body,if round==0{b"ABCD"}else{b"EFGH"});
+                    break;
+                }
+                if round==0{
+                    socket.write_all(b"HTTP/1.1 308 Resume Incomplete\r\nRange: bytes=0-3\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+                }else{
+                    let payload=r#"{"id":"mock-verified-123"}"#;
+                    write!(socket,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",payload.len(),payload).unwrap();
+                }
+            }
+            ranges
+        });
+        let client=http().unwrap();
+        let endpoint=Url::parse(&format!("http://{addr}/upload-session")).unwrap();
+        let result=upload_chunks(&client,"synthetic-token",&endpoint,&file,8,4).unwrap();
+        assert_eq!(result,"mock-verified-123");
+        assert_eq!(server.join().unwrap(),vec!["content-range: bytes 0-3/8","content-range: bytes 4-7/8"]);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+    #[test] fn malformed_confirmed_range_cannot_publish_remote_success(){
+        use std::io::{Read,Write};
+        use std::net::TcpListener;
+        let dir=std::env::temp_dir().join(format!("autotrace-drive-invalid-{}",uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let path=dir.join("sealed.age");
+        fs::write(&path,b"12345678").unwrap();
+        let listener=TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr=listener.local_addr().unwrap();
+        let server=std::thread::spawn(move ||{
+            let (mut socket,_)=listener.accept().unwrap();
+            socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut request=[0u8;4096];
+            let _=socket.read(&mut request).unwrap();
+            socket.write_all(b"HTTP/1.1 308 Resume Incomplete\r\nRange: bytes=0-99\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+        });
+        let client=http().unwrap();
+        let endpoint=Url::parse(&format!("http://{addr}/upload-session")).unwrap();
+        let result=upload_chunks(&client,"synthetic-token",&endpoint,&path,8,4);
+        assert!(result.is_err(),"an impossible Range must never complete the upload");
+        server.join().unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+    }
+    #[test] fn interrupted_and_corrupt_downloads_never_publish_files(){
+        let dir=std::env::temp_dir().join(format!("autotrace-download-{}",uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let destination=dir.join("download.atbackup.age");
+        let data=b"encrypted synthetic content only";
+        let md5=format!("{:x}",md5::compute(data));
+        for (bytes,size,checksum) in [
+            (&data[..data.len()-1],data.len() as u64,md5.as_str()),
+            (&data[..],(data.len()-1) as u64,md5.as_str()),
+            (&data[..],data.len() as u64,"00000000000000000000000000000000")
+        ] {
+            assert!(receive_verified(bytes,size,checksum,&destination).is_err());
+            assert!(!destination.exists(),"a failed transfer must not publish ciphertext");
+            assert_eq!(fs::read_dir(&dir).unwrap().count(),0,"failed downloads must clean staging");
+        }
+        receive_verified(&data[..],data.len() as u64,&md5,&destination).unwrap();
+        assert_eq!(fs::read(&destination).unwrap(),data);
+        assert!(receive_verified(&b"overwrite"[..],9,&md5,&destination).is_err());
+        assert_eq!(fs::read(&destination).unwrap(),data);
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test] fn atomic_download_publication_refuses_races_and_never_exposes_partial_bytes(){
+        let dir=std::env::temp_dir().join(format!("autotrace-download-atomic-{}",uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let stage=dir.join(".complete-ciphertext.partial");
+        let destination=dir.join("download.atbackup.age");
+        fs::write(&stage,b"verified-complete-ciphertext").unwrap();
+        // Simulate a second process winning the destination race between
+        // initial existence check and atomic final publication.
+        fs::write(&destination,b"older-valid-ciphertext").unwrap();
+        assert!(publish_verified_cipher(&stage,&destination).is_err());
+        assert_eq!(fs::read(&destination).unwrap(),b"older-valid-ciphertext");
+        assert_eq!(fs::read(&stage).unwrap(),b"verified-complete-ciphertext");
+        fs::remove_file(&destination).unwrap();
+        publish_verified_cipher(&stage,&destination).unwrap();
+        assert_eq!(fs::read(&destination).unwrap(),b"verified-complete-ciphertext");
+        assert!(publish_verified_cipher(&stage,&destination).is_err(),
+            "duplicate final publication must never silently replace a download");
+        // Windows MoveFileExW moves the staged name; POSIX hardlink keeps
+        // staging until cleanup. Both must preserve the final ciphertext.
+        if stage.exists(){fs::remove_file(&stage).unwrap();}
+        assert_eq!(fs::read(&destination).unwrap(),b"verified-complete-ciphertext",
+            "staging cleanup must not invalidate an atomically published ciphertext");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+    #[test] fn only_one_matching_remote_backup_may_be_reused(){
+        let good=CloudFile{
+            id:"validRemoteId_123".into(),name:"AutoTrace_123.atbackup.age".into(),
+            size:Some("123".into()),md5_checksum:Some("a".repeat(32)),created_time:None
+        };
+        assert_eq!(already_uploaded(&[],&good.name,123,&"a".repeat(32)).unwrap(),None);
+        assert_eq!(already_uploaded(&[good.clone()],&good.name,123,&"a".repeat(32)).unwrap(),Some(good.id.clone()));
+        assert!(already_uploaded(&[good.clone()],&good.name,124,&"a".repeat(32)).is_err());
+        assert!(already_uploaded(&[good.clone(),good.clone()],&good.name,123,&"a".repeat(32)).is_err());
+    }
+    #[test] fn rejects_remote_acknowledgements_for_unsent_chunks(){
+        assert_eq!(acknowledged_offset(Some("bytes=0-3"),8,3).unwrap(),4);
+        assert_eq!(acknowledged_offset(None,8,3).unwrap(),0);
+        // The server cannot skip from the first 4 bytes to byte 7.
+        assert!(acknowledged_offset(Some("bytes=0-7"),8,3).is_err());
+        // A later 308 probe is also forbidden to acknowledge unsent bytes.
+        assert!(acknowledged_offset(Some("bytes=0-95"),100,31).is_err());
+    }
+    #[test] fn ranges_and_ids_are_checked(){
+        assert_eq!(next_offset(None,20).unwrap(),0);
+        assert_eq!(next_offset(Some("bytes=0-7"),20).unwrap(),8);
+        assert!(next_offset(Some("bytes=0-20"),20).is_err());
+        assert!(identifier("../../etc/passwd").is_err());
+        assert!(identifier("validFileId_22").is_ok());
+    }
+}

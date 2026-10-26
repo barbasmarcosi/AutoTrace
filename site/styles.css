@@ -418,3 +418,28 @@ body:has(#form-dialog[open]) { overscroll-behavior: none; }
   }
   .topbar-right { align-items: center; }
 }
+
+/* Detalle de presupuestos: grilla flexible sin scroll horizontal del formulario. */
+.order-line-editor{min-width:0;border:1px solid #dae5e4;border-radius:14px;padding:14px}
+.order-line-heading{display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;font-size:13px}
+.order-line-row{display:grid;grid-template-columns:minmax(0,2fr) minmax(92px,1fr) 78px 105px 38px;gap:8px;padding:12px 0;border-bottom:1px solid #e2e9e9;min-width:0;align-items:end}
+.order-line-row label{display:grid;gap:4px;min-width:0;font-size:11px;font-weight:650}
+.order-line-row input,.order-line-row select{min-width:0;width:100%}
+.order-line-row button{min-width:36px;padding:8px}
+@media(max-width:680px){.order-line-row{grid-template-columns:minmax(0,1fr) minmax(0,1fr) 39px}.order-line-row .line-description{grid-column:1/-1}.order-line-row>label:nth-child(4){grid-column:2}.order-line-row>button{grid-column:3;grid-row:3}.order-line-row label{font-size:12px}}
+
+/* In-place client/vehicle matching on Excel import. */
+.legacy-panel{width:100%;min-width:0;border:1px solid var(--border,#d9e2e0);border-radius:14px;padding:16px;display:grid;gap:11px;background:var(--surface,#fff)}
+.legacy-panel h3{margin:0;font-size:15px}
+.legacy-block-label,.legacy-fields label{display:grid;gap:6px;font-size:12px;font-weight:650;min-width:0}
+.legacy-block-label input,.legacy-block-label select,.legacy-fields input{width:100%;min-width:0;max-width:100%}
+.legacy-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;min-width:0}
+.legacy-fields label:first-child{grid-column:1/-1}
+.legacy-fields[hidden]{display:none!important}
+.legacy-alert{border-left:3px solid #d78a18;padding:10px;background:#fff6df;color:#67440b;border-radius:7px;font-size:13px}
+.legacy-confirm{display:flex;align-items:flex-start;gap:9px;font-size:13px;line-height:1.5;font-weight:500}
+.legacy-confirm input{flex:none;width:17px;height:17px;margin-top:2px}
+.legacy-duplicate{font-size:12px;color:var(--muted,#64748b)}
+.legacy-lines{max-height:260px;overflow:auto}
+.legacy-lines table{min-width:480px}
+@media(max-width:560px){.legacy-panel{padding:12px}.legacy-fields{grid-template-columns:minmax(0,1fr)}.legacy-fields label:first-child{grid-column:auto}}

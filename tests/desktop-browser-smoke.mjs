@@ -1,0 +1,147 @@
+/** Real Chromium DOM smoke with a simulated Tauri command boundary.
+ * Tests UI wiring only: it does NOT claim Windows vault, native files or Drive work.
+ */
+import {chromium} from 'playwright-core';
+import assert from 'node:assert/strict';
+const executablePath=process.env.CHROME_PATH||'/usr/bin/google-chrome';
+const base=process.env.AUTOTRACE_SMOKE_BASE||'http://127.0.0.1:8765/lab/';
+const phrase='AT-'+('a'.repeat(32))+'-'+('b'.repeat(32));
+const browser=await chromium.launch({headless:true,executablePath,args:['--no-sandbox','--disable-dev-shm-usage']});
+const page=await browser.newPage({viewport:{width:1180,height:800}});
+const errors=[];
+page.on('pageerror',e=>errors.push(String(e)));
+try{
+  await page.addInitScript(({phrase})=>{
+    const callLog=[];
+    let autoUnlock=false;
+    const data={
+      clients:[{id:'c-test',name:'Cliente sintético',phone:'2230000000',email:'',notes:'',createdAt:'2026-10-24'}],
+      vehicles:[],orders:[],settings:{garageName:'Mi taller',currency:'ARS',demo:false}
+    };
+    window.__AUTOTRACE_TEST_CALLS__=callLog;
+    window.__TAURI__={core:{invoke:async(cmd,args={})=>{
+      callLog.push({cmd,args});
+      if(cmd==='load_state')return {data,revision:0};
+      if(cmd==='backup_status')return {lastBackupUnixMs:Date.now(),localOnly:true,externalDirectory:null,lastExternalBackupUnixMs:null};
+      if(cmd==='drive_backup_status')return {directory:null,unlocked:false};
+      if(cmd==='drive_api_status')return {identityStatus:'not_configured',connected:false,pendingCount:0,lastVerifiedUploadAt:null,autoUnlockEnabled:autoUnlock,developerMode:false};
+      if(cmd==='generate_recovery_phrase')return phrase;
+      if(cmd==='drive_api_enable_auto_unlock'){
+        if(args.passphrase!==phrase)throw Error('Unexpected mock phrase');
+        autoUnlock=true;return null;
+      }
+      if(cmd==='export_portable_encrypted_backup'){
+        if(args.passphrase!==phrase)throw Error('Wrong mock phrase');
+        return 'AutoTrace_test.atbackup.age';
+      }
+      if(cmd==='choose_sqlite_import')return {data,filename:'synthetic-legacy.sqlite3',verified:false};
+      throw Error('Unexpected native command: '+cmd);
+    }}};
+  },{phrase});
+  await page.goto(base+'#ajustes',{waitUntil:'domcontentloaded'});
+  await page.locator('[data-action="generate-recovery-kit"]').waitFor({timeout:25000});
+  await page.goto(base+'#inicio',{waitUntil:'domcontentloaded'});
+  await page.getByText('No consta una copia externa o subida a Drive verificada').waitFor({timeout:10000});
+  assert.equal(await page.getByRole('button',{name:'Proteger mis datos'}).count(),1);
+  await page.getByRole('button',{name:'Proteger mis datos'}).click();
+  await page.locator('[data-action="generate-recovery-kit"]').waitFor({timeout:10000});
+  assert.equal(await page.getByRole('button',{name:'Conectar con Google'}).count(),0,'Cannot offer OAuth if app identity absent');
+  // The safe offline recovery workflow must remain available without Google Cloud.
+  await page.locator('[data-action="generate-recovery-kit"]').click();
+  await page.locator('#confirm-dialog[open]').waitFor();
+  await page.locator('#confirm-accept').click();
+  await page.locator('#entity-form[data-kind="drive-recovery-kit"]').waitFor();
+  assert.equal(await page.locator('#recovery-kit-value').inputValue(),phrase);
+  await page.locator('[name="recoverySuffix"]').fill(phrase.slice(-8));
+  await page.locator('[name="savedOutside"]').check();
+  await page.locator('#entity-form [type="submit"]').click();
+  await page.locator('#entity-form[data-kind="drive-recovery-kit"]').waitFor({state:'hidden',timeout:10000});
+  const first=await page.evaluate(()=>window.__AUTOTRACE_TEST_CALLS__);
+  assert.equal(first.filter(x=>x.cmd==='drive_api_enable_auto_unlock').length,1);
+  assert.equal(await page.locator('#modal-content').innerText(),'','Secret dialog must be removed after success');
+  await page.locator('[data-action="export-portable-backup"]').click();
+  await page.locator('#entity-form[data-kind="drive-portable-export"]').waitFor();
+  // E7: Native modal dialogs must hold keyboard focus, never leak tabs to the
+  // disabled background, and remain fully within a narrow touch viewport.
+  const insideForm=()=>page.evaluate(()=>{
+    const dialog=document.querySelector('#form-dialog');
+    return dialog.open && dialog.contains(document.activeElement);
+  });
+  assert.equal(await insideForm(),true,'Opening the recovery dialog must move focus inside it');
+  await page.keyboard.press('Tab');
+  assert.equal(await insideForm(),true,'Tab must remain in the modal');
+  await page.keyboard.press('Shift+Tab');
+  assert.equal(await insideForm(),true,'Reverse keyboard navigation must remain in the modal');
+  await page.setViewportSize({width:390,height:640});
+  const modalLayout=await page.evaluate(()=>{
+    const dialog=document.querySelector('#form-dialog');
+    const body=dialog.querySelector('.modal-body');
+    const bounds=dialog.getBoundingClientRect();
+    return {
+      left:bounds.left,right:bounds.right,width:innerWidth,
+      contentWidth:body.clientWidth,overflowWidth:body.scrollWidth,
+      dialogOpen:dialog.open,
+    };
+  });
+  assert.equal(modalLayout.dialogOpen,true,'Resizing cannot close an active restore form');
+  assert.ok(modalLayout.left>=-1 && modalLayout.right<=modalLayout.width+1,
+    'A recovery form cannot be clipped outside the phone viewport');
+  assert.ok(modalLayout.overflowWidth<=modalLayout.contentWidth+2,
+    'The recovery form must not create horizontal scrolling at 390px');
+  await page.keyboard.press('Tab');
+  assert.equal(await insideForm(),true,'Mobile keyboard focus must stay inside the dialog');
+  await page.setViewportSize({width:1180,height:800});
+  // Reject mismatched phrases BEFORE any native export.
+  await page.locator('[name="drivePassphrase"]').fill(phrase);
+  await page.locator('[name="drivePassphraseRepeat"]').fill('different-long-test-phrase');
+  await page.locator('#entity-form [type="submit"]').click();
+  assert.equal((await page.evaluate(()=>window.__AUTOTRACE_TEST_CALLS__)).filter(x=>x.cmd==='export_portable_encrypted_backup').length,0);
+  // Form submissions use a Promise + savingForms guard. The intentionally
+  // rejected request must release that guard before submitting again.
+  await page.waitForFunction(()=>{
+    const button=document.querySelector('#entity-form[data-kind="drive-portable-export"] [type="submit"]');
+    return Boolean(button&&!button.disabled);
+  });
+  await page.locator('[name="drivePassphraseRepeat"]').fill(phrase);
+  assert.equal(await page.locator('[name="drivePassphraseRepeat"]').inputValue(),phrase);
+  await page.locator('#entity-form [type="submit"]').click();
+  try{
+    await page.locator('#entity-form[data-kind="drive-portable-export"]').waitFor({state:'hidden',timeout:15000});
+  }catch(error){
+    const diagnostic=await page.evaluate(()=>({
+      open:document.querySelector('#form-dialog')?.open,
+      submitDisabled:document.querySelector('#entity-form [type="submit"]')?.disabled,
+      exportCalls:window.__AUTOTRACE_TEST_CALLS__.filter(x=>x.cmd==='export_portable_encrypted_backup').length,
+      visibleMessages:[...document.querySelectorAll('[role="alert"],.toast')].map(x=>x.innerText.slice(0,180)),
+    }));
+    throw Error('Export dialog did not close after a valid synthetic export: '+JSON.stringify(diagnostic),{cause:error});
+  }
+  const calls=await page.evaluate(()=>window.__AUTOTRACE_TEST_CALLS__);
+  assert.equal(calls.filter(x=>x.cmd==='export_portable_encrypted_backup').length,1);
+  assert.equal(await page.locator('#modal-content').innerText(),'');
+
+  // E3/E7: a SQLite file without a matching manifest is *not* an authenticated
+  // backup. The user must independently acknowledge that risk before the
+  // regular replace-all-data confirmation, even though the JSON is parseable.
+  await page.locator('[data-action="restore-sqlite-desktop"]').click();
+  await page.locator('#confirm-dialog[open]').waitFor();
+  assert.match(await page.locator('#confirm-title').innerText(),/Base sin integridad verificada/);
+  assert.match(await page.locator('#confirm-message').innerText(),/no se puede demostrar su origen/);
+  await page.locator('#confirm-dialog [value="cancel"]').click();
+  await page.locator('#confirm-dialog[open]').waitFor({state:'hidden'});
+  assert.equal((await page.evaluate(()=>window.__AUTOTRACE_TEST_CALLS__)).filter(x=>x.cmd==='backup_now'||x.cmd==='save_state').length,0,
+    'Declining the unverified import must never back up or modify live workshop data');
+
+  // Accepting the risk is NOT itself permission to replace the database.
+  await page.locator('[data-action="restore-sqlite-desktop"]').click();
+  await page.locator('#confirm-dialog[open]').waitFor();
+  await page.locator('#confirm-accept').click();
+  await page.getByText('Restaurar desde SQLite',{exact:true}).waitFor();
+  await page.locator('#confirm-dialog [value="cancel"]').click();
+  await page.locator('#confirm-dialog[open]').waitFor({state:'hidden'});
+  assert.equal((await page.evaluate(()=>window.__AUTOTRACE_TEST_CALLS__)).filter(x=>x.cmd==='backup_now'||x.cmd==='save_state').length,0,
+    'Canceling second-stage replacement must preserve workshop data');
+
+  assert.deepEqual(errors,[],'Chromium must not throw runtime errors');
+  console.log('Desktop mocked UI smoke OK: offline recovery kit and export, without OAuth.');
+}finally{await browser.close();}
