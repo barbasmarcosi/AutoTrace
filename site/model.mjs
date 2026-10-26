@@ -80,7 +80,12 @@ export function validateData(data){
       const amountPaid=money(p.amount,'cobro');
       if(amountPaid<=0||Math.abs(amountPaid-Number(p.amount))>0.000001)throw Error('Importe de cobro inválido.');
       const accountId=str(p.accountId,100),reference=str(p.reference,160);
-      const voidedAt=str(p.voidedAt,10),voidReason=str(p.voidReason,500);
+      // Audit fields must never be truncated or silently normalized on import:
+      // that would rewrite evidence of when and why a payment was voided.
+      if((p.voidedAt!==undefined&&(typeof p.voidedAt!=='string'||p.voidedAt.length>10))||
+         (p.voidReason!==undefined&&(typeof p.voidReason!=='string'||p.voidReason.length>500)))
+        throw Error('Los campos de auditoría de la anulación son inválidos o demasiado largos.');
+      const voidedAt=p.voidedAt??'',voidReason=p.voidReason??'';
       if(Boolean(voidedAt)!==Boolean(voidReason))throw Error('La anulación requiere fecha y motivo.');
       if(voidedAt&&(!validDate(voidedAt)||voidedAt<p.date||voidReason.trim().length<12))
         throw Error('La fecha o el motivo de anulación no son válidos (mínimo 12 caracteres).');

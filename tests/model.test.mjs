@@ -150,3 +150,22 @@ test('audited voids retain original receipts and calculate balance in exact cent
   d.orders[0].payments[0].voidedAt='2026-10-19';
   assert.throws(()=>validateData(d),/fecha o el motivo/);
 });
+
+test('anulación importada no puede recortar fechas, motivos o transformar tipos silenciosamente',()=>{
+  const fixtureData=fixture();
+  fixtureData.orders[0].paid=0;
+  fixtureData.orders[0].payments=[{
+    id:'void-audit',date:'2026-10-20',amount:20,method:'cash',
+    accountId:'',reference:'',voidedAt:'2026-10-25',
+    voidReason:'Comprobante duplicado registrado por error'
+  }];
+  assert.equal(validateData(fixtureData).orders[0].payments[0].voidReason,
+    'Comprobante duplicado registrado por error');
+  fixtureData.orders[0].payments[0].voidReason='X'.repeat(501);
+  assert.throws(()=>validateData(fixtureData),/auditoría.*inválidos/);
+  fixtureData.orders[0].payments[0].voidReason='Comprobante duplicado registrado por error';
+  fixtureData.orders[0].payments[0].voidedAt='2026-10-25-extra';
+  assert.throws(()=>validateData(fixtureData),/auditoría.*inválidos/);
+  fixtureData.orders[0].payments[0].voidedAt=20261025;
+  assert.throws(()=>validateData(fixtureData),/auditoría.*inválidos/);
+});
