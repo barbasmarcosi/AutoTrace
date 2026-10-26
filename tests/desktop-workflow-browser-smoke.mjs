@@ -80,7 +80,7 @@ try {
   assert.equal(state.data.vehicles[0].clientId,clientId);
   const vehicleId=state.data.vehicles[0].id;
 
-  await page.locator('[data-action="new-order"][data-vehicle="'+vehicleId+'"]').click();
+  await page.locator('[data-action="new-order"][data-vehicle="'+vehicleId+'"]').first().click();
   await modal('order').waitFor();
   assert.equal(await page.locator('#f-vehicleId').inputValue(),vehicleId);
   await page.locator('#f-title').fill('Revisión de frenos');
