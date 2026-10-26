@@ -13,7 +13,7 @@ Una PC Windows para un taller, operación local offline sin servidor, clientes, 
 | Gate | Condición verificable a cargo de ingeniería | Evidencia para PASS |
 |---|---|---|
 | E0 Compilación | Node, migraciones, Rust tests en Windows, Chromium, NSIS, instalación/desinstalación **en el mismo SHA**. | Enlaces a cuatro workflows, checksum del instalador y SHA coincidente. |
-| E1 Datos | CRUD, relaciones y cobros sin huérfanos; importes enteros en centavos, saldos, historial, errores concurrentes, migraciones, ocho hojas Excel v3. | Tests sintéticos automatizados, escenarios y aserciones en SQL/JS/Rust. |
+| E1 Datos | CRUD, relaciones y cobros sin huérfanos; importes enteros en centavos, saldos, historial, errores concurrentes, migraciones, ocho hojas Excel v4 con lectura retrocompatible v1–v3 y trazabilidad de anulación de cobros. | Tests sintéticos automatizados, escenarios y aserciones en SQL/JS/Rust. |
 | E2 Respaldo | SQLite y Excel consistentes, manifiesto y SHA-256, cifrado antes de red/USB; no sobrescribir copia buena, publicar parciales ni afirmar sincronización prematura. | Round-trip y pruebas de integridad, colisiones, cortes simulados y staging. |
 | E3 Fallos seguros | Clave errónea, corrupción, truncado, disco lleno simulado, conflictos, rollback y versión de DB futura no destruyen estado previo. | Tests con estado antes/después del fallo, no mocks permisivos. |
 | E4 Google sintético | OAuth PKCE S256/state/loopback, scope mínimo drive.file, refresh en vault; HTTP 308, errores, reintentos, confirmación de tamaño/MD5, sin duplicados. | Tests sin cuentas reales, secretos ni tráfico Google de clientes. |

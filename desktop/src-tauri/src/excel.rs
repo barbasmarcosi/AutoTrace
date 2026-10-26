@@ -279,10 +279,12 @@ mod tests {
         let bytes=to_xlsx(&data).unwrap();
         let restored=from_xlsx(&bytes).unwrap();
         assert_eq!(canonical_bytes(&data).unwrap(),canonical_bytes(&restored).unwrap());
-        let voided=restored.orders[0].payments.iter().find(|p|p.id=="p2").unwrap();
-        assert_eq!(voided.amount,250.0);
-        assert_eq!(voided.voided_at,"2026-10-25");
-        assert_eq!(voided.void_reason,"Cobro recibido por error y anulado");
+        let serialized=serde_json::to_value(&restored).unwrap();
+        let voided=serialized["orders"][0]["payments"].as_array().unwrap()
+            .iter().find(|p|p["id"]=="p2").unwrap();
+        assert_eq!(voided["amount"],250.0);
+        assert_eq!(voided["voidedAt"],"2026-10-25");
+        assert_eq!(voided["voidReason"],"Cobro recibido por error y anulado");
         let mut invalid=serde_json::to_value(restored).unwrap();
         invalid["settings"]["accounts"]=serde_json::json!([]);
         let invalid:AppData=serde_json::from_value(invalid).unwrap();

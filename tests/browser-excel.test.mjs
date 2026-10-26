@@ -142,3 +142,21 @@ test('XLSX v4 roundtrip preserves voided receipts with reason and rejects reason
   const altered=new Uint8Array(XLSX.write(wb,{type:'array',bookType:'xlsx'}));
   await assert.rejects(()=>readBackupXlsx(altered,XLSX),/checksum/);
 });
+
+test('XLSX backups v3 without cancellation columns remain readable with the same canonical data',async()=>{
+  const data=fixture();
+  data.settings.accounts=[{id:'bank-1',name:'Banco de pruebas',kind:'bank',alias:''}];
+  data.orders[0].payments=[{id:'old-receipt',date:'2026-10-20',amount:1234,method:'transfer',accountId:'bank-1',reference:'OLD-V3'}];
+  const modern=await writeBackupXlsx(data,XLSX);
+  const wb=XLSX.read(modern,{type:'array'});
+  const ws=wb.Sheets.Cobros;
+  // Reconstruct the older seven-column v3 on-disk layout for a non-voided
+  // ledger without changing its SHA-256 canonical payload.
+  delete ws.H1;delete ws.I1;
+  ws['!ref']='A1:G2';
+  assert.equal(wb.Sheets.Manifest.A3.v,'schema_version');
+  wb.Sheets.Manifest.B3.v='3';
+  const old=new Uint8Array(XLSX.write(wb,{type:'array',bookType:'xlsx'}));
+  const restored=await readBackupXlsx(old,XLSX);
+  assert.deepEqual(restored,data);
+});

@@ -132,6 +132,24 @@ try{
   await page.goto(base+'#finanzas',{waitUntil:'domcontentloaded'});
   await page.getByText('Cobros por cuenta receptora').waitFor({timeout:10000});
   await page.getByText('Resultado mano de obra').waitFor({timeout:10000});
+  // Real Chromium must preserve the historical receipt when voiding.
+  await page.goto(base+'#trabajo/'+encodeURIComponent(newOrder.id),{waitUntil:'domcontentloaded'});
+  const cancelledReceiptId=paidOrder.payments[0].id;
+  await page.locator('[data-action="void-payment"][data-payment-id="'+cancelledReceiptId+'"]').click();
+  await page.locator('#entity-form[data-kind="void-payment"]').waitFor({timeout:10000});
+  await page.locator('[name="voidReason"]').fill('Pago registrado por duplicado durante una prueba.');
+  await page.locator('#entity-form [type="submit"]').click();
+  await page.locator('#entity-form[data-kind="void-payment"]').waitFor({state:'hidden',timeout:10000});
+  const voidState=await inspectStore(page),voidOrder=voidState.orders.find(o=>o.id===newOrder.id);
+  assert.equal(voidOrder.paid,15000,'Voiding 10k raises the outstanding balance by 10k');
+  assert.equal(voidOrder.payments.length,3,'The original receipt is never deleted');
+  assert.equal(voidOrder.payments[0].amount,10000);
+  assert.match(voidOrder.payments[0].voidedAt,/^\d{4}-\d{2}-\d{2}$/);
+  assert.match(voidOrder.payments[0].voidReason,/duplicado/);
+  assert.equal(await page.locator('[data-action="void-payment"][data-payment-id="'+cancelledReceiptId+'"]').count(),0);
+  await page.getByText('ANULADO',{exact:false}).first().waitFor({timeout:10000});
+  await page.goto(base+'#finanzas',{waitUntil:'domcontentloaded'});
+  await page.getByText('Cobros por cuenta receptora').waitFor({timeout:10000});
   // End-to-end: identify an existing known owner and plate; no duplicate records.
   await page.goto(base+'#ajustes',{waitUntil:'domcontentloaded'});
   await page.locator('#import-workshop-xlsx').setInputFiles({
