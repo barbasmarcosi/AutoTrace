@@ -4,6 +4,7 @@ import {buildCustomerSummary} from "./customer-summary.mjs";
 import {suggestVehicles, suggestClients} from "./pickers.mjs";
 import {parseWorkshopXlsx,writeWorkshopXlsx,writeCustomerReportXlsx} from "./browser-excel.mjs";
 import {readBackupXlsx,writeBackupXlsx} from "./browser-backup.mjs";
+import {writeWorkshopPdf} from "./workshop-pdf.mjs";
 import {clientCandidates,vehicleCandidates,suggestedLegacySelection,prepareLegacyImport} from "./legacy-import.mjs";
 /** AutoTrace v1 — sin backend, datos almacenados exclusivamente en este navegador. */
 const DB_NAME = 'autotrace-v1';
@@ -375,10 +376,23 @@ function renderFinancialBox(order,id,cost){
   return `<div class="card card-pad detail-section"><h3>Balance del trabajo</h3><div class="money-grid" style="margin-top:18px"><div class="money-box"><small>Costo de repuestos</small><strong>${money(o.partsCost)}</strong></div><div class="money-box"><small>Costo de mano de obra</small><strong>${money(o.laborCost)}</strong></div><div class="money-box"><small>Costo total</small><strong>${money(cost)}</strong></div><div class="money-box"><small>Importe acordado</small><strong>${money(o.charged)}</strong></div><div class="money-box highlight"><small>Pagado</small><strong>${money(o.paid)}</strong></div><div class="money-box ${pendingAmount(o)?'due':''}"><small>Saldo pendiente</small><strong>${money(pendingAmount(o))}</strong></div></div><div class="divider"></div><div class="info-item"><small>Margen bruto estimado</small><strong class="${margin(o)<0?'text-negative':'text-positive'}" style="font-size:22px">${money(margin(o))}</strong></div><div style="margin-top:20px">${button(`${icon('plus')} Registrar cobro`,'add-payment',pendingAmount(o)>0?'btn-primary':'btn-secondary',`data-id="${esc(id)}" ${pendingAmount(o)===0?'disabled':''}`)}</div>${renderPaymentLedger(o)}</div>`;
 }
 
+function renderCustomerDocumentActions(order){
+  const attrs='data-id="'+esc(order.id)+'"';
+  const actions=order.items?.length?[
+    button(icon('download')+' Presupuesto PDF','export-pdf-quote','btn-primary',attrs),
+    button(icon('download')+' Remito PDF','export-pdf-work','btn-primary',attrs),
+    button('Presupuesto Excel','export-legacy-quote','btn-secondary',attrs),
+    button('Remito Excel','export-legacy-work','btn-secondary',attrs)
+  ].join(' '):'<p class="muted-sm">Agregá renglones de piezas o tareas para exportar el presupuesto o remito.</p>';
+  return '<section class="card card-pad detail-section"><h3>Documentos para el cliente</h3>'+
+    '<p class="section-intro">PDF listo para enviar o imprimir; Excel opcional para trabajar con plantillas.</p>'+
+    '<div class="settings-actions">'+actions+'</div>'+
+    '<p class="muted-sm" style="margin-top:13px">Los documentos no incluyen costos internos, notas privadas ni datos de otros clientes. No son facturas fiscales.</p></section>';
+}
 function renderOrderDetail(id){
   const o=findOrder(id);if(!o)return notFound('trabajo','trabajos');const v=findVehicle(o.vehicleId);const c=vehicleClient(v);
   const cost=amount(o.partsCost)+amount(o.laborCost);
-  return `${back('trabajos','Trabajos')}${sectionHead(o.title,`${fullVehicle(v)} · ${v?.plate||''} · ${formatDate(o.openedAt)}`,`${button(`${icon('pencil')} Editar trabajo`,'edit-order','btn-secondary',`data-id="${esc(id)}"`)} ${button(`${icon('printer')} Resumen para cliente`,'print-order','btn-secondary',`data-id="${esc(id)}"`)}${o.items?.length?`${button(`${icon('download')} Presupuesto Excel`,'export-legacy-quote','btn-secondary',`data-id="${esc(id)}"`)} ${button(`${icon('download')} Remito Excel`,'export-legacy-work','btn-secondary',`data-id="${esc(id)}"`)}`:''}}`)}<div class="detail-layout"><div><div class="card card-pad detail-section"><div style="display:flex;align-items:center;justify-content:space-between;gap:10px"><h3 style="margin:0">${o.documentKind==='quote'?'Detalle del presupuesto':'Detalle de la intervención'}</h3>${pill(o.status)}</div><div class="divider"></div><div class="info-grid">${descView('Categoría',esc(o.category))}${descView('Fecha de ingreso',formatDate(o.openedAt))}${descView('Kilometraje registrado',`${num(o.mileage)} km`)}${descView('Fecha de cierre',formatDate(o.completedAt))}</div><div class="divider"></div><h3 style="font-size:13px">Diagnóstico / Descripción</h3><p class="section-intro" style="white-space:pre-wrap">${esc(o.description||'Sin descripción adicional.')}</p>${renderOrderLines(o)}${o.notes?`<h3 style="font-size:13px">Notas</h3><p class="section-intro" style="white-space:pre-wrap">${esc(o.notes)}</p>`:''}</div><div class="card card-pad detail-section"><h3>Seguimiento</h3><p class="section-intro">Actualizá el estado del trabajo sin tener que abrir el formulario completo.</p><div class="field"><label for="status-quick">Estado actual</label><select id="status-quick" data-status-order="${esc(id)}">${Object.entries(STATUSES).map(([k,label])=>`<option value="${k}" ${k===o.status?'selected':''}>${label}</option>`).join('')}</select></div></div></div><div>${renderFinancialBox(o,id,cost)}<div class="card card-pad detail-section"><h3>Vehículo y cliente</h3><div class="info-grid">${descView('Vehículo',esc(fullVehicle(v)))}${descView('Patente',esc(v?.plate||''))}${descView('Cliente',esc(c?.name||''))}${descView('Contacto',phoneLink(c?.phone))}</div><div style="margin-top:20px">${button('Ver vehículo','view-vehicle','btn-secondary btn-sm',`data-id="${esc(v?.id||'')}"`)}</div></div><div class="card card-pad">${button(`${icon('trash')} Eliminar trabajo`,'delete-order','btn-danger-ghost btn-sm',`data-id="${esc(id)}"`)}</div></div></div>`;
+  return `${back('trabajos','Trabajos')}${sectionHead(o.title,`${fullVehicle(v)} · ${v?.plate||''} · ${formatDate(o.openedAt)}`,`${button(`${icon('pencil')} Editar trabajo`,'edit-order','btn-secondary',`data-id="${esc(id)}"`)} ${button(`${icon('printer')} Resumen para cliente`,'print-order','btn-secondary',`data-id="${esc(id)}"`)}`)}<div class="detail-layout"><div><div class="card card-pad detail-section"><div style="display:flex;align-items:center;justify-content:space-between;gap:10px"><h3 style="margin:0">${o.documentKind==='quote'?'Detalle del presupuesto':'Detalle de la intervención'}</h3>${pill(o.status)}</div><div class="divider"></div><div class="info-grid">${descView('Categoría',esc(o.category))}${descView('Fecha de ingreso',formatDate(o.openedAt))}${descView('Kilometraje registrado',`${num(o.mileage)} km`)}${descView('Fecha de cierre',formatDate(o.completedAt))}</div><div class="divider"></div><h3 style="font-size:13px">Diagnóstico / Descripción</h3><p class="section-intro" style="white-space:pre-wrap">${esc(o.description||'Sin descripción adicional.')}</p>${renderOrderLines(o)}${o.notes?`<h3 style="font-size:13px">Notas</h3><p class="section-intro" style="white-space:pre-wrap">${esc(o.notes)}</p>`:''}</div><div class="card card-pad detail-section"><h3>Seguimiento</h3><p class="section-intro">Actualizá el estado del trabajo sin tener que abrir el formulario completo.</p><div class="field"><label for="status-quick">Estado actual</label><select id="status-quick" data-status-order="${esc(id)}">${Object.entries(STATUSES).map(([k,label])=>`<option value="${k}" ${k===o.status?'selected':''}>${label}</option>`).join('')}</select></div></div></div><div>${renderCustomerDocumentActions(o)}${renderFinancialBox(o,id,cost)}<div class="card card-pad detail-section"><h3>Vehículo y cliente</h3><div class="info-grid">${descView('Vehículo',esc(fullVehicle(v)))}${descView('Patente',esc(v?.plate||''))}${descView('Cliente',esc(c?.name||''))}${descView('Contacto',phoneLink(c?.phone))}</div><div style="margin-top:20px">${button('Ver vehículo','view-vehicle','btn-secondary btn-sm',`data-id="${esc(v?.id||'')}"`)}</div></div><div class="card card-pad">${button(`${icon('trash')} Eliminar trabajo`,'delete-order','btn-danger-ghost btn-sm',`data-id="${esc(id)}"`)}</div></div></div>`;
 }
 function notFound(item,to){return `${back(to,'Volver')}${empty('No encontramos este '+item,'Es posible que el registro se haya eliminado.')}`;}
 function back(to,label){return `<button class="back-btn" data-nav="${to}">${icon('back',15)} Volver a ${esc(label)}</button>`;}
@@ -1193,6 +1207,22 @@ async function chooseWorkshopLogo(){
   try{const changed=await desktopInvoke('choose_workshop_logo');if(changed)toast(changed);}
   catch(error){console.error(error);toast('No se pudo configurar el logo: '+String(error),'error');}
 }
+async function exportWorkshopPdf(orderId,kind){
+  try{
+    const bytes=writeWorkshopPdf(db,orderId,kind);
+    const order=findOrder(orderId),car=findVehicle(order?.vehicleId);
+    const plate=(car?.plate||'SINPATENTE').replace(/[^A-Za-z0-9-]/g,'').slice(0,14)||'SINPATENTE';
+    const filename='AutoTrace_'+(kind==='quote'?'presupuesto':'remito')+'_'+plate+'_'+
+      (order?.openedAt||isoDate(new Date()))+'.pdf';
+    if(desktopInvoke){
+      if(await desktopInvoke('save_customer_pdf',{bytes:Array.from(bytes),filename}))
+        toast(kind==='quote'?'Presupuesto PDF guardado.':'Remito PDF guardado.');
+    }else{
+      saveAsFile(bytes,filename,'application/pdf');
+      toast(kind==='quote'?'Presupuesto PDF descargado.':'Remito PDF descargado.');
+    }
+  }catch(error){console.error(error);toast('No se pudo generar el PDF: '+(error?.message||String(error)),'error');}
+}
 async function exportLegacyDocumentDesktop(orderId,kind){
   try{
     if(desktopInvoke){
@@ -1323,6 +1353,8 @@ document.addEventListener('click',async event=>{
     case 'add-payment':paymentForm(id);break;
     case 'void-payment':voidPaymentForm(id,target.dataset.paymentId||'');break;
     case 'print-order':printOrder(id);break;
+    case 'export-pdf-quote':await exportWorkshopPdf(id,'quote');break;
+    case 'export-pdf-work':await exportWorkshopPdf(id,'work');break;
     case 'export-legacy-quote':await exportLegacyDocumentDesktop(id,'quote');break;
     case 'export-legacy-work':await exportLegacyDocumentDesktop(id,'work');break;
     case 'delete-client':await deleteRecord('client',id);break;

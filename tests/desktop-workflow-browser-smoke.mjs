@@ -14,7 +14,7 @@ const state={
   revision:0,
   data:validateData({clients:[],vehicles:[],orders:[],
     settings:{garageName:'Taller de prueba',currency:'ARS',demo:false}}),
-  saveCalls:0,backupCalls:0,
+  saveCalls:0,backupCalls:0,pdfExports:[],
 };
 let rejectNextSave=false;
 const rpc=async(cmd,args={})=>{
@@ -32,6 +32,13 @@ const rpc=async(cmd,args={})=>{
     case 'drive_backup_status':return {directory:null,unlocked:false};
     case 'drive_api_status':return {connected:false,identityStatus:'not_configured',pendingCount:0,
       lastVerifiedUploadAt:null,autoUnlockEnabled:false,developerMode:false};
+    case 'save_customer_pdf':{
+      assert.match(args.filename,/^AutoTrace_(presupuesto|remito)_AF012BC_.*\.pdf$/);
+      const binary=Buffer.from(args.bytes);
+      assert.ok(binary.subarray(0,9).toString('latin1')==='%PDF-1.4\n');
+      state.pdfExports.push({name:args.filename,size:binary.length});
+      return true;
+    }
     case 'backup_now':state.backupCalls++;throw Error('Unexpected automatic backup in a fresh-session smoke');
     default:throw Error('Unexpected Desktop RPC: '+cmd);
   }
@@ -96,7 +103,11 @@ try {
   const orderId=state.data.orders[0].id;
   assert.equal(state.data.orders[0].charged,12500.25);
   assert.equal(state.data.orders[0].items.length,1);
-
+  for(const action of ['export-pdf-quote','export-pdf-work']){
+    await page.locator('[data-action="'+action+'"]').first().click();
+  }
+  assert.equal(state.pdfExports.length,2,'Both PDFs must pass through a native save-file dialog command');
+  assert.ok(state.pdfExports.every(p=>p.size>500));
   await page.locator('[data-action="add-payment"]').first().click();
   await modal('payment').waitFor();
   await page.locator('[name="payment"]').fill('5000.25');

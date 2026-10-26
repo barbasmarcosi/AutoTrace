@@ -55,3 +55,17 @@ test('Restore and destructive changes take a backup first',()=>{
   assert.match(backup,/sqliteSha256/);
   assert.match(backup,/excelSha256/);
 });
+
+test('Customer PDFs are offline and default actions in PWA and native Windows',()=>{
+  for(const action of ['export-pdf-quote','export-pdf-work','Presupuesto Excel','Remito Excel'])
+    assert.ok(frontend.includes(action),'Missing document action: '+action);
+  assert.match(frontend,/writeWorkshopPdf\(db,orderId,kind\)/);
+  assert.match(frontend,/desktopInvoke\('save_customer_pdf'/);
+  assert.match(runtime,/customer_pdf::save_customer_pdf/);
+  const native=readFileSync(new URL('../desktop/src-tauri/src/customer_pdf.rs',import.meta.url),'utf8');
+  assert.match(native,/\.save_file\(\)/);
+  assert.match(native,/sync_all\(\)/);
+  assert.match(native,/El archivo PDF ya existe/);
+  const worker=readFileSync(new URL('../site/sw.js',import.meta.url),'utf8');
+  assert.match(worker,/workshop-pdf\.mjs/);
+});
