@@ -65,7 +65,7 @@ test('real-style formula caches and description continuation are not counted as 
   assert.match(doc.items[1].description,/taco de motor/);
   assert.equal(doc.total,13000);
 });
-test('browser full-backup XLSX v3 roundtrips all IDs, amounts, accounts and receipts',async()=>{
+test('browser full-backup XLSX v4 roundtrips all IDs, amounts, accounts and receipts',async()=>{
   const before=fixture();
   before.settings.accounts=[
     {id:'acct-1',name:'Banco taller',kind:'bank',alias:'taller.ejemplo'},
@@ -124,4 +124,21 @@ test('client Excel contains breakdown but never private costs or other client',(
   const quote=services.find(row=>row[2]==='Presupuesto');
   assert.equal(quote[7],'');
   assert.equal(quote[8],'');
+});
+
+test('XLSX v4 roundtrip preserves voided receipts with reason and rejects reason tampering',async()=>{
+  const original=fixture();
+  original.orders[0].paid=0;
+  original.orders[0].payments=[{id:'void-1',date:'2026-10-20',amount:450,method:'cash',accountId:'',reference:'',
+    voidedAt:'2026-10-25',voidReason:'Se duplicó el asiento durante un cierre de caja'}];
+  const encoded=await writeBackupXlsx(original,XLSX);
+  const restored=await readBackupXlsx(encoded,XLSX);
+  assert.deepEqual(restored,original);
+  const wb=XLSX.read(encoded,{type:'array'});
+  const rows=XLSX.utils.sheet_to_json(wb.Sheets.Cobros,{header:1});
+  assert.ok(rows[0].includes('motivo_anulacion'));
+  const addr=XLSX.utils.encode_cell({r:1,c:rows[0].indexOf('motivo_anulacion')});
+  wb.Sheets.Cobros[addr].v='Cambio sin evidencia de motivo';
+  const altered=new Uint8Array(XLSX.write(wb,{type:'array',bookType:'xlsx'}));
+  await assert.rejects(()=>readBackupXlsx(altered,XLSX),/checksum/);
 });

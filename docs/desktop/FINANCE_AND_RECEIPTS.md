@@ -18,7 +18,10 @@
 ## Datos históricos
 - Los valores `paid` anteriores se conservan incluso si no existían pagos con medio/fecha/cuenta. La diferencia `paid - sum(payments.amount)` se muestra como **histórico sin clasificar**, sin inventar un destino.
 - Para trabajos posteriores, el campo `paid` no se edita directamente desde el formulario de trabajo: se usa **Registrar cobro**.
-- En caso de correcciones del historial ya contabilizado, documentar y definir un flujo de anulación con auditoría en una fase siguiente antes de habilitar borrar cobros.
+- **Anulación auditable:** desde la ficha del trabajo se marca un cobro con `voidedAt` y `voidReason` (motivo de 12 a 500 caracteres), sin borrar el asiento original. `paid` y la suma por cuentas excluyen el cobro anulado; el historial muestra importe, medio, fecha original, fecha de anulación y motivo. Una anulación contable NO ejecuta un reintegro bancario real.
+- Los trabajos con cobros históricos, incluso anulados, no se pueden borrar desde la interfaz.
+- El Excel completo pasa a **v4** con dos columnas nuevas de anulación en `Cobros`. Se mantienen lectores v1/v2/v3 para backups anteriores y SHA-256 canónico. La base SQLite conserva esquema v1 porque los campos nuevos son opcionales.
+- **Límite:** una importación completa de respaldo o la manipulación fuera de AutoTrace del archivo SQLite son operaciones privilegiadas. Este flujo todavía no equivale a un libro mayor legalmente inmutable.
 
 ## Respaldos Excel
 - **v3 (completo y privado)** agrega hojas `Cuentas` y `Cobros`, y un SHA-256 canónico sobre todos los datos; el lector admite respaldos v1, v2 y v3.
@@ -36,5 +39,5 @@
 - Verificar los workflows Chrome y Windows del commit definitivo del PR.
 - Prueba manual de UX con Firefox/Safari móvil, teclado, fecha y flujo de registro; conciliación visual de informes Excel con archivos del taller.
 - Recuperación real en una instalación limpia de Windows y ensayo de copia fuera del disco principal. Las pruebas automatizadas no sustituyen este gate.
-- Definir correcciones/anulaciones auditadas antes de permitir la eliminación o modificación de cobros ya asentados.
+- Futura mejora: libro mayor append-only protegido contra edición directa de SQLite, conciliación de reintegros y firma de evidencia; la anulación v4 registra un motivo y no transfiere dinero.
 - Cualquier importe denominado «neto» sigue siendo **estimado** (antes de impuestos, gastos fijos y comisiones), no saldo bancario.

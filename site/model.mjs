@@ -7,7 +7,7 @@ export const PAYMENT_METHODS = Object.freeze({cash:'Efectivo',transfer:'Transfer
 export const ELECTRONIC_METHODS = Object.freeze(['transfer','debit','credit','qr']);
 export const laborRevenue = work => Math.round((work.items||[]).filter(item=>item.kind==='labor').reduce((total,item)=>total+Math.round(item.quantity*item.unitPrice*100)/100,0)*100)/100;
 export const laborContribution = work => (work.items||[]).some(item=>item.kind==='labor') ? Math.round((laborRevenue(work)-amount(work.laborCost))*100)/100 : null;
-export const historicalUnallocated = work => Math.round((amount(work.paid)-(work.payments||[]).reduce((total,p)=>total+amount(p.amount),0))*100)/100;
+export const historicalUnallocated = work => Math.round((amount(work.paid)-(work.payments||[]).filter(p=>!p.voidedAt).reduce((total,p)=>total+amount(p.amount),0))*100)/100;
 export function csvCell(value){let text=String(value??'');if(/^[\s]*[=+@-]/.test(text))text="'"+text;return `"${text.replace(/"/g,'""')}"`;}
 const str=(v,n=3000)=>typeof v==='string'?v.slice(0,n):'';
 // Quantities and mileage retain their precision. Money is ALWAYS integer cents
@@ -80,12 +80,17 @@ export function validateData(data){
       const amountPaid=money(p.amount,'cobro');
       if(amountPaid<=0||Math.abs(amountPaid-Number(p.amount))>0.000001)throw Error('Importe de cobro inválido.');
       const accountId=str(p.accountId,100),reference=str(p.reference,160);
+      const voidedAt=str(p.voidedAt,10),voidReason=str(p.voidReason,500);
+      if(Boolean(voidedAt)!==Boolean(voidReason))throw Error('La anulación requiere fecha y motivo.');
+      if(voidedAt&&(!validDate(voidedAt)||voidedAt<p.date||voidReason.trim().length<12))
+        throw Error('La fecha o el motivo de anulación no son válidos (mínimo 12 caracteres).');
       if(ELECTRONIC_METHODS.includes(p.method)&&!accountIds.has(accountId))throw Error('El cobro electrónico requiere una cuenta receptora registrada.');
       if(!ELECTRONIC_METHODS.includes(p.method)&&accountId)throw Error('Los cobros no electrónicos no llevan cuenta receptora.');
-      return {id:str(p.id,100),date:p.date,amount:amountPaid,method:p.method,accountId,reference};
+      return {id:str(p.id,100),date:p.date,amount:amountPaid,method:p.method,accountId,reference,
+        ...(voidedAt?{voidedAt,voidReason}:{})};
     });
     checkUnique(payments,'cobros');
-    const collected=Math.round(payments.reduce((s,p)=>s+p.amount,0)*100)/100;
+    const collected=Math.round(payments.filter(p=>!p.voidedAt).reduce((s,p)=>s+p.amount,0)*100)/100;
     if(collected>paid+0.000001)throw Error('Los cobros detallados superan el total recibido.');
     if(o.documentKind==='quote'&&(paid>0||payments.length))throw Error('Los presupuestos no admiten cobros.');
     return {id:str(o.id,100),vehicleId:o.vehicleId,title:str(o.title,150),category:str(o.category,120),status:o.status,openedAt:date(o.openedAt,'de trabajo'),completedAt:date(o.completedAt,'de cierre'),mileage:number(o.mileage,'kilometraje de trabajo'),description:str(o.description),partsCost,laborCost,charged,paid,notes:str(o.notes),createdAt:date(o.createdAt,'de alta de trabajo'),...(items.length?{items}:{}),...(documentKind?{documentKind}:{}),...(documentNumber?{documentNumber}:{}),...(sourceFingerprint?{sourceFingerprint}:{}),...(payments.length?{payments}:{})};

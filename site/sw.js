@@ -1,6 +1,6 @@
 // Mantener separados los cachés de AutoTrace: otros proyectos de GitHub Pages
 // comparten el mismo origen, pero no deben verse afectados por esta PWA.
-const CACHE = 'autotrace-shell-v9';
+const CACHE = 'autotrace-shell-v10';
 const PREFIX = 'autotrace-shell-';
 const ASSETS = ['./', './index.html', './styles.css', './app.js', './model.mjs', './search.mjs', './pickers.mjs', './customer-summary.mjs', './browser-excel.mjs', './browser-backup.mjs', './legacy-import.mjs', './vendor/xlsx.mini.min.js', './manifest.webmanifest', './assets/icon.svg', './assets/icon-192.png', './assets/icon-512.png', './assets/apple-touch-icon.png'];
 const scope = self.registration.scope;

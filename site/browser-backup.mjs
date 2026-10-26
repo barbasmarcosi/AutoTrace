@@ -13,6 +13,7 @@ const LINES=[['trabajo_id','orderId'],['renglon_id','id'],['tipo','kind'],['desc
 const SETTINGS=[['nombre_taller','garageName'],['moneda','currency'],['datos_demostracion','demo']];
 const ACCOUNTS=[['id','id'],['nombre','name'],['tipo','kind'],['alias','alias']];
 const PAYMENTS=[['trabajo_id','orderId'],['cobro_id','id'],['fecha','date'],['importe','amount'],['medio','method'],['cuenta_id','accountId'],['referencia','reference']];
+const PAYMENTS_V4=[...PAYMENTS,['fecha_anulacion','voidedAt'],['motivo_anulacion','voidReason']];
 const FLOAT_KEYS=new Set(['mileage','partsCost','laborCost','charged','paid','quantity','unitPrice','amount']);
 const numericKeys=new Set([...FLOAT_KEYS]);
 const headers=cols=>cols.map(c=>c[0]);
@@ -51,7 +52,7 @@ export async function writeBackupXlsx(data,lib){
   const accounts=state.settings.accounts||[];
   const payments=state.orders.flatMap(o=>(o.payments||[]).map(payment=>({orderId:o.id,...payment})));
   const meta=[
-    ['format','autotrace-backup-xlsx'],['schema_version','3'],
+    ['format','autotrace-backup-xlsx'],['schema_version','4'],
     ['created_at_utc',new Date().toISOString()],['snapshot_id',crypto.randomUUID()],
     ['app_version','0.1.0-pwa'],['source_schema_version','1'],
     ['timezone','America/Argentina/Buenos_Aires'],['export_kind','full'],
@@ -66,7 +67,7 @@ export async function writeBackupXlsx(data,lib){
   emit(book,XLSX,'Trabajos',ORDERS_V2,state.orders);
   emit(book,XLSX,'DetalleTrabajos',LINES,lines);
   emit(book,XLSX,'Cuentas',ACCOUNTS,accounts);
-  emit(book,XLSX,'Cobros',PAYMENTS,payments);
+  emit(book,XLSX,'Cobros',PAYMENTS_V4,payments);
   emit(book,XLSX,'Configuracion',SETTINGS,[state.settings]);
   return new Uint8Array(XLSX.write(book,{type:'array',bookType:'xlsx',compression:true}));
 }
@@ -128,9 +129,9 @@ export async function readBackupXlsx(input,lib){
     meta.set(k,v);
   }
   const version=meta.get('schema_version');
-  if(meta.get('format')!=='autotrace-backup-xlsx'||meta.get('export_kind')!=='full'||!['1','2','3'].includes(version))
+  if(meta.get('format')!=='autotrace-backup-xlsx'||meta.get('export_kind')!=='full'||!['1','2','3','4'].includes(version))
     throw Error('El Excel no es un respaldo completo AutoTrace compatible.');
-  const required=version==='3'?['Manifest','Clientes','Vehiculos','Trabajos','DetalleTrabajos','Cuentas','Cobros','Configuracion']:
+  const required=['3','4'].includes(version)?['Manifest','Clientes','Vehiculos','Trabajos','DetalleTrabajos','Cuentas','Cobros','Configuracion']:
     version==='2'?['Manifest','Clientes','Vehiculos','Trabajos','DetalleTrabajos','Configuracion']:
     ['Manifest','Clientes','Vehiculos','Trabajos','Configuracion'];
   if(book.SheetNames.length!==required.length||required.some(n=>!book.SheetNames.includes(n)))
@@ -149,9 +150,9 @@ export async function readBackupXlsx(input,lib){
   }
   const settings=readSheet(book,XLSX,'Configuracion',SETTINGS,1);
   if(settings.length!==1)throw Error('Configuración faltante.');
-  if(version==='3'){
+  if(['3','4'].includes(version)){
     const accounts=readSheet(book,XLSX,'Cuentas',ACCOUNTS,100);
-    const payments=readSheet(book,XLSX,'Cobros',PAYMENTS,200000);
+    const payments=readSheet(book,XLSX,'Cobros',version==='4'?PAYMENTS_V4:PAYMENTS,200000);
     if(meta.get('count_accounts')!==String(accounts.length)||meta.get('count_payments')!==String(payments.length))
       throw Error('Cantidad de cuentas/cobros incorrecta.');
     if(accounts.length)settings[0].accounts=accounts;

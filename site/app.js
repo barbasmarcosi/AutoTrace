@@ -296,7 +296,7 @@ function renderFinance(){
 function renderPaymentDestinations(){
   const accounts=db.settings.accounts||[];
   const orders=db.orders.filter(o=>o.documentKind!=='quote');
-  const payments=orders.flatMap(o=>(o.payments||[]).map(p=>({p,order:o})));
+  const payments=orders.flatMap(o=>(o.payments||[]).filter(p=>!p.voidedAt).map(p=>({p,order:o})));
   const known=sum(payments,x=>x.p.amount);
   const historical=sum(orders,historicalUnallocated);
   const accountRows=accounts.map(a=>({
@@ -357,8 +357,11 @@ function renderPaymentLedger(order){
   return '<div class="divider"></div><h3>Historial de cobros</h3>'+
     (history.length?'<div class="detail-list">'+history.map(p=>{
       const a=accounts.find(x=>x.id===p.accountId);
-      return '<div class="detail-row"><div class="detail-content"><strong>'+esc(PAYMENT_METHODS[p.method]||p.method)+' · '+money(p.amount)+'</strong><small>'+
-        esc(formatDate(p.date))+(a?' · '+esc(a.name):'')+(p.reference?' · Ref. '+esc(p.reference):'')+'</small></div></div>';
+      return '<div class="detail-row"><div class="detail-content"><strong>'+esc(PAYMENT_METHODS[p.method]||p.method)+' · '+money(p.amount)+(p.voidedAt?' · ANULADO':'')+'</strong><small>'+
+        esc(formatDate(p.date))+(a?' · '+esc(a.name):'')+(p.reference?' · Ref. '+esc(p.reference):'')+
+        (p.voidedAt?' · Anulado el '+esc(formatDate(p.voidedAt))+' · '+esc(p.voidReason):'')+
+        '</small></div>'+(p.voidedAt?'':button('Anular cobro','void-payment','btn-secondary btn-sm',
+        'data-id="'+esc(order.id)+'" data-payment-id="'+esc(p.id)+'" aria-label="Anular cobro registrado"'))+'</div>';
     }).join('')+'</div>':'<p class="muted-sm">Sin cobros detallados todavía.</p>')+
     (historical>0?'<p class="notice">Cobros anteriores sin medio/cuenta informados: <strong>'+money(historical)+'</strong>. No se asignaron automáticamente.</p>':'');
 }
@@ -666,6 +669,14 @@ function refreshPaymentFields(form){
     if(input.name==='accountName')input.required=create;
   }
 }
+function voidPaymentForm(id,paymentId){
+  const o=findOrder(id),receipt=o?.payments?.find(p=>p.id===paymentId&&!p.voidedAt);
+  if(!receipt){toast('No se encontró un cobro activo para anular.','error');return;}
+  showModal('Anular cobro', 'Se conservará el asiento original y su medio de pago. El saldo del trabajo aumentará. Esta acción NO devuelve dinero por banco o tarjeta.', 'void-payment',
+    '<input type="hidden" name="voidPaymentId" value="'+esc(paymentId)+'">'+
+    '<div class="field span-2"><p class="notice">Cobro original: <strong>'+money(receipt.amount)+'</strong> · '+esc(formatDate(receipt.date))+'</p></div>'+
+    input('Motivo de la anulación','voidReason','',{required:true,full:true,maxlength:500,textarea:true,placeholder:'Por ejemplo: se registró en el trabajo incorrecto'}),id);
+}
 function paymentForm(id){
   const o=findOrder(id);if(!o)return;
   const pending=pendingAmount(o);if(!pending){toast('Este trabajo no tiene saldo pendiente.');return;}
@@ -726,6 +737,15 @@ async function saveForm(form){
     const wasClosed=previous&&['done','delivered'].includes(previous.status);
     next={id:baseId,vehicleId:get('vehicleId'),title:get('title'),category:get('category'),status,openedAt:get('openedAt'),completedAt:['done','delivered'].includes(status)?(wasClosed?previous.completedAt||isoDate(new Date()):isoDate(new Date())):'',mileage:amount(get('mileage')),description:get('description'),partsCost:amount(get('partsCost')),laborCost:amount(get('laborCost')),charged:price,paid:previous?.paid??0,notes:get('notes'),createdAt:previous?.createdAt||isoDate(new Date()),...(items.length?{items}:{}),...(previous?.documentKind?{documentKind:previous.documentKind}:{}),...(previous?.documentNumber?{documentNumber:previous.documentNumber}:{}),...(previous?.sourceFingerprint?{sourceFingerprint:previous.sourceFingerprint}:{}),...(previous?.payments?.length?{payments:previous.payments}:{})};
     routeTo=['trabajo',baseId];message=existing?'Trabajo actualizado.':'Trabajo registrado.';
+  }else if(kind==='void-payment'){
+    const o=findOrder(id),receipt=o?.payments?.find(p=>p.id===get('voidPaymentId')&&!p.voidedAt);
+    const reason=get('voidReason');
+    if(!receipt||reason.length<12||reason.length>500){toast('Seleccioná un cobro activo e ingresá un motivo de al menos 12 caracteres.','error');return;}
+    const adjusted=Math.round((o.paid-receipt.amount)*100)/100;
+    if(adjusted<0){toast('El cobro no puede anularse porque el saldo quedaría inconsistente.','error');return;}
+    next={...o,paid:adjusted,payments:o.payments.map(p=>p.id===receipt.id?
+      {...p,voidedAt:isoDate(new Date()),voidReason:reason}:p)};
+    routeTo=['trabajo',id];message='Cobro anulado con fecha y motivo. El asiento original se conservó.';
   }else if(kind==='payment'){
     const o=findOrder(id);const payment=Number(get('payment'));
     if(!o||!Number.isFinite(payment)||payment<=0||payment>pendingAmount(o)+.00001){toast('Ingresá un importe válido, que no supere el saldo.','error');return;}
@@ -773,6 +793,9 @@ async function deleteRecord(kind,id){
   const item=db[key].find(x=>x.id===id);if(!item)return;
   if(kind==='client'&&db.vehicles.some(v=>v.clientId===id)){toast('No se puede eliminar un cliente que tenga vehículos.','error');return;}
   if(kind==='vehicle'&&db.orders.some(o=>o.vehicleId===id)){toast('No se puede eliminar un vehículo con historial de trabajos.','error');return;}
+  if(kind==='order'&&(item.payments||[]).length){
+    toast('Este trabajo tiene cobros históricos. No se permite eliminarlo: conservá el historial, incluidas las anulaciones.','error');return;
+  }
   if(!await confirmAction('Eliminar registro','Esta acción es irreversible si no tenés un respaldo.'))return;
   const saved=await updateData(d=>{d[key]=d[key].filter(x=>x.id!==id);},'Registro eliminado.');
   if(saved)navigate(kind==='client'?'clientes':kind==='vehicle'?'vehiculos':'trabajos');
@@ -1298,6 +1321,7 @@ document.addEventListener('click',async event=>{
     case 'clear-history':historyQuery='';historyPage=1;historyStatus='all';{const field=document.querySelector('#history-search');if(field){field.value='';field.focus();}}refreshVehicleHistory();break;
     case 'edit-order':orderForm(id);break;
     case 'add-payment':paymentForm(id);break;
+    case 'void-payment':voidPaymentForm(id,target.dataset.paymentId||'');break;
     case 'print-order':printOrder(id);break;
     case 'export-legacy-quote':await exportLegacyDocumentDesktop(id,'quote');break;
     case 'export-legacy-work':await exportLegacyDocumentDesktop(id,'work');break;

@@ -15,6 +15,7 @@ const LINES: &[(&str,&str)] = &[("trabajo_id","orderId"),("renglon_id","id"),("t
 const SETTINGS: &[(&str,&str)] = &[("nombre_taller","garageName"),("moneda","currency"),("datos_demostracion","demo")];
 const ACCOUNTS: &[(&str,&str)] = &[("id","id"),("nombre","name"),("tipo","kind"),("alias","alias")];
 const PAYMENTS: &[(&str,&str)] = &[("trabajo_id","orderId"),("cobro_id","id"),("fecha","date"),("importe","amount"),("medio","method"),("cuenta_id","accountId"),("referencia","reference")];
+const PAYMENTS_V4: &[(&str,&str)] = &[("trabajo_id","orderId"),("cobro_id","id"),("fecha","date"),("importe","amount"),("medio","method"),("cuenta_id","accountId"),("referencia","reference"),("fecha_anulacion","voidedAt"),("motivo_anulacion","voidReason")];
 
 pub(crate) fn canonical_bytes(data: &AppData) -> Result<Vec<u8>, String> {
     let mut v = serde_json::to_value(data).map_err(|e| e.to_string())?;
@@ -78,7 +79,7 @@ pub(crate) fn to_xlsx(data: &AppData) -> Result<Vec<u8>, String> {
     }
     let manifest = vec![
         ("format","autotrace-backup-xlsx".to_string()),
-        ("schema_version","3".to_string()),
+        ("schema_version","4".to_string()),
         ("created_at_utc",chrono::Utc::now().to_rfc3339()),
         ("snapshot_id",uuid::Uuid::new_v4().to_string()),
         ("app_version",env!("CARGO_PKG_VERSION").to_string()),
@@ -106,7 +107,7 @@ pub(crate) fn to_xlsx(data: &AppData) -> Result<Vec<u8>, String> {
     emit_sheet(&mut wb,"Trabajos",ORDERS_V2,v["orders"].as_array().ok_or("Falta Trabajos")?)?;
     emit_sheet(&mut wb,"DetalleTrabajos",LINES,&lines)?;
     emit_sheet(&mut wb,"Cuentas",ACCOUNTS,&accounts)?;
-    emit_sheet(&mut wb,"Cobros",PAYMENTS,&payments)?;
+    emit_sheet(&mut wb,"Cobros",PAYMENTS_V4,&payments)?;
     emit_sheet(&mut wb,"Configuracion",SETTINGS,&[v["settings"].clone()])?;
     wb.save_to_buffer().map_err(xlsx_err)
 }
@@ -172,8 +173,8 @@ pub(crate) fn from_xlsx(bytes:&[u8])->Result<AppData,String>{
     let mut wb:Xlsx<_> = Xlsx::new(Cursor::new(bytes)).map_err(xlsx_err)?;
     let meta=manifest(&mut wb)?;
     let ver=meta.get("schema_version").map(String::as_str).ok_or("Versión faltante")?;
-    if meta.get("format").map(String::as_str)!=Some("autotrace-backup-xlsx") || !matches!(ver,"1"|"2"|"3") || meta.get("export_kind").map(String::as_str)!=Some("full") {return Err("Formato o versión de respaldo no admitidos".into());}
-    let required=if ver=="3" {vec!["Manifest","Clientes","Vehiculos","Trabajos","DetalleTrabajos","Cuentas","Cobros","Configuracion"]}
+    if meta.get("format").map(String::as_str)!=Some("autotrace-backup-xlsx") || !matches!(ver,"1"|"2"|"3"|"4") || meta.get("export_kind").map(String::as_str)!=Some("full") {return Err("Formato o versión de respaldo no admitidos".into());}
+    let required=if ver=="3"||ver=="4" {vec!["Manifest","Clientes","Vehiculos","Trabajos","DetalleTrabajos","Cuentas","Cobros","Configuracion"]}
         else if ver=="2"{vec!["Manifest","Clientes","Vehiculos","Trabajos","DetalleTrabajos","Configuracion"]}
         else{vec!["Manifest","Clientes","Vehiculos","Trabajos","Configuracion"]};
     let names=wb.sheet_names();
@@ -198,9 +199,9 @@ pub(crate) fn from_xlsx(bytes:&[u8])->Result<AppData,String>{
     }
     let mut config=read_rows(&mut wb,"Configuracion",SETTINGS,1)?;
     if config.len()!=1 {return Err("La configuración debe tener una fila".into());}
-    if ver=="3" {
+    if ver=="3"||ver=="4" {
         let accounts=read_rows(&mut wb,"Cuentas",ACCOUNTS,100)?;
-        let payments=read_rows(&mut wb,"Cobros",PAYMENTS,200_000)?;
+        let payments=read_rows(&mut wb,"Cobros",if ver=="4"{PAYMENTS_V4}else{PAYMENTS},200_000)?;
         if meta.get("count_accounts")!=Some(&accounts.len().to_string())||meta.get("count_payments")!=Some(&payments.len().to_string()){
             return Err("Cantidad de cuentas o cobros alterada".into());
         }
@@ -261,7 +262,7 @@ mod tests {
         assert_eq!(canonical_bytes(&data).unwrap(),canonical_bytes(&restored).unwrap());
     }
     #[test]
-    fn v3_roundtrip_accounts_payments_preserves_history_and_destinations(){
+    fn v4_roundtrip_accounts_payments_preserves_history_and_destinations(){
         let value=serde_json::json!({
             "clients":[{"id":"c1","name":"Cliente prueba","phone":"","email":"","notes":"","createdAt":""}],
             "vehicles":[{"id":"v1","clientId":"c1","plate":"AF012BC","make":"Toyota","model":"Hilux","year":"","mileage":200,"vin":"","color":"","nextServiceDate":"","notes":"","createdAt":""}],

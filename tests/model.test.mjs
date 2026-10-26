@@ -133,3 +133,20 @@ test('prevents double counting across work orders with repeated payment IDs or i
   assert.equal(valid.orders[0].payments[0].id,'payment-global');
   assert.equal(valid.orders[1].payments[0].id,'payment-distinct');
 });
+
+test('audited voids retain original receipts and calculate balance in exact cents',()=>{
+  const d=fixture();const p={id:'rcpt-1',date:'2026-10-20',amount:80.25,method:'cash',accountId:'',reference:''};
+  d.orders[0].paid=100;d.orders[0].payments=[p];
+  assert.equal(historicalUnallocated(validateData(d).orders[0]),19.75);
+  d.orders[0].paid=19.75;
+  d.orders[0].payments=[{...p,voidedAt:'2026-10-25',voidReason:'Se duplicó el ingreso en este trabajo'}];
+  const restored=validateData(d);
+  assert.equal(restored.orders[0].payments[0].amount,80.25);
+  assert.equal(historicalUnallocated(restored.orders[0]),19.75);
+  assert.equal(pendingAmount(restored.orders[0]),230.25);
+  d.orders[0].payments[0].voidReason='';
+  assert.throws(()=>validateData(d),/anulación requiere fecha y motivo/);
+  d.orders[0].payments[0].voidReason='Motivo suficiente de anulación';
+  d.orders[0].payments[0].voidedAt='2026-10-19';
+  assert.throws(()=>validateData(d),/fecha o el motivo/);
+});

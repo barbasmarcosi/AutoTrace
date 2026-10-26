@@ -52,6 +52,10 @@ pub(crate) struct Payment {
     method: String,
     account_id: String,
     reference: String,
+    #[serde(default,skip_serializing_if="String::is_empty")]
+    voided_at: String,
+    #[serde(default,skip_serializing_if="String::is_empty")]
+    void_reason: String,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -299,6 +303,18 @@ pub(crate) fn validate(data: &AppData) -> Result<(), String> {
             if p.date.is_empty(){return Err("El cobro requiere fecha".into());}
             check_date(&p.date,"cobro.fecha")?;
             valid_text(&p.reference,160,"cobro.referencia",false)?;
+            if p.voided_at.is_empty()!=p.void_reason.is_empty(){
+                return Err("La anulación requiere fecha y motivo juntos".into());
+            }
+            if !p.voided_at.is_empty(){
+                if !valid_date(&p.voided_at)||p.voided_at<p.date{
+                    return Err("Fecha de anulación inválida o anterior al cobro".into());
+                }
+                valid_text(&p.void_reason,500,"motivo de anulación",true)?;
+                if p.void_reason.trim().chars().count()<12{
+                    return Err("El motivo de anulación requiere al menos 12 caracteres".into());
+                }
+            }
             if !matches!(p.method.as_str(),"cash"|"transfer"|"debit"|"credit"|"qr"|"other"){return Err("Medio de pago inválido".into());}
             let electronic=matches!(p.method.as_str(),"transfer"|"debit"|"credit"|"qr");
             if (electronic&&!account_ids.contains(p.account_id.as_str()))||(!electronic&&!p.account_id.is_empty()){
@@ -306,7 +322,9 @@ pub(crate) fn validate(data: &AppData) -> Result<(), String> {
             }
             let value=cents(p.amount,"cobro.importe")?;
             if value<=0 {return Err("Un cobro debe ser positivo".into());}
-            detailed_cents=detailed_cents.checked_add(value).ok_or("Acumulado de cobros excesivo")?;
+            if p.voided_at.is_empty(){
+                detailed_cents=detailed_cents.checked_add(value).ok_or("Acumulado de cobros excesivo")?;
+            }
         }
         if detailed_cents>cents(o.paid,"trabajo.pagado")? {return Err("El detalle de cobros supera el total recibido".into());}
         if o.document_kind=="quote" && (o.paid>0.0||!o.payments.is_empty()){return Err("Los presupuestos no tienen cobros".into());}
@@ -863,6 +881,22 @@ mod tests {
         assert_eq!(restored.data.orders.len(),2);
         assert_eq!(restored.data.orders[0].payments[0].id,"p");
         assert_eq!(restored.data.orders[1].payments[0].id,"p-copy");
+        // Accounting void keeps the source event for audit.
+        let mut voided=restored.data;
+        voided.orders[0].paid=0.01;
+        voided.orders[0].payments[0].voided_at="2026-10-25".into();
+        voided.orders[0].payments[0].void_reason="Pago duplicado de prueba, anulado".into();
+        assert_eq!(write(&mut db,&voided,3).unwrap().revision,4);
+        let record=read(&db).unwrap();
+        assert_eq!(record.data.orders[0].payments[0].amount,40.00);
+        assert_eq!(record.data.orders[0].payments[0].void_reason,"Pago duplicado de prueba, anulado");
+        assert_eq!(record.data.orders[0].paid,0.01);
+        let unchanged=serde_json::to_value(&record.data).unwrap();
+        voided.orders[0].payments[0].void_reason="".into();
+        assert!(write(&mut db,&voided,4).is_err());
+        let after=read(&db).unwrap();
+        assert_eq!(after.revision,4);
+        assert_eq!(serde_json::to_value(after.data).unwrap(),unchanged);
     }
 
     #[test]
